@@ -217,9 +217,12 @@ export default function Player(sdata) {
 	// Position and movement
 	this.x = sdata.posX || sdata.x || 0;
 	this.y = sdata.posY || sdata.y || 0;
+	this.spawnX = sdata.spawnX || this.x;
+	this.spawnY = sdata.spawnY || this.y;
 	this.angle = sdata.angle || 0;
 	this.targetAngle = sdata.targetAngle || this.angle;
-	this.speed = consts.SPEED;
+	this.speedMult = sdata.speedMult ?? 1.0;
+	this.speed = consts.SPEED * this.speedMult;
 	
 	// Player info
 	this.num = sdata.num;
@@ -227,9 +230,18 @@ export default function Player(sdata) {
 	this.waitLag = sdata.waitLag || 0;
 	this.dead = false;
 
-	// Economy system
-	this.unbankedCoins = sdata.unbankedCoins || 0;
-	this.bankedCoins = sdata.bankedCoins || 0;
+	// Economy + Bank Meter (Archero-style)
+	this.coins = sdata.coins || 0; // carried coins (session-only)
+	this.bankTarget = sdata.bankTarget ?? consts.BANK_BASE_TARGET;
+	this.bankProgress = sdata.bankProgress || 0;
+	this.bankLevel = sdata.bankLevel || 0;
+	this.isChoosingUpgrade = sdata.isChoosingUpgrade || false;
+	this.upgradeOptions = sdata.upgradeOptions || [];
+
+	// Upgrade-modified stats (persist for session)
+	this.staminaRegenMult = sdata.staminaRegenMult ?? 1.0;
+	this.staminaDrainMult = sdata.staminaDrainMult ?? 1.0;
+	this.snipGraceBonusSec = sdata.snipGraceBonusSec ?? 0;
 	this._pendingTerritoryAreaGained = 0; // Accumulates area in px^2
 	this._territoryCoinCarry = 0; // Carryover for fractional coin conversion
 
@@ -250,6 +262,10 @@ export default function Player(sdata) {
 	this.snipTotalTrailLength = sdata.snipTotalTrailLength ?? 0;
 	// Exponential fuse acceleration state
 	this.snipElapsed = sdata.snipElapsed ?? 0; // seconds since snip started
+	
+	// HP system (for turret damage)
+	this.hp = sdata.hp ?? (consts.PLAYER_MAX_HP || 100);
+	this.maxHp = sdata.maxHp ?? (consts.PLAYER_MAX_HP || 100);
 	
 	// Territory and trail
 	this.territory = sdata.territory || [];
@@ -281,6 +297,9 @@ Player.prototype.move = function(deltaSeconds) {
 		this.waitLag++;
 		return;
 	}
+
+	// Freeze during upgrade selection (also pauses snip logic here)
+	if (this.isChoosingUpgrade) return;
 	
 	// Handle snip logic
 	if (this.isSnipped) {
@@ -533,6 +552,342 @@ function getLineIntersection(p1, p2, p3, p4) {
 	return null;
 }
 
+// ===== POLYGON BOOLEAN OPERATIONS =====
+
+/**
+ * Check if two polygons overlap (bounding box + point-in-polygon check)
+ */
+export function polygonsOverlap(polyA, polyB) {
+	if (!polyA || polyA.length < 3 || !polyB || polyB.length < 3) return false;
+	
+	// Quick bounding box check first
+	const boundsA = getPolygonBounds(polyA);
+	const boundsB = getPolygonBounds(polyB);
+	
+	if (boundsA.maxX < boundsB.minX || boundsB.maxX < boundsA.minX ||
+		boundsA.maxY < boundsB.minY || boundsB.maxY < boundsA.minY) {
+		return false;
+	}
+	
+	// Check if any vertex of A is inside B or vice versa
+	for (const p of polyA) {
+		if (pointInPolygon(p, polyB)) return true;
+	}
+	for (const p of polyB) {
+		if (pointInPolygon(p, polyA)) return true;
+	}
+	
+	// Check if any edges intersect
+	for (let i = 0; i < polyA.length; i++) {
+		const a1 = polyA[i];
+		const a2 = polyA[(i + 1) % polyA.length];
+		for (let j = 0; j < polyB.length; j++) {
+			const b1 = polyB[j];
+			const b2 = polyB[(j + 1) % polyB.length];
+			if (getLineIntersection(a1, a2, b1, b2)) return true;
+		}
+	}
+	
+	return false;
+}
+
+function getPolygonBounds(polygon) {
+	let minX = Infinity, maxX = -Infinity;
+	let minY = Infinity, maxY = -Infinity;
+	for (const p of polygon) {
+		if (p.x < minX) minX = p.x;
+		if (p.x > maxX) maxX = p.x;
+		if (p.y < minY) minY = p.y;
+		if (p.y > maxY) maxY = p.y;
+	}
+	return { minX, maxX, minY, maxY };
+}
+
+/**
+ * Subtract polygon B from polygon A using Sutherland-Hodgman style clipping.
+ * Returns the resulting polygon (A minus B), or A unchanged if no significant overlap.
+ * This is a simplified version that works well for convex or mostly-convex game territories.
+ */
+export function subtractPolygon(subjectPoly, clipPoly) {
+	if (!subjectPoly || subjectPoly.length < 3) return subjectPoly;
+	if (!clipPoly || clipPoly.length < 3) return subjectPoly;
+	
+	// Check if polygons overlap at all
+	if (!polygonsOverlap(subjectPoly, clipPoly)) {
+		return subjectPoly;
+	}
+	
+	// Use edge-based clipping: keep parts of subject that are OUTSIDE the clip polygon
+	let outputList = subjectPoly.slice().map(p => ({ x: p.x, y: p.y }));
+	
+	// For each edge of the clip polygon, clip the subject polygon to keep the outside
+	for (let i = 0; i < clipPoly.length; i++) {
+		if (outputList.length === 0) break;
+		
+		const clipEdgeStart = clipPoly[i];
+		const clipEdgeEnd = clipPoly[(i + 1) % clipPoly.length];
+		
+		const inputList = outputList;
+		outputList = [];
+		
+		for (let j = 0; j < inputList.length; j++) {
+			const current = inputList[j];
+			const next = inputList[(j + 1) % inputList.length];
+			
+			const currentInside = isPointInsideEdge(current, clipEdgeStart, clipEdgeEnd);
+			const nextInside = isPointInsideEdge(next, clipEdgeStart, clipEdgeEnd);
+			
+			// For subtraction, we want to keep points OUTSIDE the clip polygon
+			// So we invert the logic: "inside" means inside clip (to be removed)
+			
+			if (!currentInside) {
+				// Current is outside clip (keep it)
+				outputList.push(current);
+				if (nextInside) {
+					// Going from outside to inside - add intersection point
+					const intersection = lineEdgeIntersection(current, next, clipEdgeStart, clipEdgeEnd);
+					if (intersection) outputList.push(intersection);
+				}
+			} else if (!nextInside) {
+				// Current inside, next outside - add intersection point
+				const intersection = lineEdgeIntersection(current, next, clipEdgeStart, clipEdgeEnd);
+				if (intersection) outputList.push(intersection);
+			}
+		}
+	}
+	
+	// Clean up the result
+	if (outputList.length < 3) {
+		// Polygon was completely consumed - return empty or minimal territory
+		return [];
+	}
+	
+	// Remove duplicate consecutive points
+	const cleaned = [];
+	for (let i = 0; i < outputList.length; i++) {
+		const curr = outputList[i];
+		const prev = cleaned.length > 0 ? cleaned[cleaned.length - 1] : outputList[outputList.length - 1];
+		if (Math.abs(curr.x - prev.x) > 0.1 || Math.abs(curr.y - prev.y) > 0.1) {
+			cleaned.push(curr);
+		}
+	}
+	
+	return cleaned.length >= 3 ? cleaned : subjectPoly;
+}
+
+/**
+ * Check if point is on the "inside" side of an edge (left side when walking edge direction)
+ */
+function isPointInsideEdge(point, edgeStart, edgeEnd) {
+	return (edgeEnd.x - edgeStart.x) * (point.y - edgeStart.y) - 
+		   (edgeEnd.y - edgeStart.y) * (point.x - edgeStart.x) >= 0;
+}
+
+/**
+ * Find intersection of line segment (p1->p2) with edge (e1->e2)
+ */
+function lineEdgeIntersection(p1, p2, e1, e2) {
+	const d1 = { x: p2.x - p1.x, y: p2.y - p1.y };
+	const d2 = { x: e2.x - e1.x, y: e2.y - e1.y };
+	
+	const cross = d1.x * d2.y - d1.y * d2.x;
+	if (Math.abs(cross) < 1e-10) return null;
+	
+	const t = ((e1.x - p1.x) * d2.y - (e1.y - p1.y) * d2.x) / cross;
+	
+	if (t >= 0 && t <= 1) {
+		return {
+			x: p1.x + t * d1.x,
+			y: p1.y + t * d1.y
+		};
+	}
+	return null;
+}
+
+/**
+ * Subtract clipPoly from subjectPoly.
+ * Returns the part of subjectPoly that is OUTSIDE clipPoly.
+ * Uses a robust vertex/intersection based approach.
+ */
+export function subtractTerritorySimple(subjectPoly, clipPoly) {
+	if (!subjectPoly || subjectPoly.length < 3) return subjectPoly;
+	if (!clipPoly || clipPoly.length < 3) return subjectPoly;
+	
+	// Quick overlap check
+	if (!polygonsOverlap(subjectPoly, clipPoly)) {
+		return subjectPoly;
+	}
+	
+	// Count how many subject vertices are inside the clip polygon
+	let insideCount = 0;
+	for (const p of subjectPoly) {
+		if (pointInPolygon(p, clipPoly)) insideCount++;
+	}
+	
+	// If all vertices are inside, territory is completely consumed
+	if (insideCount === subjectPoly.length) {
+		return [];
+	}
+	
+	// If no vertices are inside, check if clip is entirely inside subject
+	// In this case, we would need to create a hole, but for simplicity
+	// we just return the subject unchanged (the visual will handle overlap)
+	if (insideCount === 0) {
+		// Check if clip polygon's centroid is inside subject
+		let cx = 0, cy = 0;
+		for (const p of clipPoly) {
+			cx += p.x;
+			cy += p.y;
+		}
+		cx /= clipPoly.length;
+		cy /= clipPoly.length;
+		
+		if (pointInPolygon({ x: cx, y: cy }, subjectPoly)) {
+			// Clip is inside subject - for now, we return subject unchanged
+			// A proper solution would create a polygon with a hole
+			// But for game purposes, we can just shrink the subject slightly
+			return subjectPoly;
+		}
+		return subjectPoly;
+	}
+	
+	// Build result by walking the subject polygon boundary,
+	// keeping vertices outside clip and adding intersection points
+	const result = [];
+	const n = subjectPoly.length;
+	
+	for (let i = 0; i < n; i++) {
+		const curr = subjectPoly[i];
+		const next = subjectPoly[(i + 1) % n];
+		
+		const currInside = pointInPolygon(curr, clipPoly);
+		const nextInside = pointInPolygon(next, clipPoly);
+		
+		if (!currInside) {
+			// Current point is outside clip - keep it
+			result.push({ x: curr.x, y: curr.y });
+		}
+		
+		// Check if edge crosses clip boundary
+		if (currInside !== nextInside) {
+			// Find all intersections with clip polygon edges
+			const intersections = findAllPolygonIntersections(curr, next, clipPoly);
+			
+			// Sort intersections by distance from curr
+			intersections.sort((a, b) => {
+				const da = (a.x - curr.x) ** 2 + (a.y - curr.y) ** 2;
+				const db = (b.x - curr.x) ** 2 + (b.y - curr.y) ** 2;
+				return da - db;
+			});
+			
+			// Add the closest intersection
+			if (intersections.length > 0) {
+				result.push(intersections[0]);
+			}
+		}
+	}
+	
+	// If not enough points, territory is too small
+	if (result.length < 3) {
+		return [];
+	}
+	
+	// Remove near-duplicate consecutive points
+	const cleaned = [];
+	for (const p of result) {
+		if (cleaned.length === 0) {
+			cleaned.push(p);
+		} else {
+			const last = cleaned[cleaned.length - 1];
+			const dx = Math.abs(p.x - last.x);
+			const dy = Math.abs(p.y - last.y);
+			if (dx > 2 || dy > 2) {
+				cleaned.push(p);
+			}
+		}
+	}
+	
+	// Check first/last for duplicates
+	if (cleaned.length >= 2) {
+		const first = cleaned[0];
+		const last = cleaned[cleaned.length - 1];
+		if (Math.abs(first.x - last.x) < 2 && Math.abs(first.y - last.y) < 2) {
+			cleaned.pop();
+		}
+	}
+	
+	// Verify the result is valid
+	if (cleaned.length < 3) {
+		return [];
+	}
+	
+	// Ensure the polygon has positive area (not self-intersecting to nothing)
+	const area = polygonAreaSigned(cleaned);
+	if (Math.abs(area) < 100) {
+		return [];
+	}
+	
+	// If area is negative, reverse the points
+	if (area < 0) {
+		cleaned.reverse();
+	}
+	
+	return cleaned;
+}
+
+/**
+ * Calculate signed polygon area (positive = counter-clockwise)
+ */
+function polygonAreaSigned(polygon) {
+	if (!polygon || polygon.length < 3) return 0;
+	let area = 0;
+	for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+		area += (polygon[j].x + polygon[i].x) * (polygon[j].y - polygon[i].y);
+	}
+	return area / 2;
+}
+
+/**
+ * Find all intersections of line segment (p1->p2) with polygon edges
+ */
+function findAllPolygonIntersections(p1, p2, polygon) {
+	const intersections = [];
+	
+	for (let i = 0; i < polygon.length; i++) {
+		const e1 = polygon[i];
+		const e2 = polygon[(i + 1) % polygon.length];
+		const intersection = getLineIntersection(p1, p2, e1, e2);
+		if (intersection) {
+			intersections.push(intersection);
+		}
+	}
+	
+	return intersections;
+}
+
+/**
+ * Find where line segment (p1->p2) intersects any edge of polygon
+ */
+function findPolygonEdgeIntersection(p1, p2, polygon) {
+	let closest = null;
+	let closestDist = Infinity;
+	
+	for (let i = 0; i < polygon.length; i++) {
+		const e1 = polygon[i];
+		const e2 = polygon[(i + 1) % polygon.length];
+		const intersection = getLineIntersection(p1, p2, e1, e2);
+		if (intersection) {
+			const dist = (intersection.x - p1.x) ** 2 + (intersection.y - p1.y) ** 2;
+			if (dist < closestDist) {
+				closestDist = dist;
+				closest = intersection;
+			}
+		}
+	}
+	
+	return closest;
+}
+
 Player.prototype.startSnip = function(collisionPoint, hitInfo) {
 	if (this.isSnipped) return; // Ignore if already snipped (per MVP recommendation)
 	
@@ -591,6 +946,9 @@ Player.prototype.startSnip = function(collisionPoint, hitInfo) {
 
 Player.prototype.updateSnip = function(deltaSeconds) {
 	if (!this.isSnipped || this.dead) return;
+
+	// Pause snip timer while choosing upgrade (invulnerable period)
+	if (this.isChoosingUpgrade) return;
 	
 	// Safety check for trail and start point
 	if (!this.trail || !this.trail.points || this.trail.points.length === 0 || !this.snipStartPoint) {
@@ -609,7 +967,7 @@ Player.prototype.updateSnip = function(deltaSeconds) {
 	const k = consts.SNIP_EXP_ACCEL_PER_SEC;
 	
 	// Grace period: fuse doesn't move during grace period
-	const gracePeriod = consts.SNIP_GRACE_PERIOD ?? 0.35;
+	const gracePeriod = (consts.SNIP_GRACE_PERIOD ?? 0.35) + (this.snipGraceBonusSec || 0);
 	const effectiveElapsed = Math.max(0, this.snipElapsed - gracePeriod);
 	
 	const accelFactor = k > 0 ? Math.exp(k * effectiveElapsed) : 1;
@@ -749,8 +1107,9 @@ Player.prototype.die = function() {
 	this.dead = true;
 };
 
-Player.prototype.render = function(ctx, fade) {
+Player.prototype.render = function(ctx, fade, outlineThicknessMultiplier) {
 	fade = fade || 1;
+	outlineThicknessMultiplier = outlineThicknessMultiplier || 1;
 	
 	// Snipped visual effect: flashing ghost appearance
 	let snipAlpha = 1;
@@ -771,10 +1130,30 @@ Player.prototype.render = function(ctx, fade) {
 		ctx.closePath();
 		ctx.fill();
 		
-		// Territory border
-		ctx.strokeStyle = this.baseColor.deriveAlpha(0.7 * fade * snipAlpha).rgbString();
-		ctx.lineWidth = 3;
+		// Territory border outline (2-3px, using owner's color)
+		const baseOutlineWidth = 2.5;
+		const outlineWidth = baseOutlineWidth * outlineThicknessMultiplier;
+		ctx.strokeStyle = this.baseColor.deriveAlpha(0.9 * fade * snipAlpha).rgbString();
+		ctx.lineWidth = outlineWidth;
+		ctx.lineJoin = 'round';
 		ctx.stroke();
+	}
+	
+	// Render body (trail, player circle, name, etc)
+	this.renderBody(ctx, fade);
+};
+
+// Render just the player body, trail, and overlays (not territory)
+// Used when territories are rendered separately for proper overlap resolution
+Player.prototype.renderBody = function(ctx, fade) {
+	fade = fade || 1;
+	
+	// Snipped visual effect: flashing ghost appearance
+	let snipAlpha = 1;
+	if (this.isSnipped) {
+		const time = Date.now() / 100;
+		// Fast flashing effect (0.3 to 0.8 alpha)
+		snipAlpha = 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(time * 4));
 	}
 	
 	// Render trail
@@ -859,13 +1238,23 @@ Player.prototype.serialData = function() {
 		name: this.name,
 		x: this.x,
 		y: this.y,
+		spawnX: this.spawnX,
+		spawnY: this.spawnY,
 		angle: this.angle,
 		targetAngle: this.targetAngle,
 		territory: this.territory,
 		trail: this.trail.serialData(),
 		waitLag: this.waitLag,
-		unbankedCoins: this.unbankedCoins,
-		bankedCoins: this.bankedCoins,
+		coins: this.coins,
+		bankTarget: this.bankTarget,
+		bankProgress: this.bankProgress,
+		bankLevel: this.bankLevel,
+		isChoosingUpgrade: this.isChoosingUpgrade,
+		upgradeOptions: this.upgradeOptions,
+		staminaRegenMult: this.staminaRegenMult,
+		staminaDrainMult: this.staminaDrainMult,
+		speedMult: this.speedMult,
+		snipGraceBonusSec: this.snipGraceBonusSec,
 		stamina: this.stamina,
 		maxStamina: this.maxStamina,
 		isExhausted: this.isExhausted,
@@ -877,7 +1266,9 @@ Player.prototype.serialData = function() {
 		snipTrailIndex: this.snipTrailIndex,
 		snipFusePosition: this.snipFusePosition,
 		snipTotalTrailLength: this.snipTotalTrailLength,
-		snipElapsed: this.snipElapsed
+		snipElapsed: this.snipElapsed,
+		hp: this.hp,
+		maxHp: this.maxHp
 	};
 };
 

@@ -1,7 +1,7 @@
 export const config = {
 	"dev": true,
 	"port": 8083,
-	"bots": 3,
+	"bots": 30,
 	"fps": 60
 };
 
@@ -10,7 +10,7 @@ export const consts = {
 	"CELL_WIDTH": 40,         // Size of each cell in pixels
 	"SPEED": 4,               // Player movement speed per frame
 	"BORDER_WIDTH": 20,       // Border around the map
-	"MAX_PLAYERS": 30,        // Maximum players in a game
+	"MAX_PLAYERS": 100,        // Maximum players in a game
 	"NEW_PLAYER_LAG": 30,     // Frames to wait before player can move
 	"LEADERBOARD_NUM": 5,     // Number of players shown on leaderboard
 	"MAX_STAMINA": 100,
@@ -34,6 +34,66 @@ export const consts = {
 	"MAX_COINS": 200,
 	"COIN_SPAWN_INTERVAL_SEC": 2.5,
 	"COIN_RADIUS": 8,
-	"COIN_VALUE": 1,
-	"COINS_PER_AREA_UNIT": 0.00025
+	"COIN_VALUE": 5,
+	"COIN_DROP_PERCENT": 0.63,         // Percentage of held coins dropped on death
+	"COIN_DROP_MIN": 10,               // Minimum coins dropped on death (even if broke)
+	"COINS_PER_AREA_UNIT": 0.00025,
+	// Bank circle (per-player) + Bank Meter system
+	"BANKSTORE_RADIUS": 60,           // Collision radius for deposit circle
+	"BANK_DEPOSIT_COOLDOWN_MS": 250,  // Minimum ms between deposit attempts
+	"BANK_BASE_TARGET": 20,
+	"BANK_TARGET_INCREMENT": 10,
+	
+	// ===== TURRET SYSTEM =====
+	// Player HP (turret damage target)
+	"PLAYER_MAX_HP": 100,
+	"PLAYER_HP_REGEN_IN_TERRITORY": 15,  // HP per second when in own territory (buffed)
+	
+	// Ring radii from player's home/core position
+	"TURRET_RING1_RADIUS": 200,       // Closest ring (strongest turrets)
+	"TURRET_RING2_RADIUS": 400,       // Mid ring
+	"TURRET_RING3_RADIUS": 9999,      // Far ring (everything beyond ring 2)
+	
+	// Spawn settings
+	"TURRET_SPAWN_INTERVAL_SEC": 10,  // How often each player spawns a turret (slower)
+	"MAX_TURRETS_PER_PLAYER": 10,     // Cap per player (reduced)
+	"MIN_TURRET_SPACING": 80,         // Minimum distance between turrets of same owner
+	
+	// Ring 1 turret stats (strongest) - reduced damage
+	"TURRET_RING1_HP": 100,
+	"TURRET_RING1_DAMAGE": 5,
+	"TURRET_RING1_RANGE": 300,
+	"TURRET_RING1_COOLDOWN": 0.8,
+	
+	// Ring 2 turret stats (medium) - reduced damage
+	"TURRET_RING2_HP": 70,
+	"TURRET_RING2_DAMAGE": 4,
+	"TURRET_RING2_RANGE": 250,
+	"TURRET_RING2_COOLDOWN": 1.0,
+	
+	// Ring 3 turret stats (weakest) - reduced damage
+	"TURRET_RING3_HP": 45,
+	"TURRET_RING3_DAMAGE": 3,
+	"TURRET_RING3_RANGE": 200,
+	"TURRET_RING3_COOLDOWN": 1.2,
+	
+	// Turret visual
+	"TURRET_RADIUS": 18,
+	
+	// Projectile settings
+	"PROJECTILE_SPEED": 8,            // Units per frame (at 60fps = 480 units/sec)
+	"PROJECTILE_RADIUS": 6,           // Collision radius for hitting players
+	"PROJECTILE_MAX_LIFETIME": 3,     // Seconds before projectile despawns
+	
+	// ===== DRONE SYSTEM =====
+	"DRONE_BASE_COST": 120,           // Cost of first additional drone
+	"DRONE_COST_MULT": 1.6,           // Cost multiplier per drone owned
+	"MAX_DRONES": 6,                  // Maximum drones per player
+	"DRONE_ORBIT_RADIUS": 55,         // Distance from player center
+	"DRONE_RADIUS": 10,               // Visual/collision radius
+	"DRONE_HP": 40,                   // Drone hit points
+	"DRONE_DAMAGE": 4,                // Damage per projectile
+	"DRONE_RANGE": 200,               // Targeting range
+	"DRONE_COOLDOWN": 1.0,            // Seconds between shots
+	"DRONE_HP_REGEN_IN_TERRITORY": 8  // HP per second when owner is in safe territory
 };

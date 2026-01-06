@@ -5,6 +5,10 @@ let running = false;
 let user, socket, frame;
 let players, allPlayers;
 let coinsById = new Map();
+let bankStoresById = new Map();
+let turretsById = new Map();
+let projectilesById = new Map();
+let dronesById = new Map(); // Stores all drones keyed by id
 let kills;
 let timeout = undefined;
 let dirty = false;
@@ -59,10 +63,52 @@ function connectGame(io, url, name, callback, flag) {
 		if (data.coins) {
 			data.coins.forEach(c => coinsById.set(c.id, c));
 		}
+		
+		// Load bank stores
+		if (data.bankStores) {
+			data.bankStores.forEach(s => bankStoresById.set(s.id, s));
+		}
+		
+		// Load turrets
+		if (data.turrets) {
+			data.turrets.forEach(t => turretsById.set(t.id, t));
+		}
+		
+		// Load projectiles
+		if (data.projectiles) {
+			data.projectiles.forEach(p => projectilesById.set(p.id, p));
+		}
 
 		// Load players
 		data.players.forEach(p => {
 			const pl = new Player(p);
+			// Copy upgrade stats
+			pl.staminaRegenMult = p.staminaRegenMult || 1.0;
+			pl.staminaDrainMult = p.staminaDrainMult || 1.0;
+			pl.speedMult = p.speedMult || 1.0;
+			pl.snipGraceBonusSec = p.snipGraceBonusSec || 0;
+			pl.upgrades = p.upgrades || [];
+			
+			// Bank meter fields
+			pl.coins = p.coins || 0;
+			pl.bankProgress = p.bankProgress || 0;
+			pl.bankTarget = p.bankTarget || consts.BANK_BASE_TARGET;
+			pl.bankLevel = p.bankLevel || 0;
+			pl.isChoosingUpgrade = p.isChoosingUpgrade || false;
+			pl.upgradeOptions = p.upgradeOptions || [];
+			
+			// HP fields
+			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP || 100);
+			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP || 100);
+			
+			// Drone fields
+			pl.droneCount = p.droneCount || 1;
+			pl.drones = p.drones || [];
+			// Store drones in the map
+			for (const d of pl.drones) {
+				dronesById.set(d.id, d);
+			}
+			
 			addPlayer(pl);
 			if (!p.territory || p.territory.length === 0) {
 				initPlayer(pl);
@@ -146,9 +192,10 @@ function updateZoom(zoom) {
 function sendTargetAngle() {
 	if (!user || user.dead || !socket || !mouseSet) return;
 	
+	// Don't send movement while choosing upgrade (frozen)
+	if (user.isChoosingUpgrade) return;
+	
 	// Update world mouse position based on last screen position and current view offset.
-	// This ensures the target world point moves with the camera if the mouse is stationary,
-	// effectively making the mouse a direction vector relative to the screen center.
 	mouseX = (lastScreenX / lastZoom) + viewOffset.x;
 	mouseY = (lastScreenY / lastZoom) + viewOffset.y;
 
@@ -156,8 +203,7 @@ function sendTargetAngle() {
 	const dx = mouseX - user.x;
 	const dy = mouseY - user.y;
 	
-	// If mouse is too close to player center, don't update angle to avoid "shaking" or tight circles.
-	// 10 pixels is a reasonable threshold.
+	// If mouse is too close to player center, don't update angle
 	if (dx * dx + dy * dy < 100) return;
 	
 	const targetAngle = Math.atan2(dy, dx);
@@ -188,6 +234,51 @@ function getOthers() {
 
 function getCoins() {
 	return Array.from(coinsById.values());
+}
+
+function getBankStores() {
+	return Array.from(bankStoresById.values());
+}
+
+function getTurrets() {
+	return Array.from(turretsById.values());
+}
+
+function getProjectiles() {
+	return Array.from(projectilesById.values());
+}
+
+function getDrones() {
+	return Array.from(dronesById.values());
+}
+
+// Calculate drone cost for a player
+function getDroneNextCost(droneCount) {
+	const baseCost = consts.DRONE_BASE_COST || 120;
+	const mult = consts.DRONE_COST_MULT || 1.6;
+	return Math.floor(baseCost * Math.pow(mult, droneCount));
+}
+
+// Send buy drone request to server
+function buyDrone(callback) {
+	if (!socket || !user) {
+		if (callback) callback(false, "Not connected");
+		return;
+	}
+	socket.emit("buyDrone", {}, callback);
+}
+
+// Send upgrade choice to server (Archero-style level-up)
+function chooseUpgrade(upgradeId, callback) {
+	if (!socket || !user) {
+		if (callback) callback(false, "Not connected");
+		return;
+	}
+	if (!user.isChoosingUpgrade) {
+		if (callback) callback(false, "Not in upgrade selection");
+		return;
+	}
+	socket.emit("chooseUpgrade", { upgradeId }, callback);
 }
 
 function disconnect() {
@@ -229,18 +320,118 @@ function processFrame(data) {
 	
 	// Handle economy deltas
 	if (data.coinSpawns) {
+		// Check for death loot coins (have fromDeath flag)
+		const deathLootCoins = data.coinSpawns.filter(c => c.fromDeath);
+		if (deathLootCoins.length > 0) {
+			// Group by origin point
+			const originX = deathLootCoins[0].originX;
+			const originY = deathLootCoins[0].originY;
+			invokeRenderer("spawnLootCoins", [originX, originY, deathLootCoins]);
+		}
 		data.coinSpawns.forEach(c => coinsById.set(c.id, c));
 	}
 	if (data.coinRemovals) {
 		data.coinRemovals.forEach(id => coinsById.delete(id));
 	}
-	if (data.coinTotals) {
-		data.coinTotals.forEach(update => {
+	
+	// Handle bank meter updates
+	if (data.bankUpdates) {
+		data.bankUpdates.forEach(update => {
 			const p = allPlayers[update.num];
 			if (p) {
-				p.unbankedCoins = update.unbankedCoins;
-				p.bankedCoins = update.bankedCoins;
+				p.coins = update.coins;
+				p.bankProgress = update.bankProgress;
+				p.bankTarget = update.bankTarget;
+				p.bankLevel = update.bankLevel;
+				p.isChoosingUpgrade = update.isChoosingUpgrade;
+				// Always overwrite so stale options don't stick around after choosing.
+				p.upgradeOptions = update.upgradeOptions || [];
+				// Update drone count
+				if (update.droneCount !== undefined) {
+					p.droneCount = update.droneCount;
+				}
 			}
+		});
+	}
+	
+	// Handle drone updates (positions, HP, targeting)
+	if (data.droneUpdates) {
+		data.droneUpdates.forEach(update => {
+			const p = allPlayers[update.ownerNum];
+			if (p) {
+				// Update player's drones array
+				p.drones = update.drones || [];
+				// Update global drone map
+				for (const d of p.drones) {
+					d.ownerId = update.ownerNum;
+					dronesById.set(d.id, d);
+				}
+			}
+		});
+	}
+	
+	// Handle turret updates
+	if (data.turretSpawns) {
+		data.turretSpawns.forEach(t => turretsById.set(t.id, t));
+	}
+	if (data.turretRemovals) {
+		data.turretRemovals.forEach(id => turretsById.delete(id));
+	}
+	if (data.turretUpdates) {
+		data.turretUpdates.forEach(update => {
+			const t = turretsById.get(update.id);
+			if (t) {
+				// Check if ownership changed (turret captured)
+				const ownerChanged = update.ownerId !== undefined && t.ownerId !== update.ownerId;
+				
+				if (update.targetId !== undefined) t.targetId = update.targetId;
+				if (update.hp !== undefined) t.hp = update.hp;
+				// Handle turret capture (ownership transfer)
+				if (update.ownerId !== undefined) t.ownerId = update.ownerId;
+				if (update.ringIndex !== undefined) t.ringIndex = update.ringIndex;
+				if (update.damage !== undefined) t.damage = update.damage;
+				if (update.range !== undefined) t.range = update.range;
+				if (update.cooldown !== undefined) t.cooldown = update.cooldown;
+				if (update.maxHp !== undefined) t.maxHp = update.maxHp;
+				
+				// Notify renderer of turret capture for visual effect
+				if (ownerChanged) {
+					const newOwner = allPlayers[t.ownerId];
+					invokeRenderer("turretCaptured", [t.x, t.y, newOwner]);
+				}
+			}
+		});
+	}
+	// Handle projectile updates
+	if (data.projectileSpawns) {
+		data.projectileSpawns.forEach(p => projectilesById.set(p.id, p));
+	}
+	if (data.projectileRemovals) {
+		data.projectileRemovals.forEach(id => projectilesById.delete(id));
+	}
+	if (data.projectileHits) {
+		// Notify renderer of projectile hits for visual effects
+		data.projectileHits.forEach(hit => {
+			const target = allPlayers[hit.targetNum];
+			if (target) {
+				// Use server's authoritative HP value
+				if (hit.remainingHp !== undefined) {
+					target.hp = hit.remainingHp;
+				} else {
+					// Fallback to local calculation
+					target.hp = Math.max(0, (target.hp || 100) - hit.damage);
+				}
+			}
+			invokeRenderer("projectileHit", [hit.x, hit.y, hit.damage]);
+		});
+	}
+	
+	// Handle capture events for visual feedback
+	if (data.captureEvents) {
+		data.captureEvents.forEach(evt => {
+			const player = allPlayers[evt.playerNum];
+			const isLocalPlayer = user && evt.playerNum === user.num;
+			invokeRenderer("captureSuccess", [evt.x, evt.y, evt.coinsGained, player, isLocalPlayer]);
 		});
 	}
 
@@ -248,24 +439,48 @@ function processFrame(data) {
 		data.newPlayers.forEach(p => {
 			if (user && p.num === user.num) return;
 			const pl = new Player(p);
+			// Copy bank meter fields
+			pl.coins = p.coins || 0;
+			pl.bankProgress = p.bankProgress || 0;
+			pl.bankTarget = p.bankTarget || consts.BANK_BASE_TARGET;
+			pl.bankLevel = p.bankLevel || 0;
+			pl.isChoosingUpgrade = p.isChoosingUpgrade || false;
+			pl.upgradeOptions = p.upgradeOptions || [];
+			// HP fields
+			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP || 100);
+			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP || 100);
+			// Drone fields
+			pl.droneCount = p.droneCount || 1;
+			pl.drones = p.drones || [];
+			for (const d of pl.drones) {
+				dronesById.set(d.id, d);
+			}
 			addPlayer(pl);
-			initPlayer(pl);
+			if (!p.territory || p.territory.length === 0) {
+				initPlayer(pl);
+			}
 		});
 	}
 	
-	const found = new Array(players.length);
-	data.moves.forEach((val, i) => {
+	// IMPORTANT: never rely on array index alignment between server `moves[]` and local `players[]`.
+	// Players can be added/removed and local ordering can drift, which would randomly kill the wrong player.
+	const presentNums = new Set();
+	data.moves.forEach(val => {
+		presentNums.add(val.num);
 		const player = allPlayers[val.num];
 		if (!player) return;
 		if (val.left) player.die();
-		found[i] = true;
 		player.targetAngle = val.targetAngle;
+		// Update isChoosingUpgrade from moves (for other players)
+		if (val.isChoosingUpgrade !== undefined) {
+			player.isChoosingUpgrade = val.isChoosingUpgrade;
+		}
 	});
 	
-	for (let i = 0; i < players.length; i++) {
-		if (!found[i]) {
-			const player = players[i];
-			player && player.die();
+	// Any locally-known player that isn't in the server moves list this frame should be considered gone/dead.
+	for (const p of players) {
+		if (p && !presentNums.has(p.num)) {
+			p.die();
 		}
 	}
 	
@@ -310,6 +525,10 @@ function reset() {
 	players = [];
 	allPlayers = [];
 	coinsById.clear();
+	bankStoresById.clear();
+	turretsById.clear();
+	projectilesById.clear();
+	dronesById.clear();
 	kills = 0;
 	invokeRenderer("reset");
 }
@@ -330,6 +549,19 @@ function update() {
 		delete allPlayers[val.num];
 		invokeRenderer("removePlayer", [val]);
 	});
+	
+	// Update projectile positions locally (client-side interpolation)
+	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
+	for (const [id, proj] of projectilesById) {
+		// Move projectile based on velocity
+		proj.x += proj.vx;
+		proj.y += proj.vy;
+		
+		// Remove if out of bounds (client-side cleanup for smooth visuals)
+		if (proj.x < 0 || proj.x > mapSize || proj.y < 0 || proj.y > mapSize) {
+			projectilesById.delete(id);
+		}
+	}
 	
 	invokeRenderer("update", [frame]);
 }
@@ -353,6 +585,13 @@ export {
 	getPlayers, 
 	getOthers, 
 	getCoins,
+	getBankStores,
+	getTurrets,
+	getProjectiles,
+	getDrones,
+	getDroneNextCost,
+	buyDrone,
+	chooseUpgrade,
 	disconnect, 
 	setRenderer, 
 	setAllowAnimation, 
