@@ -87,19 +87,16 @@ function connect() {
 	socket.on("dead", () => {
 		console.log(`[${new Date()}] I died... (survived for ${endFrame - startFrame} frames.)`);
 		socket.disconnect();
-		startFrame = -1;
-		user = null;
-		players = [];
-		setTimeout(connect, 3000);
+		// Exit instead of reconnecting to prevent spam
+		process.exit(0);
 	});
 	
 	socket.on("disconnect", () => {
 		if (startFrame !== -1) {
 			console.log(`[${new Date()}] Disconnected (survived for ${endFrame - startFrame} frames.)`);
 		}
-		startFrame = -1;
-		user = null;
-		setTimeout(connect, 3000);
+		// Exit instead of reconnecting to prevent spam
+		process.exit(0);
 	});
 	
 	socket.emit("hello", {

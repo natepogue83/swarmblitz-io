@@ -10,6 +10,11 @@ function Game(id) {
 	let frame = 0;
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 	
+	// Coins system
+	let coins = [];
+	let nextCoinId = 0;
+	let coinSpawnCooldown = 0;
+
 	this.id = id;
 	
 	this.addPlayer = (client, name) => {
@@ -48,7 +53,8 @@ function Game(id) {
 				"num": p.num,
 				"gameid": id,
 				"frame": frame,
-				"players": splayers
+				"players": splayers,
+				"coins": coins
 			});
 		});
 		
@@ -95,7 +101,8 @@ function Game(id) {
 		client.emit("game", {
 			"gameid": id,
 			"frame": frame,
-			"players": splayers
+			"players": splayers,
+			"coins": coins
 		});
 		
 		client.on("requestFrame", () => {
@@ -106,7 +113,8 @@ function Game(id) {
 			g.client.emit("game", {
 				"gameid": id,
 				"frame": frame,
-				"players": splayers
+				"players": splayers,
+				"coins": coins
 			});
 		});
 		
@@ -114,13 +122,37 @@ function Game(id) {
 	};
 
 	function tick() {
+		const deltaSeconds = 1 / 60;
+		const economyDeltas = {
+			coinSpawns: [],
+			coinRemovals: [],
+			coinTotals: []
+		};
+
+		// Coin spawning
+		coinSpawnCooldown -= deltaSeconds;
+		if (coinSpawnCooldown <= 0 && coins.length < consts.MAX_COINS) {
+			const x = Math.random() * (mapSize - 2 * consts.BORDER_WIDTH) + consts.BORDER_WIDTH;
+			const y = Math.random() * (mapSize - 2 * consts.BORDER_WIDTH) + consts.BORDER_WIDTH;
+			const newCoin = {
+				id: nextCoinId++,
+				x,
+				y,
+				value: consts.COIN_VALUE
+			};
+			coins.push(newCoin);
+			economyDeltas.coinSpawns.push(newCoin);
+			coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC;
+		}
+
 		const splayers = players.map(val => val.serialData());
 		const snews = newPlayers.map(val => {
 			val.client.emit("game", {
 				"num": val.num,
 				"gameid": id,
 				"frame": frame,
-				"players": splayers
+				"players": splayers,
+				"coins": coins
 			});
 			return val.serialData();
 		});
@@ -133,12 +165,17 @@ function Game(id) {
 			};
 		});
 		
-		update();
+		update(economyDeltas);
 		
 		const data = {
 			frame: frame + 1,
 			moves
 		};
+
+		// Add economy deltas if they exist
+		if (economyDeltas.coinSpawns.length > 0) data.coinSpawns = economyDeltas.coinSpawns;
+		if (economyDeltas.coinRemovals.length > 0) data.coinRemovals = economyDeltas.coinRemovals;
+		if (economyDeltas.coinTotals.length > 0) data.coinTotals = economyDeltas.coinTotals;
 		
 		if (snews.length > 0) {
 			data.newPlayers = snews;
@@ -157,11 +194,23 @@ function Game(id) {
 	
 	this.tickFrame = tick;
 
-	function update() {
+	function update(economyDeltas) {
 		const dead = [];
 		updateFrame(players, dead);
 		
+		const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
+
 		for (const p of dead) {
+			// Death economy: clear unbanked
+			if (p.unbankedCoins > 0) {
+				p.unbankedCoins = 0;
+				economyDeltas.coinTotals.push({
+					num: p.num,
+					unbankedCoins: p.unbankedCoins,
+					bankedCoins: p.bankedCoins
+				});
+			}
+
 			if (!p.handledDead) {
 				possColors.push(p.baseColor);
 				p.handledDead = true;
@@ -171,6 +220,50 @@ function Game(id) {
 			}
 			p.client.emit("dead");
 			p.client.disconnect(true);
+		}
+
+		// Process alive players economy
+		for (const p of players) {
+			let changed = false;
+
+			// 1. Coin pickups
+			for (let i = coins.length - 1; i >= 0; i--) {
+				const coin = coins[i];
+				const dist = Math.hypot(p.x - coin.x, p.y - coin.y);
+				if (dist < PLAYER_RADIUS + consts.COIN_RADIUS) {
+					p.unbankedCoins += coin.value;
+					economyDeltas.coinRemovals.push(coin.id);
+					coins.splice(i, 1);
+					changed = true;
+				}
+			}
+
+			// 2. Territory rewards
+			if (p._pendingTerritoryAreaGained > 0) {
+				p._territoryCoinCarry += p._pendingTerritoryAreaGained * consts.COINS_PER_AREA_UNIT;
+				const coinsGained = Math.floor(p._territoryCoinCarry);
+				if (coinsGained > 0) {
+					p.unbankedCoins += coinsGained;
+					p._territoryCoinCarry -= coinsGained;
+					changed = true;
+				}
+				p._pendingTerritoryAreaGained = 0;
+			}
+
+			// 3. Banking
+			if (p.unbankedCoins > 0 && p.isInOwnTerritory()) {
+				p.bankedCoins += p.unbankedCoins;
+				p.unbankedCoins = 0;
+				changed = true;
+			}
+
+			if (changed) {
+				economyDeltas.coinTotals.push({
+					num: p.num,
+					unbankedCoins: p.unbankedCoins,
+					bankedCoins: p.bankedCoins
+				});
+			}
 		}
 	}
 }

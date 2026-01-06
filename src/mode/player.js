@@ -13,6 +13,11 @@ const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
 let canvas, ctx, offscreenCanvas, offctx, canvasWidth, canvasHeight, gameWidth, gameHeight;
 const $ = jquery;
 
+// Death animation system
+const deathParticles = [];
+let screenShake = { x: 0, y: 0, intensity: 0, decay: 0.92 };
+const dyingPlayers = []; // Track players with death animations
+
 $(() => {
 	canvas = $("#main-ui")[0];
 	ctx = canvas.getContext("2d");
@@ -70,6 +75,13 @@ function reset() {
 	user = null;
 	zoom = 1;
 	showedDead = false;
+	
+	// Clear death effects
+	deathParticles.length = 0;
+	dyingPlayers.length = 0;
+	screenShake.intensity = 0;
+	screenShake.x = 0;
+	screenShake.y = 0;
 }
 
 reset();
@@ -140,6 +152,42 @@ function paintUIBar(ctx) {
 	const killsOffset = 20 + BAR_WIDTH + barOffset;
 	ctx.fillText(killsText, killsOffset, BAR_HEIGHT - 15);
 
+	// Coins HUD
+	ctx.fillStyle = "#FFD700"; // Gold color
+	const unbankedText = "Unbanked: " + (user.unbankedCoins || 0);
+	const bankedText = "Banked: " + (user.bankedCoins || 0);
+	const coinOffset = killsOffset + ctx.measureText(killsText).width + 30;
+	ctx.fillText(unbankedText, coinOffset, BAR_HEIGHT - 15);
+	ctx.fillText(bankedText, coinOffset + ctx.measureText(unbankedText).width + 30, BAR_HEIGHT - 15);
+
+	// Stamina bar
+	const staminaWidth = 120;
+	const staminaHeight = 20;
+	const staminaX = coinOffset + ctx.measureText(unbankedText).width + ctx.measureText(bankedText).width + 90;
+	const staminaY = (BAR_HEIGHT - staminaHeight) / 2;
+
+	// Background
+	ctx.fillStyle = "rgba(100, 100, 100, 0.5)";
+	ctx.fillRect(staminaX, staminaY, staminaWidth, staminaHeight);
+
+	// Foreground (Stamina)
+	const staminaRatio = (user.stamina || 0) / (user.maxStamina || 100);
+	if (user.isExhausted) {
+		ctx.fillStyle = "#ff4444"; // Red when exhausted
+	} else if (staminaRatio < 0.3) {
+		ctx.fillStyle = "#ffcc00"; // Yellow when low
+	} else {
+		ctx.fillStyle = "#44ff44"; // Green normally
+	}
+	ctx.fillRect(staminaX, staminaY, staminaWidth * staminaRatio, staminaHeight);
+
+	// Stamina Text
+	ctx.fillStyle = "white";
+	ctx.font = "bold 12px Changa";
+	ctx.textAlign = "center";
+	ctx.fillText(user.isExhausted ? "EXHAUSTED" : "STAMINA", staminaX + staminaWidth / 2, staminaY + staminaHeight - 5);
+	ctx.textAlign = "left"; // Reset alignment
+
 	// Calculate rank
 	const sorted = [];
 	client.getPlayers().forEach(val => {
@@ -150,8 +198,8 @@ function paintUIBar(ctx) {
 	});
 
 	const rank = sorted.findIndex(val => val.player === user);
-	ctx.fillText("Rank: " + (rank === -1 ? "--" : rank + 1) + " of " + sorted.length,
-		ctx.measureText(killsText).width + killsOffset + 20, BAR_HEIGHT - 15);
+	const rankText = "Rank: " + (rank === -1 ? "--" : rank + 1) + " of " + sorted.length;
+	ctx.fillText(rankText, staminaX + staminaWidth + 20, BAR_HEIGHT - 15);
 
 	// Rolling the leaderboard bars
 	if (sorted.length > 0) {
@@ -201,6 +249,9 @@ function paint(ctx) {
 	ctx.rect(0, 0, gameWidth, gameHeight);
 	ctx.clip();
 
+	// Apply screen shake
+	ctx.translate(screenShake.x, screenShake.y);
+
 	// Zoom based on territory size
 	ctx.scale(zoom, zoom);
 	ctx.translate(-offset[0] + consts.BORDER_WIDTH, -offset[1] + consts.BORDER_WIDTH);
@@ -209,16 +260,40 @@ function paint(ctx) {
 	client.setViewOffset(offset[0] - consts.BORDER_WIDTH, offset[1] - consts.BORDER_WIDTH);
 
 	paintGridBackground(ctx);
+
+	// Render coins
+	const coins = client.getCoins();
+	ctx.fillStyle = "#FFD700";
+	ctx.shadowBlur = 5;
+	ctx.shadowColor = "rgba(0, 0, 0, 0.3)";
+	for (const coin of coins) {
+		ctx.beginPath();
+		ctx.arc(coin.x, coin.y, consts.COIN_RADIUS, 0, Math.PI * 2);
+		ctx.fill();
+	}
+	ctx.shadowBlur = 0;
 	
 	// Render all players
 	client.getPlayers().forEach(p => {
 		const fr = p.waitLag;
+		const dissolve = getDyingPlayerEffect(p);
+		
+		if (dissolve > 0) {
+			// Player is dying - apply dissolve effect
+			ctx.globalAlpha = Math.max(0, 1 - dissolve);
+		}
+		
 		if (fr < ANIMATE_FRAMES) {
 			p.render(ctx, fr / ANIMATE_FRAMES);
 		} else {
 			p.render(ctx);
 		}
+		
+		ctx.globalAlpha = 1;
 	});
+	
+	// Render death particles
+	renderDeathParticles(ctx);
 
 	// Reset transform for fixed UI
 	ctx.restore();
@@ -237,6 +312,9 @@ function paintDoubleBuff() {
 
 function update() {
 	updateSize();
+	
+	// Update death animation effects
+	updateDeathEffects();
 
 	// Smooth camera movement
 	for (let i = 0; i <= 1; i++) {
@@ -269,6 +347,7 @@ function update() {
 	if (user && portionsRolling[user.num]) {
 		zoom = 1 / (portionsRolling[user.num].lag * 10 + 1);
 		zoom = Math.max(0.3, Math.min(1, zoom));
+		client.updateZoom(zoom);
 	}
 	
 	if (user) centerOnPlayer(user, animateTo);
@@ -302,6 +381,265 @@ function Rolling(value, frames) {
 	}
 }
 
+// ===== DEATH ANIMATION SYSTEM =====
+
+class DeathParticle {
+	constructor(x, y, color, type = 'burst') {
+		this.x = x;
+		this.y = y;
+		this.color = color;
+		this.type = type;
+		
+		if (type === 'burst') {
+			// Explosive burst particles
+			const angle = Math.random() * Math.PI * 2;
+			const speed = 3 + Math.random() * 8;
+			this.vx = Math.cos(angle) * speed;
+			this.vy = Math.sin(angle) * speed;
+			this.size = 4 + Math.random() * 8;
+			this.life = 1;
+			this.decay = 0.015 + Math.random() * 0.02;
+			this.rotation = Math.random() * Math.PI * 2;
+			this.rotationSpeed = (Math.random() - 0.5) * 0.3;
+			this.gravity = 0.15;
+		} else if (type === 'spark') {
+			// Fast sparks
+			const angle = Math.random() * Math.PI * 2;
+			const speed = 8 + Math.random() * 12;
+			this.vx = Math.cos(angle) * speed;
+			this.vy = Math.sin(angle) * speed;
+			this.size = 2 + Math.random() * 3;
+			this.life = 1;
+			this.decay = 0.04 + Math.random() * 0.03;
+			this.trail = [];
+		} else if (type === 'ring') {
+			// Expanding ring
+			this.radius = 5;
+			this.maxRadius = 80 + Math.random() * 40;
+			this.expandSpeed = 4 + Math.random() * 2;
+			this.life = 1;
+			this.decay = 0.025;
+			this.lineWidth = 8;
+		} else if (type === 'shard') {
+			// Territory shards
+			const angle = Math.random() * Math.PI * 2;
+			const speed = 2 + Math.random() * 5;
+			this.vx = Math.cos(angle) * speed;
+			this.vy = Math.sin(angle) * speed;
+			this.points = this.generateShardShape();
+			this.life = 1;
+			this.decay = 0.012 + Math.random() * 0.01;
+			this.rotation = Math.random() * Math.PI * 2;
+			this.rotationSpeed = (Math.random() - 0.5) * 0.15;
+			this.gravity = 0.08;
+		}
+	}
+	
+	generateShardShape() {
+		const points = [];
+		const numPoints = 3 + Math.floor(Math.random() * 3);
+		const baseSize = 10 + Math.random() * 20;
+		for (let i = 0; i < numPoints; i++) {
+			const angle = (i / numPoints) * Math.PI * 2;
+			const dist = baseSize * (0.5 + Math.random() * 0.5);
+			points.push({
+				x: Math.cos(angle) * dist,
+				y: Math.sin(angle) * dist
+			});
+		}
+		return points;
+	}
+	
+	update() {
+		if (this.type === 'burst') {
+			this.x += this.vx;
+			this.y += this.vy;
+			this.vy += this.gravity;
+			this.vx *= 0.98;
+			this.rotation += this.rotationSpeed;
+			this.life -= this.decay;
+		} else if (this.type === 'spark') {
+			// Store trail position
+			this.trail.push({ x: this.x, y: this.y, life: this.life });
+			if (this.trail.length > 8) this.trail.shift();
+			
+			this.x += this.vx;
+			this.y += this.vy;
+			this.vx *= 0.92;
+			this.vy *= 0.92;
+			this.life -= this.decay;
+		} else if (this.type === 'ring') {
+			this.radius += this.expandSpeed;
+			this.lineWidth *= 0.96;
+			this.life -= this.decay;
+		} else if (this.type === 'shard') {
+			this.x += this.vx;
+			this.y += this.vy;
+			this.vy += this.gravity;
+			this.rotation += this.rotationSpeed;
+			this.life -= this.decay;
+		}
+		
+		return this.life > 0;
+	}
+	
+	render(ctx) {
+		const alpha = Math.max(0, this.life);
+		
+		if (this.type === 'burst') {
+			ctx.save();
+			ctx.translate(this.x, this.y);
+			ctx.rotate(this.rotation);
+			ctx.globalAlpha = alpha;
+			
+			// Draw as a small square/diamond
+			ctx.fillStyle = this.color;
+			ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+			
+			// Glow effect
+			ctx.shadowColor = this.color;
+			ctx.shadowBlur = 10 * alpha;
+			ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+			
+			ctx.restore();
+		} else if (this.type === 'spark') {
+			// Draw trail
+			ctx.beginPath();
+			ctx.moveTo(this.x, this.y);
+			for (let i = this.trail.length - 1; i >= 0; i--) {
+				const t = this.trail[i];
+				ctx.lineTo(t.x, t.y);
+			}
+			ctx.strokeStyle = this.color;
+			ctx.lineWidth = this.size * alpha;
+			ctx.globalAlpha = alpha * 0.6;
+			ctx.stroke();
+			
+			// Draw head
+			ctx.globalAlpha = alpha;
+			ctx.fillStyle = '#fff';
+			ctx.beginPath();
+			ctx.arc(this.x, this.y, this.size * 0.8, 0, Math.PI * 2);
+			ctx.fill();
+		} else if (this.type === 'ring') {
+			ctx.beginPath();
+			ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+			ctx.strokeStyle = this.color;
+			ctx.lineWidth = Math.max(1, this.lineWidth * alpha);
+			ctx.globalAlpha = alpha * 0.7;
+			ctx.stroke();
+		} else if (this.type === 'shard') {
+			ctx.save();
+			ctx.translate(this.x, this.y);
+			ctx.rotate(this.rotation);
+			ctx.globalAlpha = alpha * 0.8;
+			
+			ctx.beginPath();
+			ctx.moveTo(this.points[0].x, this.points[0].y);
+			for (let i = 1; i < this.points.length; i++) {
+				ctx.lineTo(this.points[i].x, this.points[i].y);
+			}
+			ctx.closePath();
+			ctx.fillStyle = this.color;
+			ctx.fill();
+			
+			ctx.restore();
+		}
+		
+		ctx.globalAlpha = 1;
+	}
+}
+
+function spawnDeathEffect(player, isUser = false) {
+	const x = player.x;
+	const y = player.y;
+	const color = player.baseColor.rgbString();
+	const lightColor = player.lightBaseColor.rgbString();
+	
+	// Burst particles (main explosion)
+	const burstCount = isUser ? 40 : 25;
+	for (let i = 0; i < burstCount; i++) {
+		deathParticles.push(new DeathParticle(x, y, color, 'burst'));
+	}
+	
+	// Sparks (fast moving)
+	const sparkCount = isUser ? 20 : 12;
+	for (let i = 0; i < sparkCount; i++) {
+		deathParticles.push(new DeathParticle(x, y, lightColor, 'spark'));
+	}
+	
+	// Expanding rings
+	deathParticles.push(new DeathParticle(x, y, color, 'ring'));
+	if (isUser) {
+		setTimeout(() => {
+			deathParticles.push(new DeathParticle(x, y, lightColor, 'ring'));
+		}, 100);
+	}
+	
+	// Territory shards (if player has territory)
+	if (player.territory && player.territory.length > 3) {
+		const shardCount = isUser ? 15 : 8;
+		for (let i = 0; i < shardCount; i++) {
+			// Spawn shards from random points along territory
+			const idx = Math.floor(Math.random() * player.territory.length);
+			const pt = player.territory[idx];
+			deathParticles.push(new DeathParticle(pt.x, pt.y, color, 'shard'));
+		}
+	}
+	
+	// Screen shake for user death
+	if (isUser) {
+		screenShake.intensity = 25;
+	}
+	
+	// Track dying player for dissolve effect
+	dyingPlayers.push({
+		player: player,
+		deathTime: Date.now(),
+		dissolveProgress: 0
+	});
+}
+
+function updateDeathEffects() {
+	// Update particles
+	for (let i = deathParticles.length - 1; i >= 0; i--) {
+		if (!deathParticles[i].update()) {
+			deathParticles.splice(i, 1);
+		}
+	}
+	
+	// Update screen shake
+	if (screenShake.intensity > 0.5) {
+		screenShake.x = (Math.random() - 0.5) * screenShake.intensity * 2;
+		screenShake.y = (Math.random() - 0.5) * screenShake.intensity * 2;
+		screenShake.intensity *= screenShake.decay;
+	} else {
+		screenShake.x = 0;
+		screenShake.y = 0;
+		screenShake.intensity = 0;
+	}
+	
+	// Update dying players
+	for (let i = dyingPlayers.length - 1; i >= 0; i--) {
+		const dp = dyingPlayers[i];
+		dp.dissolveProgress = Math.min(1, (Date.now() - dp.deathTime) / 1500);
+		if (dp.dissolveProgress >= 1) {
+			dyingPlayers.splice(i, 1);
+		}
+	}
+}
+
+function renderDeathParticles(ctx) {
+	for (const particle of deathParticles) {
+		particle.render(ctx);
+	}
+}
+
+function getDyingPlayerEffect(player) {
+	const dp = dyingPlayers.find(d => d.player === player);
+	return dp ? dp.dissolveProgress : 0;
+}
+
 export function addPlayer(player) {
 	playerPortion[player.num] = 0;
 	portionsRolling[player.num] = new Rolling(0, ANIMATE_FRAMES);
@@ -313,6 +651,10 @@ export function disconnect() {
 };
 
 export function removePlayer(player) {
+	// Trigger death animation
+	const isUser = user && player.num === user.num;
+	spawnDeathEffect(player, isUser);
+	
 	delete playerPortion[player.num];
 	delete portionsRolling[player.num];
 	delete barProportionRolling[player.num];

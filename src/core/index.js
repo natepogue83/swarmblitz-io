@@ -19,13 +19,44 @@ export function initPlayer(player) {
 	}
 }
 
+/**
+ * Updates player stamina based on whether they are in their own territory.
+ * @param {Player} player 
+ * @param {number} deltaSeconds 
+ */
+export function updateStamina(player, deltaSeconds) {
+	const inTerritory = player.isInOwnTerritory();
+	
+	if (inTerritory) {
+		// Regenerate stamina
+		player.stamina += consts.STAMINA_REGEN_INSIDE_PER_SEC * deltaSeconds;
+		if (player.stamina > consts.MAX_STAMINA) {
+			player.stamina = consts.MAX_STAMINA;
+		}
+		
+		// Recover from exhaustion
+		if (player.isExhausted && player.stamina >= consts.EXHAUSTED_RECOVER_THRESHOLD) {
+			player.isExhausted = false;
+		}
+	} else {
+		// Drain stamina
+		player.stamina -= consts.STAMINA_DRAIN_OUTSIDE_PER_SEC * deltaSeconds;
+		if (player.stamina <= 0) {
+			player.stamina = 0;
+			player.isExhausted = true;
+		}
+	}
+}
+
 export function updateFrame(players, dead, notifyKill) {
 	const adead = dead instanceof Array ? dead : [];
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
+	const deltaSeconds = 1 / 60; // Game runs at 60 FPS
 
 	// Move all players
 	const alive = players.filter(player => {
-		player.move();
+		updateStamina(player, deltaSeconds);
+		player.move(deltaSeconds);
 		if (player.dead) {
 			adead.push(player);
 		}
@@ -44,10 +75,17 @@ export function updateFrame(players, dead, notifyKill) {
 			if (i === j || removing[j] || players[j].dead) continue;
 			
 			// Check if player i hits player j's trail
-			if (players[j].trail.hitsTrail(players[i].x, players[i].y, 0)) {
-				kill(j, i);
-				removing[i] = true;
-				break;
+			// Snipped players cannot snip others
+			if (!players[i].isSnipped) {
+				const trailHit = players[j].trail.hitsTrail(players[i].x, players[i].y, 0);
+				if (trailHit) {
+					// Instead of immediate death, start the snip fuse
+					if (!players[j].isSnipped) {
+						players[j].startSnip({ x: players[i].x, y: players[i].y }, trailHit);
+					}
+					// MVP: ignore if victim already snipped.
+					break;
+				}
 			}
 
 			// Check if players collide with each other
@@ -84,8 +122,11 @@ export function updateFrame(players, dead, notifyKill) {
 		}
 		
 		// Check if player i hits their own trail (suicide)
-		if (!removing[i] && players[i].trail.hitsTrail(players[i].x, players[i].y, 10)) {
-			removing[i] = true;
+		const selfHit = players[i].trail.hitsTrail(players[i].x, players[i].y, 10);
+		if (!removing[i] && selfHit) {
+			if (!players[i].isSnipped) {
+				players[i].startSnip({ x: players[i].x, y: players[i].y }, selfHit);
+			}
 		}
 	}
 

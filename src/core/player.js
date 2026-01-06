@@ -83,10 +83,9 @@ class Trail {
 	}
 	
 	hitsTrail(x, y, skipDist) {
-		if (this.points.length < 2) return false;
+		if (this.points.length < 2) return null;
 		
 		const checkPoint = { x, y };
-		const skipDistSq = skipDist * skipDist;
 		
 		// Check if point is near any trail segment (excluding recent points)
 		for (let i = 0; i < this.points.length - 1; i++) {
@@ -96,28 +95,94 @@ class Trail {
 			// Skip recent segments for self-collision
 			if (skipDist > 0 && i >= this.points.length - 3) continue;
 			
-			const dist = pointToSegmentDistance(checkPoint, p1, p2);
-			if (dist < PLAYER_RADIUS) {
-				return true;
+			const hitInfo = pointToSegmentHit(checkPoint, p1, p2);
+			if (hitInfo.distance < PLAYER_RADIUS) {
+				return {
+					index: i,
+					point: hitInfo.point
+				};
 			}
 		}
-		return false;
+		return null;
 	}
 	
 	render(ctx) {
 		if (this.points.length < 2) return;
 		
-		ctx.strokeStyle = this.player.tailColor.rgbString();
-		ctx.lineWidth = PLAYER_RADIUS;
-		ctx.lineCap = "round";
-		ctx.lineJoin = "round";
+		const player = this.player;
 		
-		ctx.beginPath();
-		ctx.moveTo(this.points[0].x, this.points[0].y);
-		for (let i = 1; i < this.points.length; i++) {
-			ctx.lineTo(this.points[i].x, this.points[i].y);
+		// If snipped, render the fuse effect
+		if (player.isSnipped && player.snipFusePosition) {
+			const fusePos = player.snipFusePosition;
+			
+			// Draw the "safe" portion (from fuse to player) - this is the unburned trail
+			// This portion starts at the fuse position and continues through the rest of the trail points
+			ctx.strokeStyle = player.tailColor.rgbString();
+			ctx.lineWidth = PLAYER_RADIUS;
+			ctx.lineCap = "round";
+			ctx.lineJoin = "round";
+			
+			ctx.beginPath();
+			ctx.moveTo(fusePos.x, fusePos.y);
+			
+			// Draw from fuse to the end of the current segment it's on
+			if (fusePos.segmentIndex + 1 < this.points.length) {
+				for (let i = fusePos.segmentIndex + 1; i < this.points.length; i++) {
+					ctx.lineTo(this.points[i].x, this.points[i].y);
+				}
+			}
+			// Also draw to the player's current position
+			ctx.lineTo(player.x, player.y);
+			ctx.stroke();
+			
+			// Draw the fuse head - glowing spark effect
+			const time = Date.now() / 100;
+			const pulse = 0.7 + 0.3 * Math.sin(time * 3);
+			const sparkSize = PLAYER_RADIUS * 1.2 * pulse;
+			
+			// Outer glow
+			const gradient = ctx.createRadialGradient(fusePos.x, fusePos.y, 0, fusePos.x, fusePos.y, sparkSize * 2);
+			gradient.addColorStop(0, 'rgba(255, 200, 50, 0.9)');
+			gradient.addColorStop(0.3, 'rgba(255, 100, 0, 0.6)');
+			gradient.addColorStop(0.6, 'rgba(255, 50, 0, 0.3)');
+			gradient.addColorStop(1, 'rgba(255, 0, 0, 0)');
+			
+			ctx.fillStyle = gradient;
+			ctx.beginPath();
+			ctx.arc(fusePos.x, fusePos.y, sparkSize * 2, 0, Math.PI * 2);
+			ctx.fill();
+			
+			// Inner bright core
+			ctx.fillStyle = `rgba(255, 255, 200, ${pulse})`;
+			ctx.beginPath();
+			ctx.arc(fusePos.x, fusePos.y, sparkSize * 0.5, 0, Math.PI * 2);
+			ctx.fill();
+			
+			// Sparks
+			ctx.fillStyle = 'rgba(255, 200, 100, 0.8)';
+			for (let i = 0; i < 5; i++) {
+				const angle = time * 2 + i * (Math.PI * 2 / 5);
+				const dist = sparkSize * (0.8 + 0.4 * Math.sin(time * 5 + i));
+				const sx = fusePos.x + Math.cos(angle) * dist;
+				const sy = fusePos.y + Math.sin(angle) * dist;
+				ctx.beginPath();
+				ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+				ctx.fill();
+			}
+		} else {
+			// Normal trail rendering
+			ctx.strokeStyle = player.tailColor.rgbString();
+			ctx.lineWidth = PLAYER_RADIUS;
+			ctx.lineCap = "round";
+			ctx.lineJoin = "round";
+			
+			ctx.beginPath();
+			ctx.moveTo(this.points[0].x, this.points[0].y);
+			for (let i = 1; i < this.points.length; i++) {
+				ctx.lineTo(this.points[i].x, this.points[i].y);
+			}
+			ctx.stroke();
 		}
-		ctx.stroke();
 	}
 	
 	serialData() {
@@ -125,9 +190,12 @@ class Trail {
 	}
 }
 
-function pointToSegmentDistance(p, v, w) {
+function pointToSegmentHit(p, v, w) {
 	const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
-	if (l2 === 0) return Math.sqrt((p.x - v.x) ** 2 + (p.y - v.y) ** 2);
+	if (l2 === 0) {
+		const d = Math.sqrt((p.x - v.x) ** 2 + (p.y - v.y) ** 2);
+		return { distance: d, point: { x: v.x, y: v.y } };
+	}
 	
 	let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
 	t = Math.max(0, Math.min(1, t));
@@ -135,7 +203,8 @@ function pointToSegmentDistance(p, v, w) {
 	const projX = v.x + t * (w.x - v.x);
 	const projY = v.y + t * (w.y - v.y);
 	
-	return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+	const d = Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+	return { distance: d, point: { x: projX, y: projY } };
 }
 
 export default function Player(sdata) {
@@ -157,6 +226,30 @@ export default function Player(sdata) {
 	this.name = sdata.name || "Player " + (this.num + 1);
 	this.waitLag = sdata.waitLag || 0;
 	this.dead = false;
+
+	// Economy system
+	this.unbankedCoins = sdata.unbankedCoins || 0;
+	this.bankedCoins = sdata.bankedCoins || 0;
+	this._pendingTerritoryAreaGained = 0; // Accumulates area in px^2
+	this._territoryCoinCarry = 0; // Carryover for fractional coin conversion
+
+	// Stamina system
+	this.maxStamina = sdata.maxStamina ?? consts.MAX_STAMINA;
+	this.stamina = sdata.stamina ?? this.maxStamina;
+	this.isExhausted = sdata.isExhausted ?? false;
+	
+	// Snip system state
+	this.isSnipped = sdata.isSnipped ?? false;
+	this.snipTimeRemaining = sdata.snipTimeRemaining ?? 0;
+	this.snipMaxTime = sdata.snipMaxTime ?? 0;
+	this.snipStartPoint = sdata.snipStartPoint ?? null;
+	this.snipProgressDist = sdata.snipProgressDist ?? 0;
+	this.snipFuseSpeed = sdata.snipFuseSpeed ?? (this.speed * consts.SNIP_FUSE_SPEED_MULT);
+	this.snipTrailIndex = sdata.snipTrailIndex ?? -1;
+	this.snipFusePosition = sdata.snipFusePosition ?? null;
+	this.snipTotalTrailLength = sdata.snipTotalTrailLength ?? 0;
+	// Exponential fuse acceleration state
+	this.snipElapsed = sdata.snipElapsed ?? 0; // seconds since snip started
 	
 	// Territory and trail
 	this.territory = sdata.territory || [];
@@ -181,10 +274,18 @@ export default function Player(sdata) {
 	this.mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 }
 
-Player.prototype.move = function() {
+Player.prototype.move = function(deltaSeconds) {
+	deltaSeconds = deltaSeconds || 1/60;
+	
 	if (this.waitLag < consts.NEW_PLAYER_LAG) {
 		this.waitLag++;
 		return;
+	}
+	
+	// Handle snip logic
+	if (this.isSnipped) {
+		this.updateSnip(deltaSeconds);
+		if (this.dead) return;
 	}
 	
 	// Smoothly interpolate angle towards target
@@ -199,9 +300,12 @@ Player.prototype.move = function() {
 		this.angle += Math.sign(angleDiff) * turnSpeed;
 	}
 	
+	// Apply stamina-based speed modifier
+	const speedMultiplier = this.isExhausted ? consts.EXHAUSTED_SPEED_MULT : 1.0;
+
 	// Move in current direction
-	this.x += Math.cos(this.angle) * this.speed;
-	this.y += Math.sin(this.angle) * this.speed;
+	this.x += Math.cos(this.angle) * this.speed * speedMultiplier;
+	this.y += Math.sin(this.angle) * this.speed * speedMultiplier;
 	
 	// Check bounds
 	if (this.x < PLAYER_RADIUS || this.x > this.mapSize - PLAYER_RADIUS ||
@@ -212,6 +316,16 @@ Player.prototype.move = function() {
 	
 	// Trail logic
 	const inTerritory = this.isInOwnTerritory();
+	
+	// If snipped, don't do normal trail/capture logic - updateSnip handles safety check
+	if (this.isSnipped) {
+		// Still add trail points while snipped (player is still moving)
+		if (!inTerritory) {
+			this.trail.addPoint(this.x, this.y);
+		}
+		// Safety check is handled in updateSnip
+		return;
+	}
 	
 	if (inTerritory && this.trail.points.length > 2) {
 		// Returned to territory - capture area
@@ -229,6 +343,9 @@ Player.prototype.isInOwnTerritory = function() {
 
 Player.prototype.captureTerritory = function() {
 	if (this.trail.points.length < 3) return;
+	
+	// Cannot capture if snipped
+	if (this.isSnipped) return;
 	
 	// Find where the trail intersects the territory boundary
 	const trail = this.trail.points;
@@ -294,36 +411,111 @@ Player.prototype.captureTerritory = function() {
 	
 	if (entryIdx === -1 || exitIdx === -1) return;
 	
-	// Build new territory by combining trail with territory segment
-	const newTerritory = [];
+	// Build new territory by combining trail with a territory boundary segment.
+	// There are TWO possible boundary paths between exit and entry; picking the wrong one
+	// can shrink/overwrite territory. We build both candidates and keep the one that
+	// preserves/increases area.
+	const n = territory.length;
+	const prevArea = polygonAreaAbs(territory);
+	const EPS_AREA = 1e-2;
 	
-	// Add entry point
-	if (entryPoint) newTerritory.push({ x: entryPoint.x, y: entryPoint.y });
-	
-	// Add trail points
-	for (const p of trail) {
-		newTerritory.push({ x: p.x, y: p.y });
+	function clonePoint(p) {
+		return { x: p.x, y: p.y };
 	}
 	
-	// Add exit point
-	if (exitPoint) newTerritory.push({ x: exitPoint.x, y: exitPoint.y });
-	
-	// Add territory segment from exit back to entry
-	if (exitIdx !== entryIdx) {
-		let i = (exitIdx + 1) % territory.length;
-		const visited = new Set();
-		while (i !== entryIdx && !visited.has(i)) {
-			visited.add(i);
-			newTerritory.push({ x: territory[i].x, y: territory[i].y });
-			i = (i + 1) % territory.length;
+	function dedupeConsecutive(points) {
+		if (!points || points.length === 0) return [];
+		const out = [points[0]];
+		for (let i = 1; i < points.length; i++) {
+			const a = out[out.length - 1];
+			const b = points[i];
+			if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6) continue;
+			out.push(b);
 		}
+		// Drop last point if it equals first (we implicitly close polygons elsewhere)
+		if (out.length > 2) {
+			const a = out[0];
+			const b = out[out.length - 1];
+			if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6) out.pop();
+		}
+		return out;
 	}
 	
-	// Validate and set new territory
-	if (newTerritory.length >= 3) {
-		this.territory = newTerritory;
+	function collectBoundaryForward(fromSegIdx, toSegIdx) {
+		// Traverse vertices from (fromSegIdx+1) up to and including toSegIdx.
+		const pts = [];
+		let i = (fromSegIdx + 1) % n;
+		const visited = new Set();
+		while (!visited.has(i)) {
+			visited.add(i);
+			pts.push(clonePoint(territory[i]));
+			if (i === toSegIdx) break;
+			i = (i + 1) % n;
+		}
+		return pts;
+	}
+	
+	function collectBoundaryReverse(fromSegIdx, toSegIdx) {
+		// Traverse vertices from fromSegIdx down to and including (toSegIdx+1).
+		const pts = [];
+		let i = fromSegIdx;
+		const stop = (toSegIdx + 1) % n;
+		const visited = new Set();
+		while (!visited.has(i)) {
+			visited.add(i);
+			pts.push(clonePoint(territory[i]));
+			if (i === stop) break;
+			i = (i - 1 + n) % n;
+		}
+		return pts;
+	}
+	
+	function buildCandidate(boundaryPts) {
+		const poly = [];
+		if (entryPoint) poly.push(clonePoint(entryPoint));
+		for (const p of trail) poly.push(clonePoint(p));
+		if (exitPoint) poly.push(clonePoint(exitPoint));
+		for (const p of boundaryPts) poly.push(clonePoint(p));
+		return dedupeConsecutive(poly);
+	}
+	
+	const candForward = buildCandidate(collectBoundaryForward(exitIdx, entryIdx));
+	const candReverse = buildCandidate(collectBoundaryReverse(exitIdx, entryIdx));
+	
+	const areaF = polygonAreaAbs(candForward);
+	const areaR = polygonAreaAbs(candReverse);
+	
+	// Prefer the candidate that grows territory; never allow a meaningful shrink.
+	let chosen = null;
+	if (areaF >= areaR) chosen = candForward;
+	else chosen = candReverse;
+	
+	const chosenArea = polygonAreaAbs(chosen);
+	if (chosen && chosen.length >= 3 && chosenArea + EPS_AREA >= prevArea) {
+		const areaDelta = Math.max(0, chosenArea - prevArea);
+		this.territory = chosen;
+		this._pendingTerritoryAreaGained += areaDelta;
+	} else {
+		// Fallback: choose the bigger one only if it doesn't shrink too much.
+		const best = areaF >= areaR ? candForward : candReverse;
+		const bestArea = Math.max(areaF, areaR);
+		if (best && best.length >= 3 && bestArea + EPS_AREA >= prevArea) {
+			const areaDelta = Math.max(0, bestArea - prevArea);
+			this.territory = best;
+			this._pendingTerritoryAreaGained += areaDelta;
+		}
+		// Otherwise keep existing territory (better than nuking it).
 	}
 };
+
+function polygonAreaAbs(polygon) {
+	if (!polygon || polygon.length < 3) return 0;
+	let area = 0;
+	for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+		area += (polygon[j].x + polygon[i].x) * (polygon[j].y - polygon[i].y);
+	}
+	return Math.abs(area / 2);
+}
 
 function getLineIntersection(p1, p2, p3, p4) {
 	const d = (p1.x - p2.x) * (p3.y - p4.y) - (p1.y - p2.y) * (p3.x - p4.x);
@@ -341,6 +533,218 @@ function getLineIntersection(p1, p2, p3, p4) {
 	return null;
 }
 
+Player.prototype.startSnip = function(collisionPoint, hitInfo) {
+	if (this.isSnipped) return; // Ignore if already snipped (per MVP recommendation)
+	
+	this.isSnipped = true;
+	this.snipStartPoint = { x: collisionPoint.x, y: collisionPoint.y };
+	this.snipTrailIndex = hitInfo.index;
+	this.snipProgressDist = 0;
+	this.snipElapsed = 0;
+	
+	// Calculate total trail length from snip point to player
+	let totalTrailLength = 0;
+	
+	// Distance from snip point to next trail point
+	if (hitInfo.index + 1 < this.trail.points.length) {
+		const nextPoint = this.trail.points[hitInfo.index + 1];
+		totalTrailLength += Math.sqrt(
+			(collisionPoint.x - nextPoint.x) ** 2 + 
+			(collisionPoint.y - nextPoint.y) ** 2
+		);
+	}
+	
+	// Distance along remaining trail segments
+	for (let i = hitInfo.index + 1; i < this.trail.points.length - 1; i++) {
+		const p1 = this.trail.points[i];
+		const p2 = this.trail.points[i + 1];
+		totalTrailLength += Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+	}
+	
+	// Distance from last trail point to player
+	if (this.trail.points.length > 0) {
+		const lastPoint = this.trail.points[this.trail.points.length - 1];
+		totalTrailLength += Math.sqrt((lastPoint.x - this.x) ** 2 + (lastPoint.y - this.y) ** 2);
+	}
+	
+	this.snipTotalTrailLength = totalTrailLength;
+	
+	// Initial displayed timer (exactness comes from updateSnip recalculation).
+	// We keep this consistent with our exponential model at t=0:
+	// remainingTime = (1/k) * ln(1 + remainingDist * k / v0)
+	const speedMultiplier = this.isExhausted ? consts.EXHAUSTED_SPEED_MULT : 1.0;
+	const currentSpeedPerFrame = this.speed * speedMultiplier;
+	const fps = 60;
+	const v0 = currentSpeedPerFrame * consts.SNIP_FUSE_SPEED_MULT * fps;
+	const k = consts.SNIP_EXP_ACCEL_PER_SEC;
+	const initialRemaining = k > 0 ? (Math.log(1 + (totalTrailLength * k) / v0) / k) : (totalTrailLength / v0);
+	this.snipMaxTime = initialRemaining;
+	this.snipTimeRemaining = initialRemaining;
+	
+	// Initialize fuse position
+	this.snipFusePosition = {
+		x: collisionPoint.x,
+		y: collisionPoint.y,
+		segmentIndex: hitInfo.index
+	};
+};
+
+Player.prototype.updateSnip = function(deltaSeconds) {
+	if (!this.isSnipped || this.dead) return;
+	
+	// Safety check for trail and start point
+	if (!this.trail || !this.trail.points || this.trail.points.length === 0 || !this.snipStartPoint) {
+		this.die();
+		return;
+	}
+	
+	// Exponential acceleration: v(t) = v0 * exp(k * t)
+	// We recompute v0 from the player's current effective speed so the fuse is always >= 1.5x faster,
+	// even if debuffs/buffs change mid-snip.
+	this.snipElapsed += deltaSeconds;
+	const speedMultiplier = this.isExhausted ? consts.EXHAUSTED_SPEED_MULT : 1.0;
+	const currentSpeedPerFrame = this.speed * speedMultiplier;
+	const fps = deltaSeconds > 0 ? (1 / deltaSeconds) : 60;
+	const v0 = currentSpeedPerFrame * consts.SNIP_FUSE_SPEED_MULT * fps;
+	const k = consts.SNIP_EXP_ACCEL_PER_SEC;
+	
+	// Grace period: fuse doesn't move during grace period
+	const gracePeriod = consts.SNIP_GRACE_PERIOD ?? 0.35;
+	const effectiveElapsed = Math.max(0, this.snipElapsed - gracePeriod);
+	
+	const accelFactor = k > 0 ? Math.exp(k * effectiveElapsed) : 1;
+	const desiredFuseSpeedPerSec = v0 * accelFactor;
+	// Cap fuse speed relative to player's current effective speed (generous cap)
+	const fuseCapPerSec = currentSpeedPerFrame * (consts.SNIP_FUSE_MAX_SPEED_MULT ?? 6.0) * fps;
+	const fuseSpeedPerSec = Math.min(desiredFuseSpeedPerSec, fuseCapPerSec);
+	
+	// Only advance fuse after grace period
+	if (this.snipElapsed > gracePeriod) {
+		// Advance fuse along the trail (units/sec * sec = units)
+		this.snipProgressDist += fuseSpeedPerSec * deltaSeconds;
+	}
+	
+	// Calculate current total trail length from start point to player
+	let currentTotalLength = 0;
+	let currentIdx = this.snipTrailIndex;
+	
+	if (currentIdx + 1 < this.trail.points.length) {
+		const nextPoint = this.trail.points[currentIdx + 1];
+		currentTotalLength += Math.sqrt(
+			(this.snipStartPoint.x - nextPoint.x) ** 2 + 
+			(this.snipStartPoint.y - nextPoint.y) ** 2
+		);
+		
+		for (let i = currentIdx + 1; i < this.trail.points.length - 1; i++) {
+			const p1 = this.trail.points[i];
+			const p2 = this.trail.points[i + 1];
+			currentTotalLength += Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+		}
+	}
+	
+	const lastPoint = this.trail.points[this.trail.points.length - 1];
+	const distToPlayer = Math.sqrt((lastPoint.x - this.x) ** 2 + (lastPoint.y - this.y) ** 2);
+	currentTotalLength += distToPlayer;
+	this.snipTotalTrailLength = currentTotalLength;
+
+	// Calculate fuse position and remaining distance
+	let remainingTrailDist = 0;
+	let currentSegment = this.snipTrailIndex;
+	let fuseX = this.snipStartPoint.x;
+	let fuseY = this.snipStartPoint.y;
+	let remainingDist = this.snipProgressDist;
+	
+	// Start from snip point and walk along trail to find current fuse position
+	if (currentSegment + 1 < this.trail.points.length) {
+		const nextPoint = this.trail.points[currentSegment + 1];
+		const segDist = Math.sqrt(
+			(this.snipStartPoint.x - nextPoint.x) ** 2 + 
+			(this.snipStartPoint.y - nextPoint.y) ** 2
+		);
+		
+		if (remainingDist < segDist) {
+			const t = remainingDist / segDist;
+			fuseX = this.snipStartPoint.x + t * (nextPoint.x - this.snipStartPoint.x);
+			fuseY = this.snipStartPoint.y + t * (nextPoint.y - this.snipStartPoint.y);
+		} else {
+			remainingDist -= segDist;
+			currentSegment++;
+			
+			while (currentSegment + 1 < this.trail.points.length) {
+				const p1 = this.trail.points[currentSegment];
+				const p2 = this.trail.points[currentSegment + 1];
+				const segLen = Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+				
+				if (remainingDist < segLen) {
+					const t = remainingDist / segLen;
+					fuseX = p1.x + t * (p2.x - p1.x);
+					fuseY = p1.y + t * (p2.y - p1.y);
+					break;
+				}
+				remainingDist -= segLen;
+				currentSegment++;
+			}
+			
+			if (currentSegment >= this.trail.points.length - 1) {
+				const lp = this.trail.points[this.trail.points.length - 1];
+				fuseX = lp.x;
+				fuseY = lp.y;
+			}
+		}
+	}
+	
+	remainingTrailDist = Math.max(0, currentTotalLength - this.snipProgressDist);
+
+	// Check if fuse caught the player
+	if (this.snipProgressDist >= currentTotalLength) {
+		this.die();
+		return;
+	}
+
+	// Update fuse position for rendering
+	this.snipFusePosition = {
+		x: fuseX,
+		y: fuseY,
+		segmentIndex: currentSegment
+	};
+	
+	// Update timer based on remaining distance.
+	// - If we're capped, use linear remainingDist / capSpeed (since acceleration no longer applies).
+	// - Otherwise use exponential model from current t.
+	// - Add remaining grace period if still in it.
+	const remainingGrace = Math.max(0, gracePeriod - this.snipElapsed);
+	const isCapped = desiredFuseSpeedPerSec >= fuseCapPerSec;
+	let chaseTime;
+	if (isCapped) {
+		chaseTime = remainingTrailDist / fuseCapPerSec;
+	} else if (k > 0) {
+		const denom = v0 * accelFactor;
+		chaseTime = Math.log(1 + (remainingTrailDist * k) / denom) / k;
+	} else {
+		chaseTime = remainingTrailDist / v0;
+	}
+	this.snipTimeRemaining = remainingGrace + chaseTime;
+	
+	// Check if timer expired or fuse caught player (redundant but safe)
+	if (this.snipTimeRemaining <= 0) {
+		this.die();
+		return;
+	}
+	
+	// Check if reached safety
+	if (this.isInOwnTerritory()) {
+		this.clearSnip();
+	}
+};
+
+Player.prototype.clearSnip = function() {
+	this.isSnipped = false;
+	this.snipTimeRemaining = 0;
+	this.snipFusePosition = null;
+	this.snipElapsed = 0;
+	this.trail.clear();
+};
+
 Player.prototype.die = function() {
 	this.dead = true;
 };
@@ -348,9 +752,17 @@ Player.prototype.die = function() {
 Player.prototype.render = function(ctx, fade) {
 	fade = fade || 1;
 	
+	// Snipped visual effect: flashing ghost appearance
+	let snipAlpha = 1;
+	if (this.isSnipped) {
+		const time = Date.now() / 100;
+		// Fast flashing effect (0.3 to 0.8 alpha)
+		snipAlpha = 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(time * 4));
+	}
+	
 	// Render territory
 	if (this.territory && this.territory.length >= 3) {
-		ctx.fillStyle = this.baseColor.deriveAlpha(0.4 * fade).rgbString();
+		ctx.fillStyle = this.baseColor.deriveAlpha(0.4 * fade * snipAlpha).rgbString();
 		ctx.beginPath();
 		ctx.moveTo(this.territory[0].x, this.territory[0].y);
 		for (let i = 1; i < this.territory.length; i++) {
@@ -360,7 +772,7 @@ Player.prototype.render = function(ctx, fade) {
 		ctx.fill();
 		
 		// Territory border
-		ctx.strokeStyle = this.baseColor.deriveAlpha(0.7 * fade).rgbString();
+		ctx.strokeStyle = this.baseColor.deriveAlpha(0.7 * fade * snipAlpha).rgbString();
 		ctx.lineWidth = 3;
 		ctx.stroke();
 	}
@@ -369,30 +781,75 @@ Player.prototype.render = function(ctx, fade) {
 	this.trail.render(ctx);
 	
 	// Render player shadow
-	ctx.fillStyle = this.shadowColor.deriveAlpha(fade).rgbString();
+	ctx.fillStyle = this.shadowColor.deriveAlpha(fade * snipAlpha).rgbString();
 	ctx.beginPath();
 	ctx.arc(this.x + 2, this.y + 4, PLAYER_RADIUS, 0, Math.PI * 2);
 	ctx.fill();
 	
-	// Render player
-	ctx.fillStyle = this.baseColor.deriveAlpha(fade).rgbString();
+	// Render player body
+	if (this.isSnipped) {
+		// Ghost effect: red-tinted, semi-transparent
+		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 100 * 4);
+		ctx.fillStyle = `rgba(255, ${Math.floor(100 * pulse)}, ${Math.floor(100 * pulse)}, ${fade * snipAlpha})`;
+	} else {
+		ctx.fillStyle = this.baseColor.deriveAlpha(fade).rgbString();
+	}
 	ctx.beginPath();
 	ctx.arc(this.x, this.y, PLAYER_RADIUS, 0, Math.PI * 2);
 	ctx.fill();
 	
+	// Snipped glow ring
+	if (this.isSnipped) {
+		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 100 * 6);
+		ctx.strokeStyle = `rgba(255, 50, 50, ${0.5 + 0.5 * pulse})`;
+		ctx.lineWidth = 3 + 2 * pulse;
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, PLAYER_RADIUS + 4 + 2 * pulse, 0, Math.PI * 2);
+		ctx.stroke();
+	}
+	
 	// Direction indicator
 	const indicatorX = this.x + Math.cos(this.angle) * PLAYER_RADIUS * 0.6;
 	const indicatorY = this.y + Math.sin(this.angle) * PLAYER_RADIUS * 0.6;
-	ctx.fillStyle = this.lightBaseColor.deriveAlpha(fade).rgbString();
+	ctx.fillStyle = this.lightBaseColor.deriveAlpha(fade * snipAlpha).rgbString();
 	ctx.beginPath();
 	ctx.arc(indicatorX, indicatorY, PLAYER_RADIUS * 0.3, 0, Math.PI * 2);
 	ctx.fill();
 	
-	// Render name
+	// Render name (with "SNIPPED!" indicator)
 	ctx.fillStyle = this.shadowColor.deriveAlpha(fade).rgbString();
 	ctx.textAlign = "center";
 	ctx.font = "bold 14px Arial";
+	if (this.isSnipped) {
+		ctx.fillStyle = "rgba(255, 50, 50, 1)";
+		ctx.fillText("SNIPPED!", this.x, this.y - PLAYER_RADIUS - 22);
+		ctx.fillStyle = this.shadowColor.deriveAlpha(fade * snipAlpha).rgbString();
+	}
 	ctx.fillText(this.name, this.x, this.y - PLAYER_RADIUS - 8);
+
+	// Render tiny stamina bar under player
+	if (this.stamina !== undefined) {
+		const barWidth = PLAYER_RADIUS * 2;
+		const barHeight = 4;
+		const barX = this.x - barWidth / 2;
+		const barY = this.y + PLAYER_RADIUS + 8;
+		
+		// Background
+		ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+		ctx.fillRect(barX, barY, barWidth, barHeight);
+		
+		// Foreground
+		const staminaRatio = this.stamina / this.maxStamina;
+		if (this.isExhausted) {
+			ctx.fillStyle = `rgba(255, 68, 68, ${fade})`;
+		} else if (staminaRatio < 0.3) {
+			ctx.fillStyle = `rgba(255, 204, 0, ${fade})`;
+		} else {
+			ctx.fillStyle = `rgba(68, 255, 68, ${fade})`;
+		}
+		
+		ctx.fillRect(barX, barY, barWidth * staminaRatio, barHeight);
+	}
 };
 
 Player.prototype.serialData = function() {
@@ -406,7 +863,21 @@ Player.prototype.serialData = function() {
 		targetAngle: this.targetAngle,
 		territory: this.territory,
 		trail: this.trail.serialData(),
-		waitLag: this.waitLag
+		waitLag: this.waitLag,
+		unbankedCoins: this.unbankedCoins,
+		bankedCoins: this.bankedCoins,
+		stamina: this.stamina,
+		maxStamina: this.maxStamina,
+		isExhausted: this.isExhausted,
+		isSnipped: this.isSnipped,
+		snipTimeRemaining: this.snipTimeRemaining,
+		snipMaxTime: this.snipMaxTime,
+		snipStartPoint: this.snipStartPoint,
+		snipProgressDist: this.snipProgressDist,
+		snipTrailIndex: this.snipTrailIndex,
+		snipFusePosition: this.snipFusePosition,
+		snipTotalTrailLength: this.snipTotalTrailLength,
+		snipElapsed: this.snipElapsed
 	};
 };
 

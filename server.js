@@ -9,7 +9,9 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-config.dev ? exec("npm run build-dev") : exec("npm run build");
+if (!process.env.VITE) {
+	config.dev ? exec("npm run build-dev") : exec("npm run build");
+}
 
 const port = process.env.PORT || config.port;
 
@@ -47,8 +49,32 @@ setInterval(() => {
 	game.tickFrame();
 }, 1000 / 60);
 
-for (let i = 0; i < parseInt(config.bots); i++) {
-	fork(path.join(__dirname, "paper-io-bot.js"), [`ws://localhost:${port}`], {
+const botProcesses = [];
+
+function spawnBot() {
+	const botProcess = fork(path.join(__dirname, "paper-io-bot.js"), [`http://localhost:${port}`], {
 		stdio: "inherit"
 	});
+	
+	botProcess.on("exit", (code, signal) => {
+		// Remove from array
+		const index = botProcesses.indexOf(botProcess);
+		if (index > -1) {
+			botProcesses.splice(index, 1);
+		}
+		
+		// Respawn bot after a short delay
+		setTimeout(() => {
+			if (botProcesses.length < parseInt(config.bots)) {
+				spawnBot();
+			}
+		}, 2000);
+	});
+	
+	botProcesses.push(botProcess);
+}
+
+// Spawn initial bots
+for (let i = 0; i < parseInt(config.bots); i++) {
+	setTimeout(() => spawnBot(), i * 500); // Stagger bot spawns
 }

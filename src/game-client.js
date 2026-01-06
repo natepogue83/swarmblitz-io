@@ -4,6 +4,7 @@ import { consts } from "../config.js";
 let running = false;
 let user, socket, frame;
 let players, allPlayers;
+let coinsById = new Map();
 let kills;
 let timeout = undefined;
 let dirty = false;
@@ -13,6 +14,9 @@ let frameCache = [];
 let _allowAnimation = true;
 let renderer;
 let mouseX = 0, mouseY = 0;
+let lastScreenX = 0, lastScreenY = 0;
+let lastZoom = 1;
+let mouseSet = false;
 let viewOffset = { x: 0, y: 0 };
 
 let requestAnimationFrame;
@@ -51,6 +55,11 @@ function connectGame(io, url, name, callback, flag) {
 		frame = data.frame;
 		reset();
 		
+		// Load coins
+		if (data.coins) {
+			data.coins.forEach(c => coinsById.set(c.id, c));
+		}
+
 		// Load players
 		data.players.forEach(p => {
 			const pl = new Player(p);
@@ -111,17 +120,18 @@ function connectGame(io, url, name, callback, flag) {
 function updateMousePosition(clientX, clientY, canvasRect, canvasWidth, canvasHeight, zoom) {
 	if (!user) return;
 	
-	// Convert screen position to world position
-	const screenX = clientX - canvasRect.left;
+	// Store screen position and zoom for continuous updates
+	lastScreenX = clientX - canvasRect.left;
 	const screenY = clientY - canvasRect.top;
 	
-	// Account for UI bar at top
 	const BAR_HEIGHT = 45;
-	const gameScreenY = screenY - BAR_HEIGHT;
+	lastScreenY = screenY - BAR_HEIGHT;
+	lastZoom = zoom;
+	mouseSet = true;
 	
 	// Convert to world coordinates
-	mouseX = (screenX / zoom) + viewOffset.x;
-	mouseY = (gameScreenY / zoom) + viewOffset.y;
+	mouseX = (lastScreenX / lastZoom) + viewOffset.x;
+	mouseY = (lastScreenY / lastZoom) + viewOffset.y;
 }
 
 function setViewOffset(x, y) {
@@ -129,11 +139,28 @@ function setViewOffset(x, y) {
 	viewOffset.y = y;
 }
 
+function updateZoom(zoom) {
+	lastZoom = zoom;
+}
+
 function sendTargetAngle() {
-	if (!user || user.dead || !socket) return;
+	if (!user || user.dead || !socket || !mouseSet) return;
 	
+	// Update world mouse position based on last screen position and current view offset.
+	// This ensures the target world point moves with the camera if the mouse is stationary,
+	// effectively making the mouse a direction vector relative to the screen center.
+	mouseX = (lastScreenX / lastZoom) + viewOffset.x;
+	mouseY = (lastScreenY / lastZoom) + viewOffset.y;
+
 	// Calculate angle from player to mouse position
-	const targetAngle = Math.atan2(mouseY - user.y, mouseX - user.x);
+	const dx = mouseX - user.x;
+	const dy = mouseY - user.y;
+	
+	// If mouse is too close to player center, don't update angle to avoid "shaking" or tight circles.
+	// 10 pixels is a reasonable threshold.
+	if (dx * dx + dy * dy < 100) return;
+	
+	const targetAngle = Math.atan2(dy, dx);
 	
 	socket.emit("frame", {
 		frame: frame,
@@ -157,6 +184,10 @@ function getOthers() {
 		if (p !== user) ret.push(p);
 	}
 	return ret;
+}
+
+function getCoins() {
+	return Array.from(coinsById.values());
 }
 
 function disconnect() {
@@ -196,6 +227,23 @@ function processFrame(data) {
 	
 	frame++;
 	
+	// Handle economy deltas
+	if (data.coinSpawns) {
+		data.coinSpawns.forEach(c => coinsById.set(c.id, c));
+	}
+	if (data.coinRemovals) {
+		data.coinRemovals.forEach(id => coinsById.delete(id));
+	}
+	if (data.coinTotals) {
+		data.coinTotals.forEach(update => {
+			const p = allPlayers[update.num];
+			if (p) {
+				p.unbankedCoins = update.unbankedCoins;
+				p.bankedCoins = update.bankedCoins;
+			}
+		});
+	}
+
 	if (data.newPlayers) {
 		data.newPlayers.forEach(p => {
 			if (user && p.num === user.num) return;
@@ -261,6 +309,7 @@ function reset() {
 	user = null;
 	players = [];
 	allPlayers = [];
+	coinsById.clear();
 	kills = 0;
 	invokeRenderer("reset");
 }
@@ -303,6 +352,7 @@ export {
 	getUser, 
 	getPlayers, 
 	getOthers, 
+	getCoins,
 	disconnect, 
 	setRenderer, 
 	setAllowAnimation, 
@@ -310,6 +360,7 @@ export {
 	updateMousePosition,
 	sendTargetAngle,
 	setViewOffset,
+	updateZoom,
 	polygonArea
 };
 

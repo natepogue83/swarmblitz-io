@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-touch-fullscreen" content="yes">
+<title>SwarmBlitz.io (Dev)</title>
+<link rel="stylesheet" href="/css/styles.css">
+<link rel="stylesheet" href="/font/css/all.min.css">
+</head>
+<body>
+<canvas id="main-ui"></canvas>
+<div id="begin">
+	<div class="center">
+		<h1 style="font-size: 48px; color: #4CAF50; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); margin-bottom: 20px;">SwarmBlitz.io</h1>
+		<h2>Enter your name</h2>
+		<input id="name" autocomplete="off" placeholder="An awesome name!">
+		<button class="start yellow" disabled="disabled">Play!</button>
+		<br>
+		<br>
+		<button class="spectate green" disabled="disabled">Spectate</button>
+		<div>
+			<span id="error">Please wait... Maybe something's wrong!</span>
+			<noscript>
+				<span>Your browser does not support JavaScript!</span>
+			</noscript>
+		</div>
+	</div>
+</div>
+<div id="wasted">
+	<div class="center">
+		<h1 style="font-size: 64px; color: #f44336; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">WASTED</h1>
+		<button class="start orange" disabled="disabled">Play Again</button>
+		<button class="menu yellow">Main Menu</button>
+		<button class="spectate green" disabled="disabled">Spectate</button>
+	</div>
+</div>
+<button class="toggle yellow"><i class="fa fa-cogs"></i></button>
+<div id="settings" class="center" style="display: none;">
+	<button class="menu yellow">Main Menu</button>
+	<button class="yellow" onclick="JavaScript:alert('How to Play SwarmBlitz.io:\n\n• Move your cursor to control direction\n• Your player follows where you point\n• Capture territory by leaving your zone and returning\n• Don\'t let others hit your trail!\n• Hit enemy trails to eliminate them\n• Capture as much territory as possible!')">How To Play</button>
+	<button class="yellow" onclick="JavaScript:alert('SwarmBlitz.io\n\nA multiplayer territory capture game with free movement.\nCapture territory, eliminate opponents, and dominate the map!')">About</button>
+	<audio loop="loop" preload="auto" controls>
+		<source src="/music/gwent.mp3" type="audio/mp3">
+		<source src="/music/gwent.ogg" type="audio/ogg">
+	</audio>
+</div>
+<script type="module" src="/client.js"></script>
+</body>
+</html>
+

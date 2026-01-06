@@ -108,6 +108,11 @@ button:disabled {
 #name, #settings {
 	background: #ededd1;
 	border-bottom: 6px solid #a1a18d;
+	color: #333;
+}
+#name::placeholder {
+	color: #888;
+	opacity: 1;
 }
 .yellow {
 	background: #eaec4b;
