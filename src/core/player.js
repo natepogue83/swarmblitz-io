@@ -326,12 +326,9 @@ Player.prototype.move = function(deltaSeconds) {
 	this.x += Math.cos(this.angle) * this.speed * speedMultiplier;
 	this.y += Math.sin(this.angle) * this.speed * speedMultiplier;
 	
-	// Check bounds
-	if (this.x < PLAYER_RADIUS || this.x > this.mapSize - PLAYER_RADIUS ||
-		this.y < PLAYER_RADIUS || this.y > this.mapSize - PLAYER_RADIUS) {
-		this.dead = true;
-		return;
-	}
+	// Clamp to map bounds (sliding against walls)
+	this.x = Math.max(PLAYER_RADIUS, Math.min(this.mapSize - PLAYER_RADIUS, this.x));
+	this.y = Math.max(PLAYER_RADIUS, Math.min(this.mapSize - PLAYER_RADIUS, this.y));
 	
 	// Trail logic
 	const inTerritory = this.isInOwnTerritory();
