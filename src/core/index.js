@@ -32,12 +32,12 @@ export function initPlayer(player) {
 export function updateStamina(player, deltaSeconds) {
 	const inTerritory = player.isInOwnTerritory();
 	
-	// Apply upgrade multipliers (default to 1.0 if not set)
+	// Apply stat multipliers (default to 1.0 if not set)
 	const regenMult = player.staminaRegenMult || 1.0;
 	const drainMult = player.staminaDrainMult || 1.0;
 	
 	if (inTerritory) {
-		// Regenerate stamina (with upgrade multiplier)
+		// Regenerate stamina
 		player.stamina += consts.STAMINA_REGEN_INSIDE_PER_SEC * regenMult * deltaSeconds;
 		if (player.stamina > player.maxStamina) {
 			player.stamina = player.maxStamina;
@@ -56,7 +56,7 @@ export function updateStamina(player, deltaSeconds) {
 			}
 		}
 	} else {
-		// Drain stamina (with upgrade multiplier - lower mult = less drain)
+		// Drain stamina outside territory
 		player.stamina -= consts.STAMINA_DRAIN_OUTSIDE_PER_SEC * drainMult * deltaSeconds;
 		if (player.stamina <= 0) {
 			player.stamina = 0;
@@ -93,38 +93,38 @@ export function updateFrame(players, dead, notifyKill) {
 		return !player.dead;
 	});
 	
-	// TERRITORY OVERLAP RESOLUTION:
-	// When a player captures territory, subtract overlapping areas from other players
-	for (const capturer of capturedThisFrame) {
-		if (capturer.dead) continue;
-		
-		for (const other of alive) {
-			if (other === capturer || other.dead) continue;
-			
-			// Check if territories overlap
-			if (polygonsOverlap(capturer.territory, other.territory)) {
-				// Subtract the capturer's territory from the other player's territory
-				const newTerritory = subtractTerritorySimple(other.territory, capturer.territory);
-				
-				// Only update if the result is valid
-				if (newTerritory && newTerritory.length >= 3) {
-					other.territory = newTerritory;
-				} else if (newTerritory && newTerritory.length === 0) {
-					// Other player's territory was completely consumed - they lose their base
-					// Give them a minimal territory at their spawn point
-					const minRadius = consts.CELL_WIDTH * 0.5;
-					other.territory = [];
-					for (let i = 0; i < 8; i++) {
-						const angle = (i / 8) * Math.PI * 2;
-						other.territory.push({
-							x: other.spawnX + Math.cos(angle) * minRadius,
-							y: other.spawnY + Math.sin(angle) * minRadius
-						});
-					}
-				}
-			}
-		}
-	}
+	// TERRITORY OVERLAP RESOLUTION - DISABLED due to bug causing random territory loss
+	// When this is fixed, re-enable territory subtraction when players capture overlapping areas
+	// for (const capturer of capturedThisFrame) {
+	// 	if (capturer.dead) continue;
+	// 	
+	// 	for (const other of alive) {
+	// 		if (other === capturer || other.dead) continue;
+	// 		
+	// 		// Check if territories overlap
+	// 		if (polygonsOverlap(capturer.territory, other.territory)) {
+	// 			// Subtract the capturer's territory from the other player's territory
+	// 			const newTerritory = subtractTerritorySimple(other.territory, capturer.territory);
+	// 			
+	// 			// Only update if the result is valid
+	// 			if (newTerritory && newTerritory.length >= 3) {
+	// 				other.territory = newTerritory;
+	// 			} else if (newTerritory && newTerritory.length === 0) {
+	// 				// Other player's territory was completely consumed - they lose their base
+	// 				// Give them a minimal territory at their spawn point
+	// 				const minRadius = consts.CELL_WIDTH * 0.5;
+	// 				other.territory = [];
+	// 				for (let i = 0; i < 8; i++) {
+	// 					const angle = (i / 8) * Math.PI * 2;
+	// 					other.territory.push({
+	// 						x: other.spawnX + Math.cos(angle) * minRadius,
+	// 						y: other.spawnY + Math.sin(angle) * minRadius
+	// 					});
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	// Check collisions
 	const removing = new Array(players.length).fill(false);
@@ -137,8 +137,6 @@ export function updateFrame(players, dead, notifyKill) {
 		for (let j = 0; j < players.length; j++) {
 			if (i === j || removing[j] || players[j].dead) continue;
 
-			// Freeze/Invulnerability: ignore all trail + player collisions involving a choosing player
-			if (players[i].isChoosingUpgrade || players[j].isChoosingUpgrade) continue;
 			
 			// Check if player i hits player j's trail
 			// Snipped players cannot snip others
@@ -188,7 +186,7 @@ export function updateFrame(players, dead, notifyKill) {
 		}
 		
 		// Check if player i hits their own trail (suicide)
-		const selfHit = players[i].isChoosingUpgrade ? null : players[i].trail.hitsTrail(players[i].x, players[i].y, 10);
+		const selfHit = players[i].trail.hitsTrail(players[i].x, players[i].y, 10);
 		if (!removing[i] && selfHit) {
 			if (!players[i].isSnipped) {
 				players[i].startSnip({ x: players[i].x, y: players[i].y }, selfHit);

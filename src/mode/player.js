@@ -23,14 +23,11 @@ const PULSE_RADIUS_START = 10;
 const PULSE_RADIUS_END = 120;
 const PULSE_TIME = 0.8;
 
-// Bank meter tweening
-const BANK_TWEEN_DURATION = 0.4;
+// XP meter tweening
+const XP_TWEEN_DURATION = 0.4;
 
 let canvas, ctx, offscreenCanvas, offctx, canvasWidth, canvasHeight, gameWidth, gameHeight;
 const $ = jquery;
-
-// Track if user is near their bank store
-let userNearStore = false;
 
 // Death animation system
 const deathParticles = [];
@@ -46,13 +43,13 @@ const projectileHitEffects = [];
 // Capture feedback effects
 const captureEffects = [];
 
-// Bank meter tweening state
-const bankMeterTween = {
+// XP meter tweening state
+const xpMeterTween = {
 	startValue: 0,
 	targetValue: 0,
 	currentValue: 0,
 	startTime: 0,
-	duration: BANK_TWEEN_DURATION * 1000
+	duration: XP_TWEEN_DURATION * 1000
 };
 
 // Local player outline thickening state
@@ -74,10 +71,8 @@ $(() => {
 	canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
 	canvas.addEventListener("touchstart", handleTouchMove, { passive: false });
 	
-	// Keyboard input for upgrade selection (1/2/3)
+	// Keyboard and mouse input handlers
 	window.addEventListener("keydown", handleKeyDown);
-	
-	// Mouse click for upgrade selection
 	canvas.addEventListener("click", handleClick);
 	
 	// Send target angle on every frame
@@ -87,74 +82,11 @@ $(() => {
 });
 
 function handleKeyDown(e) {
-	const user = client.getUser();
-	if (!user) return;
-	
-	// Handle upgrade selection (1/2/3) when choosing
-	if (user.isChoosingUpgrade && user.upgradeOptions && user.upgradeOptions.length > 0) {
-		const key = e.key;
-		if (key >= "1" && key <= "3") {
-			const idx = parseInt(key) - 1;
-			if (idx < user.upgradeOptions.length) {
-				const upgrade = user.upgradeOptions[idx];
-				client.chooseUpgrade(upgrade.id, (success, msg) => {
-					if (success) {
-						console.log("Upgrade selected:", upgrade.name);
-					} else {
-						console.log("Upgrade selection failed:", msg);
-					}
-				});
-			}
-		}
-	}
-	
-	// Handle drone purchase (B key) when near home base
-	if (e.key === 'b' || e.key === 'B') {
-		if (userNearStore) {
-			client.buyDrone((success, msg) => {
-				if (success) {
-					console.log("Drone purchased!");
-				} else {
-					console.log("Drone purchase failed:", msg);
-				}
-			});
-		}
-	}
+	// Reserved for future key bindings
 }
 
 function handleClick(e) {
-	const user = client.getUser();
-	if (!user || !user.isChoosingUpgrade || !user.upgradeOptions) return;
-	
-	// Check if click is on one of the upgrade cards
-	const rect = canvas.getBoundingClientRect();
-	const clickX = e.clientX - rect.left;
-	const clickY = e.clientY - rect.top;
-	
-	// Card dimensions (must match paintUpgradeModal)
-	const cardWidth = 200;
-	const cardHeight = 140;
-	const cardGap = 30;
-	const numCards = user.upgradeOptions.length;
-	const totalWidth = numCards * cardWidth + (numCards - 1) * cardGap;
-	const startX = (canvasWidth - totalWidth) / 2;
-	const cardY = (canvasHeight - cardHeight) / 2;
-	
-	for (let i = 0; i < numCards; i++) {
-		const cardX = startX + i * (cardWidth + cardGap);
-		if (clickX >= cardX && clickX <= cardX + cardWidth &&
-			clickY >= cardY && clickY <= cardY + cardHeight) {
-			const upgrade = user.upgradeOptions[i];
-			client.chooseUpgrade(upgrade.id, (success, msg) => {
-				if (success) {
-					console.log("Upgrade selected:", upgrade.name);
-				} else {
-					console.log("Upgrade selection failed:", msg);
-				}
-			});
-			break;
-		}
-	}
+	// Reserved for future click interactions
 }
 
 function handleMouseMove(e) {
@@ -213,11 +145,11 @@ function reset() {
 	// Clear capture effects
 	captureEffects.length = 0;
 	
-	// Reset bank meter tween
-	bankMeterTween.startValue = 0;
-	bankMeterTween.targetValue = 0;
-	bankMeterTween.currentValue = 0;
-	bankMeterTween.startTime = 0;
+	// Reset XP meter tween
+	xpMeterTween.startValue = 0;
+	xpMeterTween.targetValue = 0;
+	xpMeterTween.currentValue = 0;
+	xpMeterTween.startTime = 0;
 	
 	// Reset outline thickening
 	localOutlineThicken.active = false;
@@ -291,74 +223,73 @@ function paintUIBar(ctx) {
 	const killsOffset = 20 + BAR_WIDTH + barOffset;
 	ctx.fillText(killsText, killsOffset, BAR_HEIGHT - 15);
 
-	// Bank Meter HUD (Archero-style)
-	const bankProgress = user.bankProgress || 0;
-	const bankTarget = user.bankTarget || consts.BANK_BASE_TARGET;
-	const bankLevel = user.bankLevel || 0;
-	const coins = user.coins || 0;
+	// XP/Level HUD
+	const xp = user.xp || 0;
+	const level = user.level || 1;
+	const xpPerLevel = consts.XP_PER_LEVEL || 100;
 	
-	// Bank meter bar
-	const bankBarWidth = 150;
-	const bankBarHeight = 20;
-	const bankBarX = killsOffset + ctx.measureText(killsText).width + 30;
-	const bankBarY = (BAR_HEIGHT - bankBarHeight) / 2;
+	// XP bar
+	const xpBarWidth = 150;
+	const xpBarHeight = 20;
+	const xpBarX = killsOffset + ctx.measureText(killsText).width + 30;
+	const xpBarY = (BAR_HEIGHT - xpBarHeight) / 2;
 	
 	// Background
 	ctx.fillStyle = "rgba(50, 50, 50, 0.7)";
-	ctx.fillRect(bankBarX, bankBarY, bankBarWidth, bankBarHeight);
+	ctx.fillRect(xpBarX, xpBarY, xpBarWidth, xpBarHeight);
 	
 	// Progress fill with smooth tweening
-	const tweenedProgress = updateBankMeterTween(bankProgress);
-	const progressRatio = Math.min(1, tweenedProgress / bankTarget);
-	const gradient = ctx.createLinearGradient(bankBarX, 0, bankBarX + bankBarWidth, 0);
-	gradient.addColorStop(0, "#FFD700");
-	gradient.addColorStop(1, "#FFA500");
+	const tweenedXp = updateXpMeterTween(xp);
+	const progressRatio = Math.min(1, tweenedXp / xpPerLevel);
+	const gradient = ctx.createLinearGradient(xpBarX, 0, xpBarX + xpBarWidth, 0);
+	gradient.addColorStop(0, "#7B68EE");  // Medium slate blue
+	gradient.addColorStop(1, "#9370DB");  // Medium purple
 	ctx.fillStyle = gradient;
-	ctx.fillRect(bankBarX, bankBarY, bankBarWidth * progressRatio, bankBarHeight);
+	ctx.fillRect(xpBarX, xpBarY, xpBarWidth * progressRatio, xpBarHeight);
 	
-	// Flash effect when close to full
+	// Flash effect when close to level up
 	if (progressRatio > 0.8) {
 		const time = Date.now() / 200;
 		const pulse = 0.1 + 0.1 * Math.sin(time * 3);
 		ctx.fillStyle = `rgba(255, 255, 255, ${pulse})`;
-		ctx.fillRect(bankBarX, bankBarY, bankBarWidth * progressRatio, bankBarHeight);
+		ctx.fillRect(xpBarX, xpBarY, xpBarWidth * progressRatio, xpBarHeight);
 	}
 	
 	// Border
-	ctx.strokeStyle = "#FFD700";
+	ctx.strokeStyle = "#9370DB";
 	ctx.lineWidth = 2;
-	ctx.strokeRect(bankBarX, bankBarY, bankBarWidth, bankBarHeight);
+	ctx.strokeRect(xpBarX, xpBarY, xpBarWidth, xpBarHeight);
 	
-	// Bank text
+	// XP text
 	ctx.fillStyle = "#FFFFFF";
 	ctx.font = "bold 12px Changa";
 	ctx.textAlign = "center";
-	ctx.fillText(`${bankProgress}/${bankTarget}`, bankBarX + bankBarWidth / 2, bankBarY + bankBarHeight - 5);
+	ctx.fillText(`${xp}/${xpPerLevel} XP`, xpBarX + xpBarWidth / 2, xpBarY + xpBarHeight - 5);
 	ctx.textAlign = "left";
 	
-	// Level indicator
+	// Level indicator (bigger, more prominent)
 	ctx.fillStyle = "#FFD700";
-	ctx.font = "bold 14px Changa";
-	ctx.fillText(`Lv.${bankLevel}`, bankBarX + bankBarWidth + 10, BAR_HEIGHT - 15);
+	ctx.font = "bold 16px Changa";
+	ctx.fillText(`Lv.${level}`, xpBarX + xpBarWidth + 10, BAR_HEIGHT - 13);
 	
-	// Coins in pocket
-	const coinsText = `💰 ${coins}`;
-	ctx.fillStyle = "#FFD700";
-	ctx.font = "16px Changa";
-	ctx.fillText(coinsText, bankBarX + bankBarWidth + 60, BAR_HEIGHT - 15);
-	
-	// Drone count indicator
-	const droneCount = user.droneCount || 1;
-	const maxDrones = consts.MAX_DRONES || 6;
-	const droneText = `🛸 ${droneCount}/${maxDrones}`;
+	// Drone count indicator (drones = level)
+	const droneCount = user.droneCount || level;
+	const droneText = `🛸 ${droneCount}`;
 	ctx.fillStyle = "#88CCFF";
 	ctx.font = "14px Changa";
-	ctx.fillText(droneText, bankBarX + bankBarWidth + 115, BAR_HEIGHT - 15);
+	ctx.fillText(droneText, xpBarX + xpBarWidth + 70, BAR_HEIGHT - 15);
+	
+	// Size scale indicator
+	const sizeScale = user.sizeScale || 1.0;
+	const sizeText = `📏 ${(sizeScale * 100).toFixed(0)}%`;
+	ctx.fillStyle = "#98FB98";
+	ctx.font = "14px Changa";
+	ctx.fillText(sizeText, xpBarX + xpBarWidth + 115, BAR_HEIGHT - 15);
 
 	// Stamina bar
 	const staminaWidth = 100;
 	const staminaHeight = 18;
-	const staminaX = bankBarX + bankBarWidth + 180;
+	const staminaX = xpBarX + xpBarWidth + 175;
 	const staminaY = (BAR_HEIGHT - staminaHeight) / 2;
 
 	// Background
@@ -436,99 +367,7 @@ function paintUIBar(ctx) {
 	}
 }
 
-function paintUpgradeModal(ctx) {
-	if (!user || !user.isChoosingUpgrade || !user.upgradeOptions || user.upgradeOptions.length === 0) return;
-	
-	// Darken background
-	ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-	ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-	
-	// Title
-	ctx.fillStyle = "#FFD700";
-	ctx.font = "bold 36px Changa";
-	ctx.textAlign = "center";
-	ctx.fillText("⬆️ LEVEL UP! ⬆️", canvasWidth / 2, 100);
-	
-	ctx.fillStyle = "#FFFFFF";
-	ctx.font = "20px Changa";
-	ctx.fillText("Choose an upgrade:", canvasWidth / 2, 140);
-	
-	// Draw upgrade cards
-	const cardWidth = 200;
-	const cardHeight = 140;
-	const cardGap = 30;
-	const numCards = user.upgradeOptions.length;
-	const totalWidth = numCards * cardWidth + (numCards - 1) * cardGap;
-	const startX = (canvasWidth - totalWidth) / 2;
-	const cardY = (canvasHeight - cardHeight) / 2;
-	
-	for (let i = 0; i < numCards; i++) {
-		const upgrade = user.upgradeOptions[i];
-		const cardX = startX + i * (cardWidth + cardGap);
-		
-		// Card background
-		ctx.fillStyle = "rgba(30, 50, 40, 0.95)";
-		ctx.strokeStyle = "#FFD700";
-		ctx.lineWidth = 3;
-		
-		// Rounded rectangle
-		const radius = 12;
-		ctx.beginPath();
-		ctx.moveTo(cardX + radius, cardY);
-		ctx.lineTo(cardX + cardWidth - radius, cardY);
-		ctx.quadraticCurveTo(cardX + cardWidth, cardY, cardX + cardWidth, cardY + radius);
-		ctx.lineTo(cardX + cardWidth, cardY + cardHeight - radius);
-		ctx.quadraticCurveTo(cardX + cardWidth, cardY + cardHeight, cardX + cardWidth - radius, cardY + cardHeight);
-		ctx.lineTo(cardX + radius, cardY + cardHeight);
-		ctx.quadraticCurveTo(cardX, cardY + cardHeight, cardX, cardY + cardHeight - radius);
-		ctx.lineTo(cardX, cardY + radius);
-		ctx.quadraticCurveTo(cardX, cardY, cardX + radius, cardY);
-		ctx.closePath();
-		ctx.fill();
-		ctx.stroke();
-		
-		// Key indicator (1/2/3)
-		ctx.fillStyle = "#FFD700";
-		ctx.font = "bold 24px monospace";
-		ctx.textAlign = "center";
-		ctx.fillText(`[${i + 1}]`, cardX + cardWidth / 2, cardY + 30);
-		
-		// Upgrade name
-		ctx.fillStyle = "#FFFFFF";
-		ctx.font = "bold 16px Changa";
-		ctx.fillText(upgrade.name, cardX + cardWidth / 2, cardY + 60);
-		
-		// Description (wrap if needed)
-		ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
-		ctx.font = "12px Changa";
-		const desc = upgrade.description || "";
-		const words = desc.split(" ");
-		let line = "";
-		let lineY = cardY + 85;
-		const maxLineWidth = cardWidth - 20;
-		
-		for (const word of words) {
-			const testLine = line + word + " ";
-			if (ctx.measureText(testLine).width > maxLineWidth) {
-				ctx.fillText(line.trim(), cardX + cardWidth / 2, lineY);
-				line = word + " ";
-				lineY += 14;
-			} else {
-				line = testLine;
-			}
-		}
-		if (line.trim()) {
-			ctx.fillText(line.trim(), cardX + cardWidth / 2, lineY);
-		}
-		
-		// Click hint
-		ctx.fillStyle = "rgba(255, 215, 0, 0.6)";
-		ctx.font = "10px Changa";
-		ctx.fillText("Click or press key", cardX + cardWidth / 2, cardY + cardHeight - 10);
-	}
-	
-	ctx.textAlign = "left";
-}
+// Level up effect is now handled by the levelUp renderer callback
 
 function paint(ctx) {
 	ctx.fillStyle = "#e2ebf3";
@@ -567,105 +406,6 @@ function paint(ctx) {
 	
 	// Render animated loot coins
 	renderLootCoins(ctx);
-	
-	// Render BankStores
-	const bankStores = client.getBankStores();
-	for (const store of bankStores) {
-		const isOwner = user && store.ownerId === user.num;
-		const ownerPlayer = client.getPlayers().find(p => p.num === store.ownerId);
-		const storeColor = ownerPlayer ? ownerPlayer.baseColor : null;
-		
-		// Draw store circle
-		ctx.save();
-		
-		// Outer glow for owner's store
-		if (isOwner) {
-			const time = Date.now() / 1000;
-			const pulse = 0.6 + 0.4 * Math.sin(time * 2);
-			ctx.shadowBlur = 20 * pulse;
-			ctx.shadowColor = "#FFD700";
-		}
-		
-		// Store background circle
-		ctx.beginPath();
-		ctx.arc(store.x, store.y, store.radius, 0, Math.PI * 2);
-		if (storeColor) {
-			ctx.fillStyle = storeColor.deriveAlpha(isOwner ? 0.3 : 0.1).rgbString();
-		} else {
-			ctx.fillStyle = isOwner ? "rgba(255, 215, 0, 0.3)" : "rgba(200, 200, 200, 0.1)";
-		}
-		ctx.fill();
-		
-		// Store border
-		ctx.setLineDash([8, 4]);
-		ctx.lineWidth = isOwner ? 4 : 2;
-		ctx.strokeStyle = isOwner ? "#FFD700" : "rgba(200, 200, 200, 0.4)";
-		ctx.stroke();
-		ctx.setLineDash([]);
-		
-		ctx.shadowBlur = 0;
-		
-		// Draw bank icon (simple building shape)
-		const iconSize = 24;
-		ctx.fillStyle = isOwner ? "#FFD700" : (storeColor ? storeColor.deriveAlpha(0.7).rgbString() : "#888");
-		
-		// Building base
-		ctx.fillRect(store.x - iconSize/2, store.y - iconSize/4, iconSize, iconSize/2);
-		
-		// Roof (triangle)
-		ctx.beginPath();
-		ctx.moveTo(store.x - iconSize/2 - 6, store.y - iconSize/4);
-		ctx.lineTo(store.x, store.y - iconSize/2 - 10);
-		ctx.lineTo(store.x + iconSize/2 + 6, store.y - iconSize/4);
-		ctx.closePath();
-		ctx.fill();
-		
-		// Pillars
-		ctx.fillStyle = isOwner ? "#DAA520" : "#666";
-		ctx.fillRect(store.x - iconSize/3, store.y - iconSize/4, 5, iconSize/2);
-		ctx.fillRect(store.x + iconSize/3 - 5, store.y - iconSize/4, 5, iconSize/2);
-		
-		// "BANK" text label
-		ctx.fillStyle = isOwner ? "#FFFFFF" : "rgba(255, 255, 255, 0.5)";
-		ctx.font = "bold 14px Arial";
-		ctx.textAlign = "center";
-		ctx.textBaseline = "top";
-		const progressText = ownerPlayer ? `${ownerPlayer.bankProgress}/${ownerPlayer.bankTarget}` : "BANK";
-		ctx.fillText(progressText, store.x, store.y + iconSize/4 + 10);
-		
-		// Owner indicator + deposit hint
-		if (isOwner) {
-			ctx.fillStyle = "#FFD700";
-			ctx.font = "bold 11px Arial";
-			ctx.fillText("DEPOSIT HERE", store.x, store.y + iconSize/4 + 26);
-			
-			// Check if user is near store to show drone purchase UI
-			const distToStore = Math.hypot(user.x - store.x, user.y - store.y);
-			if (distToStore < store.radius) {
-				// Show drone purchase info
-				const droneCount = user.droneCount || 1;
-				const maxDrones = consts.MAX_DRONES || 6;
-				
-				if (droneCount < maxDrones) {
-					const droneCost = client.getDroneNextCost(droneCount);
-					const canAfford = (user.coins || 0) >= droneCost;
-					
-					ctx.font = "bold 12px Arial";
-					ctx.fillStyle = canAfford ? "#66FF66" : "#FF6666";
-					ctx.fillText(`[B] Buy Drone (${droneCost} coins)`, store.x, store.y + iconSize/4 + 42);
-					ctx.fillStyle = "#FFFFFF";
-					ctx.font = "10px Arial";
-					ctx.fillText(`Drones: ${droneCount}/${maxDrones}`, store.x, store.y + iconSize/4 + 56);
-				} else {
-					ctx.font = "bold 10px Arial";
-					ctx.fillStyle = "#888888";
-					ctx.fillText(`Max Drones (${maxDrones}/${maxDrones})`, store.x, store.y + iconSize/4 + 42);
-				}
-			}
-		}
-		
-		ctx.restore();
-	}
 	
 	// Render turrets
 	const turrets = client.getTurrets();
@@ -783,25 +523,6 @@ function paint(ctx) {
 			ctx.globalAlpha = Math.max(0, 1 - dissolve);
 		}
 		
-		// Draw "choosing" indicator for players selecting upgrades
-		if (p.isChoosingUpgrade) {
-			ctx.save();
-			const time = Date.now() / 500;
-			const pulse = 0.5 + 0.5 * Math.sin(time * 3);
-			ctx.strokeStyle = `rgba(255, 215, 0, ${0.5 + 0.5 * pulse})`;
-			ctx.lineWidth = 3;
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, PLAYER_RADIUS + 8 + 4 * pulse, 0, Math.PI * 2);
-			ctx.stroke();
-			
-			// "CHOOSING" text above player
-			ctx.fillStyle = "#FFD700";
-			ctx.font = "bold 10px Arial";
-			ctx.textAlign = "center";
-			ctx.fillText("CHOOSING...", p.x, p.y - PLAYER_RADIUS - 25);
-			ctx.restore();
-		}
-		
 		const outlineThickness = getOutlineThickness(p);
 		
 		// Render player (skip territory since we rendered it separately)
@@ -825,24 +546,6 @@ function paint(ctx) {
 	// Reset transform for fixed UI
 	ctx.restore();
 	paintUIBar(ctx);
-	
-	// Check if user is near their bank store
-	userNearStore = false;
-	if (user && !user.dead) {
-		const bankStores = client.getBankStores();
-		const userStore = bankStores.find(s => s.ownerId === user.num);
-		if (userStore) {
-			const dist = Math.hypot(user.x - userStore.x, user.y - userStore.y);
-			if (dist < userStore.radius) {
-				userNearStore = true;
-			}
-		}
-	}
-	
-	// Draw upgrade selection modal if choosing
-	if (user && user.isChoosingUpgrade) {
-		paintUpgradeModal(ctx);
-	}
 
 	if ((!user || user.dead) && !showedDead) {
 		showedDead = true;
@@ -1660,10 +1363,10 @@ function renderAllDrones(ctx) {
 // ===== CAPTURE FEEDBACK EFFECT SYSTEM =====
 
 class CaptureEffect {
-	constructor(x, y, coinsGained, player, isLocalPlayer) {
+	constructor(x, y, xpGained, player, isLocalPlayer) {
 		this.x = x;
 		this.y = y;
-		this.coinsGained = coinsGained;
+		this.xpGained = xpGained;
 		this.player = player;
 		this.isLocalPlayer = isLocalPlayer;
 		this.spawnTime = Date.now();
@@ -1768,18 +1471,18 @@ class CaptureEffect {
 			ctx.restore();
 		}
 		
-		// Render coins earned text
-		if (this.textAlpha > 0 && this.coinsGained > 0) {
+		// Render XP earned text
+		if (this.textAlpha > 0 && this.xpGained > 0) {
 			ctx.save();
 			ctx.globalAlpha = this.textAlpha;
-			ctx.fillStyle = '#FFD700';
+			ctx.fillStyle = '#9370DB';  // Purple for XP
 			ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
 			ctx.lineWidth = 3;
 			ctx.font = 'bold 18px Changa';
 			ctx.textAlign = 'center';
 			ctx.textBaseline = 'middle';
 			
-			const text = `+${this.coinsGained} 💰`;
+			const text = `+${this.xpGained} XP`;
 			ctx.strokeText(text, this.x, this.textY);
 			ctx.fillText(text, this.x, this.textY);
 			ctx.restore();
@@ -1789,8 +1492,8 @@ class CaptureEffect {
 	}
 }
 
-function spawnCaptureEffect(x, y, coinsGained, player, isLocalPlayer) {
-	captureEffects.push(new CaptureEffect(x, y, coinsGained, player, isLocalPlayer));
+function spawnCaptureEffect(x, y, xpGained, player, isLocalPlayer) {
+	captureEffects.push(new CaptureEffect(x, y, xpGained, player, isLocalPlayer));
 }
 
 // Turret capture effect - simpler burst effect
@@ -1927,23 +1630,23 @@ function getOutlineThickness(player) {
 	return 1;
 }
 
-// Update bank meter tween
-function updateBankMeterTween(currentProgress) {
-	if (bankMeterTween.targetValue !== currentProgress) {
+// Update XP meter tween
+function updateXpMeterTween(currentXp) {
+	if (xpMeterTween.targetValue !== currentXp) {
 		// New target value - start a new tween
-		bankMeterTween.startValue = bankMeterTween.currentValue;
-		bankMeterTween.targetValue = currentProgress;
-		bankMeterTween.startTime = Date.now();
+		xpMeterTween.startValue = xpMeterTween.currentValue;
+		xpMeterTween.targetValue = currentXp;
+		xpMeterTween.startTime = Date.now();
 	}
 	
-	const elapsed = Date.now() - bankMeterTween.startTime;
-	const progress = Math.min(1, elapsed / bankMeterTween.duration);
+	const elapsed = Date.now() - xpMeterTween.startTime;
+	const progress = Math.min(1, elapsed / xpMeterTween.duration);
 	
 	// Ease out quad
 	const eased = progress * (2 - progress);
-	bankMeterTween.currentValue = bankMeterTween.startValue + (bankMeterTween.targetValue - bankMeterTween.startValue) * eased;
+	xpMeterTween.currentValue = xpMeterTween.startValue + (xpMeterTween.targetValue - xpMeterTween.startValue) * eased;
 	
-	return bankMeterTween.currentValue;
+	return xpMeterTween.currentValue;
 }
 
 function spawnDeathEffect(player, isUser = false) {
@@ -2073,11 +1776,106 @@ export function projectileHit(x, y, damage) {
 }
 
 // Capture success visual effect handler (called from game-client)
-export function captureSuccess(x, y, coinsGained, player, isLocalPlayer) {
-	spawnCaptureEffect(x, y, coinsGained, player, isLocalPlayer);
+export function captureSuccess(x, y, xpGained, player, isLocalPlayer) {
+	spawnCaptureEffect(x, y, xpGained, player, isLocalPlayer);
 }
 
 // Turret captured visual effect handler (called from game-client)
 export function turretCaptured(x, y, newOwner) {
 	spawnTurretCaptureEffect(x, y, newOwner);
+}
+
+// Level up visual effect handler (called from game-client)
+export function levelUp(x, y, newLevel, player) {
+	// Create a special level-up effect at the player's position
+	const isLocalPlayer = user && player && player.num === user.num;
+	
+	// Create a burst effect with golden particles
+	const color = player && player.baseColor ? player.baseColor.rgbString() : '#FFD700';
+	
+	// Add burst particles
+	for (let i = 0; i < 30; i++) {
+		deathParticles.push(new DeathParticle(x, y, '#FFD700', 'burst'));
+	}
+	
+	// Add a ring effect
+	deathParticles.push(new DeathParticle(x, y, '#FFD700', 'ring'));
+	
+	// Screen shake for local player
+	if (isLocalPlayer) {
+		screenShake.intensity = 10;
+	}
+	
+	// Add a special "LEVEL UP!" text effect via capture effect system
+	captureEffects.push(new LevelUpTextEffect(x, y, newLevel, player, isLocalPlayer));
+}
+
+// Special level-up text effect
+class LevelUpTextEffect {
+	constructor(x, y, newLevel, player, isLocalPlayer) {
+		this.x = x;
+		this.y = y;
+		this.newLevel = newLevel;
+		this.player = player;
+		this.isLocalPlayer = isLocalPlayer;
+		this.spawnTime = Date.now();
+		this.color = player && player.baseColor ? player.baseColor : null;
+		
+		// Text animation
+		this.textY = y - 40;
+		this.textAlpha = 1;
+		this.scale = 0.5;
+	}
+	
+	update() {
+		const elapsed = (Date.now() - this.spawnTime) / 1000;
+		const duration = 1.5;
+		const progress = Math.min(1, elapsed / duration);
+		
+		// Float up and fade
+		this.textY = this.y - 40 - progress * 60;
+		this.textAlpha = Math.max(0, 1 - progress);
+		
+		// Scale up then back down
+		if (progress < 0.3) {
+			this.scale = 0.5 + (progress / 0.3) * 1.0;
+		} else {
+			this.scale = 1.5 - (progress - 0.3) * 0.5;
+		}
+		
+		return progress < 1;
+	}
+	
+	render(ctx) {
+		if (this.textAlpha <= 0) return;
+		
+		ctx.save();
+		ctx.globalAlpha = this.textAlpha;
+		ctx.translate(this.x, this.textY);
+		ctx.scale(this.scale, this.scale);
+		
+		// Glow effect
+		ctx.shadowColor = '#FFD700';
+		ctx.shadowBlur = 20 * this.textAlpha;
+		
+		// Text
+		ctx.fillStyle = '#FFD700';
+		ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+		ctx.lineWidth = 4;
+		ctx.font = 'bold 24px Changa';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		
+		const text = `⬆️ LEVEL ${this.newLevel}! ⬆️`;
+		ctx.strokeText(text, 0, 0);
+		ctx.fillText(text, 0, 0);
+		
+		// Bonus info text below
+		ctx.font = 'bold 14px Changa';
+		ctx.fillStyle = '#88CCFF';
+		ctx.strokeText('+1 Drone, +5% Size', 0, 28);
+		ctx.fillText('+1 Drone, +5% Size', 0, 28);
+		
+		ctx.restore();
+	}
 }

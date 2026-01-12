@@ -5,7 +5,6 @@ let running = false;
 let user, socket, frame;
 let players, allPlayers;
 let coinsById = new Map();
-let bankStoresById = new Map();
 let turretsById = new Map();
 let projectilesById = new Map();
 let dronesById = new Map(); // Stores all drones keyed by id
@@ -59,14 +58,9 @@ function connectGame(io, url, name, callback, flag) {
 		frame = data.frame;
 		reset();
 		
-		// Load coins
+		// Load XP pickups (coins)
 		if (data.coins) {
 			data.coins.forEach(c => coinsById.set(c.id, c));
-		}
-		
-		// Load bank stores
-		if (data.bankStores) {
-			data.bankStores.forEach(s => bankStoresById.set(s.id, s));
 		}
 		
 		// Load turrets
@@ -82,20 +76,16 @@ function connectGame(io, url, name, callback, flag) {
 		// Load players
 		data.players.forEach(p => {
 			const pl = new Player(p);
-			// Copy upgrade stats
+			// Copy stat multipliers
 			pl.staminaRegenMult = p.staminaRegenMult || 1.0;
 			pl.staminaDrainMult = p.staminaDrainMult || 1.0;
 			pl.speedMult = p.speedMult || 1.0;
 			pl.snipGraceBonusSec = p.snipGraceBonusSec || 0;
-			pl.upgrades = p.upgrades || [];
 			
-			// Bank meter fields
-			pl.coins = p.coins || 0;
-			pl.bankProgress = p.bankProgress || 0;
-			pl.bankTarget = p.bankTarget || consts.BANK_BASE_TARGET;
-			pl.bankLevel = p.bankLevel || 0;
-			pl.isChoosingUpgrade = p.isChoosingUpgrade || false;
-			pl.upgradeOptions = p.upgradeOptions || [];
+			// XP/Level fields
+			pl.level = p.level || 1;
+			pl.xp = p.xp || 0;
+			pl.sizeScale = p.sizeScale || 1.0;
 			
 			// HP fields
 			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP || 100);
@@ -192,9 +182,6 @@ function updateZoom(zoom) {
 function sendTargetAngle() {
 	if (!user || user.dead || !socket || !mouseSet) return;
 	
-	// Don't send movement while choosing upgrade (frozen)
-	if (user.isChoosingUpgrade) return;
-	
 	// Update world mouse position based on last screen position and current view offset.
 	mouseX = (lastScreenX / lastZoom) + viewOffset.x;
 	mouseY = (lastScreenY / lastZoom) + viewOffset.y;
@@ -236,10 +223,6 @@ function getCoins() {
 	return Array.from(coinsById.values());
 }
 
-function getBankStores() {
-	return Array.from(bankStoresById.values());
-}
-
 function getTurrets() {
 	return Array.from(turretsById.values());
 }
@@ -250,35 +233,6 @@ function getProjectiles() {
 
 function getDrones() {
 	return Array.from(dronesById.values());
-}
-
-// Calculate drone cost for a player
-function getDroneNextCost(droneCount) {
-	const baseCost = consts.DRONE_BASE_COST || 120;
-	const mult = consts.DRONE_COST_MULT || 1.6;
-	return Math.floor(baseCost * Math.pow(mult, droneCount));
-}
-
-// Send buy drone request to server
-function buyDrone(callback) {
-	if (!socket || !user) {
-		if (callback) callback(false, "Not connected");
-		return;
-	}
-	socket.emit("buyDrone", {}, callback);
-}
-
-// Send upgrade choice to server (Archero-style level-up)
-function chooseUpgrade(upgradeId, callback) {
-	if (!socket || !user) {
-		if (callback) callback(false, "Not connected");
-		return;
-	}
-	if (!user.isChoosingUpgrade) {
-		if (callback) callback(false, "Not in upgrade selection");
-		return;
-	}
-	socket.emit("chooseUpgrade", { upgradeId }, callback);
 }
 
 function disconnect() {
@@ -334,23 +288,26 @@ function processFrame(data) {
 		data.coinRemovals.forEach(id => coinsById.delete(id));
 	}
 	
-	// Handle bank meter updates
-	if (data.bankUpdates) {
-		data.bankUpdates.forEach(update => {
+	// Handle XP/Level updates
+	if (data.xpUpdates) {
+		data.xpUpdates.forEach(update => {
 			const p = allPlayers[update.num];
 			if (p) {
-				p.coins = update.coins;
-				p.bankProgress = update.bankProgress;
-				p.bankTarget = update.bankTarget;
-				p.bankLevel = update.bankLevel;
-				p.isChoosingUpgrade = update.isChoosingUpgrade;
-				// Always overwrite so stale options don't stick around after choosing.
-				p.upgradeOptions = update.upgradeOptions || [];
+				p.level = update.level;
+				p.xp = update.xp;
+				p.sizeScale = update.sizeScale;
 				// Update drone count
 				if (update.droneCount !== undefined) {
 					p.droneCount = update.droneCount;
 				}
 			}
+		});
+	}
+	
+	// Handle level-up events (for visual feedback)
+	if (data.levelUps) {
+		data.levelUps.forEach(levelUp => {
+			invokeRenderer("levelUp", [levelUp.x, levelUp.y, levelUp.newLevel, allPlayers[levelUp.playerNum]]);
 		});
 	}
 	
@@ -431,7 +388,7 @@ function processFrame(data) {
 		data.captureEvents.forEach(evt => {
 			const player = allPlayers[evt.playerNum];
 			const isLocalPlayer = user && evt.playerNum === user.num;
-			invokeRenderer("captureSuccess", [evt.x, evt.y, evt.coinsGained, player, isLocalPlayer]);
+			invokeRenderer("captureSuccess", [evt.x, evt.y, evt.xpGained, player, isLocalPlayer]);
 		});
 	}
 
@@ -439,13 +396,10 @@ function processFrame(data) {
 		data.newPlayers.forEach(p => {
 			if (user && p.num === user.num) return;
 			const pl = new Player(p);
-			// Copy bank meter fields
-			pl.coins = p.coins || 0;
-			pl.bankProgress = p.bankProgress || 0;
-			pl.bankTarget = p.bankTarget || consts.BANK_BASE_TARGET;
-			pl.bankLevel = p.bankLevel || 0;
-			pl.isChoosingUpgrade = p.isChoosingUpgrade || false;
-			pl.upgradeOptions = p.upgradeOptions || [];
+			// Copy XP/Level fields
+			pl.level = p.level || 1;
+			pl.xp = p.xp || 0;
+			pl.sizeScale = p.sizeScale || 1.0;
 			// HP fields
 			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP || 100);
 			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP || 100);
@@ -471,10 +425,6 @@ function processFrame(data) {
 		if (!player) return;
 		if (val.left) player.die();
 		player.targetAngle = val.targetAngle;
-		// Update isChoosingUpgrade from moves (for other players)
-		if (val.isChoosingUpgrade !== undefined) {
-			player.isChoosingUpgrade = val.isChoosingUpgrade;
-		}
 	});
 	
 	// Any locally-known player that isn't in the server moves list this frame should be considered gone/dead.
@@ -525,7 +475,6 @@ function reset() {
 	players = [];
 	allPlayers = [];
 	coinsById.clear();
-	bankStoresById.clear();
 	turretsById.clear();
 	projectilesById.clear();
 	dronesById.clear();
@@ -585,13 +534,9 @@ export {
 	getPlayers, 
 	getOthers, 
 	getCoins,
-	getBankStores,
 	getTurrets,
 	getProjectiles,
 	getDrones,
-	getDroneNextCost,
-	buyDrone,
-	chooseUpgrade,
 	disconnect, 
 	setRenderer, 
 	setAllowAnimation, 

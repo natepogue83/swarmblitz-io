@@ -18,7 +18,6 @@ let targetAngle = Math.random() * Math.PI * 2;
 let wanderAngle = 0;
 let returnToTerritory = false;
 let trailLength = 0;
-let isChoosingUpgrade = false;
 
 const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 const margin = consts.CELL_WIDTH * 2;
@@ -63,33 +62,27 @@ function connect() {
 				if (player) {
 					player.targetAngle = move.targetAngle;
 					if (move.left) player.dead = true;
-					if (move.isChoosingUpgrade !== undefined) {
-						player.isChoosingUpgrade = move.isChoosingUpgrade;
-					}
 				}
 			});
 		}
 		
-		// Handle bank meter updates
-		if (data.bankUpdates) {
-			data.bankUpdates.forEach(update => {
+		// Handle XP/Level updates
+		if (data.xpUpdates) {
+			data.xpUpdates.forEach(update => {
 				if (user && update.num === user.num) {
-					user.coins = update.coins;
-					user.bankProgress = update.bankProgress;
-					user.bankTarget = update.bankTarget;
-					user.bankLevel = update.bankLevel;
-					user.isChoosingUpgrade = update.isChoosingUpgrade;
-					user.upgradeOptions = update.upgradeOptions || [];
-					
-					// Auto-choose upgrade when options available
-					if (update.isChoosingUpgrade && update.upgradeOptions && update.upgradeOptions.length > 0) {
-						const randomChoice = update.upgradeOptions[Math.floor(Math.random() * update.upgradeOptions.length)];
-						socket.emit("chooseUpgrade", { upgradeId: randomChoice.id }, (success, msg) => {
-							if (success) {
-								console.log(`[${new Date()}] Bot chose upgrade: ${randomChoice.name}`);
-							}
-						});
-					}
+					user.level = update.level;
+					user.xp = update.xp;
+					user.sizeScale = update.sizeScale;
+					user.droneCount = update.droneCount;
+				}
+			});
+		}
+		
+		// Handle level-up events
+		if (data.levelUps) {
+			data.levelUps.forEach(levelUp => {
+				if (user && levelUp.playerNum === user.num) {
+					console.log(`[${new Date()}] Bot leveled up to level ${levelUp.newLevel}!`);
 				}
 			});
 		}
@@ -108,10 +101,8 @@ function connect() {
 			}
 		}
 		
-		// Update bot AI (skip if choosing upgrade - we're frozen)
-		if (!user?.isChoosingUpgrade) {
-			updateBot();
-		}
+		// Update bot AI
+		updateBot();
 	});
 	
 	socket.on("dead", () => {

@@ -35,14 +35,14 @@ export const consts = {
 	"COIN_SPAWN_INTERVAL_SEC": 2.5,
 	"COIN_RADIUS": 8,
 	"COIN_VALUE": 5,
-	"COIN_DROP_PERCENT": 0.63,         // Percentage of held coins dropped on death
-	"COIN_DROP_MIN": 10,               // Minimum coins dropped on death (even if broke)
+	"COIN_DROP_PERCENT": 0.63,         // Percentage of held XP dropped on death
+	"COIN_DROP_MIN": 10,               // Minimum XP dropped on death (even if broke)
 	"COINS_PER_AREA_UNIT": 0.00025,
-	// Bank circle (per-player) + Bank Meter system
-	"BANKSTORE_RADIUS": 60,           // Collision radius for deposit circle
-	"BANK_DEPOSIT_COOLDOWN_MS": 250,  // Minimum ms between deposit attempts
-	"BANK_BASE_TARGET": 20,
-	"BANK_TARGET_INCREMENT": 10,
+	
+	// ===== XP / LEVELING SYSTEM =====
+	"XP_PER_LEVEL": 100,              // XP needed to level up (constant per level)
+	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.05,  // Size increase per level (5%)
+	"PLAYER_SIZE_SCALE_MAX": 1.6,     // Maximum size multiplier
 	
 	// ===== TURRET SYSTEM =====
 	// Player HP (turret damage target)
@@ -86,10 +86,10 @@ export const consts = {
 	"PROJECTILE_MAX_LIFETIME": 3,     // Seconds before projectile despawns
 	
 	// ===== DRONE SYSTEM =====
-	"DRONE_BASE_COST": 120,           // Cost of first additional drone
-	"DRONE_COST_MULT": 1.6,           // Cost multiplier per drone owned
-	"MAX_DRONES": 6,                  // Maximum drones per player
+	// Note: Drones are now granted automatically via leveling (1 per level)
+	"MAX_DRONES": 50,                 // Maximum drones per player (effectively level cap)
 	"DRONE_ORBIT_RADIUS": 55,         // Distance from player center
+	"DRONE_ORBIT_SPEED": 1.5,         // Radians per second (orbit rotation speed)
 	"DRONE_RADIUS": 10,               // Visual/collision radius
 	"DRONE_HP": 40,                   // Drone hit points
 	"DRONE_DAMAGE": 4,                // Damage per projectile

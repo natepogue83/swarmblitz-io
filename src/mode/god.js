@@ -152,49 +152,6 @@ function paint(ctx) {
 
 	paintGridBackground(ctx);
 	
-	// Render BankStores
-	const bankStores = client.getBankStores();
-	for (const store of bankStores) {
-		const ownerPlayer = client.getPlayers().find(p => p.num === store.ownerId);
-		const storeColor = ownerPlayer ? ownerPlayer.baseColor : null;
-		
-		ctx.save();
-		
-		// Store background circle
-		ctx.beginPath();
-		ctx.arc(store.x, store.y, store.radius, 0, Math.PI * 2);
-		if (storeColor) {
-			ctx.fillStyle = storeColor.deriveAlpha(0.15).rgbString();
-		} else {
-			ctx.fillStyle = "rgba(200, 200, 200, 0.15)";
-		}
-		ctx.fill();
-		
-		// Store border
-		ctx.setLineDash([6, 3]);
-		ctx.lineWidth = 2;
-		if (storeColor) {
-			ctx.strokeStyle = storeColor.deriveAlpha(0.5).rgbString();
-		} else {
-			ctx.strokeStyle = "rgba(200, 200, 200, 0.5)";
-		}
-		ctx.stroke();
-		ctx.setLineDash([]);
-		
-		// Bank icon
-		const iconSize = 16;
-		ctx.fillStyle = storeColor ? storeColor.deriveAlpha(0.8).rgbString() : "#FFD700";
-		ctx.fillRect(store.x - iconSize/2, store.y - iconSize/4, iconSize, iconSize/2);
-		ctx.beginPath();
-		ctx.moveTo(store.x - iconSize/2 - 3, store.y - iconSize/4);
-		ctx.lineTo(store.x, store.y - iconSize/2 - 6);
-		ctx.lineTo(store.x + iconSize/2 + 3, store.y - iconSize/4);
-		ctx.closePath();
-		ctx.fill();
-		
-		ctx.restore();
-	}
-	
 	// Render all players
 	client.getPlayers().forEach(p => {
 		const fr = p.waitLag;

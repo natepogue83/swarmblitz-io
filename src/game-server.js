@@ -1,6 +1,5 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import { consts } from "../config.js";
-import { UPGRADES, pickUpgradeOptions, applyUpgrade } from "./upgrades.js";
 
 // ===== DRONE SYSTEM =====
 
@@ -21,7 +20,8 @@ function createDrone(ownerId, orbitAngleOffset) {
 		range: consts.DRONE_RANGE || 200,
 		cooldownRemaining: 0,
 		orbitRadius: consts.DRONE_ORBIT_RADIUS || 55,
-		orbitAngleOffset,
+		orbitAngleOffset,           // Starting offset for this drone (evenly spaced)
+		currentOrbitAngle: orbitAngleOffset,  // Current angle (animated)
 		targetId: null
 	};
 }
@@ -41,6 +41,8 @@ function rebuildDronesArray(player, count) {
 		if (i < oldDrones.length) {
 			const old = oldDrones[i];
 			old.orbitAngleOffset = offset;
+			// Update current orbit angle to maintain smooth spacing
+			old.currentOrbitAngle = offset;
 			newDrones.push(old);
 		} else {
 			// Create new drone
@@ -53,26 +55,27 @@ function rebuildDronesArray(player, count) {
 }
 
 /**
- * Calculate the cost of the next drone for a player.
- */
-function getDroneNextCost(droneCount) {
-	const baseCost = consts.DRONE_BASE_COST || 120;
-	const mult = consts.DRONE_COST_MULT || 1.6;
-	// Cost for drone N (0-indexed): baseCost * mult^N
-	return Math.floor(baseCost * Math.pow(mult, droneCount));
-}
-
-/**
  * Update drone positions to orbit around player.
+ * @param {Object} player - The player whose drones to update
+ * @param {number} deltaSeconds - Time elapsed since last update
  */
-function updateDronePositions(player) {
+function updateDronePositions(player, deltaSeconds) {
 	if (!player.drones) return;
 	
+	const orbitSpeed = consts.DRONE_ORBIT_SPEED || 1.5; // radians per second
+	
 	for (const drone of player.drones) {
-		// Orbit position based on player angle + drone offset
-		const angle = player.angle + drone.orbitAngleOffset;
-		drone.x = player.x + Math.cos(angle) * drone.orbitRadius;
-		drone.y = player.y + Math.sin(angle) * drone.orbitRadius;
+		// Continuously rotate the drone's orbit angle
+		drone.currentOrbitAngle += orbitSpeed * deltaSeconds;
+		
+		// Keep angle in [0, 2*PI] range to prevent floating point issues
+		if (drone.currentOrbitAngle > Math.PI * 2) {
+			drone.currentOrbitAngle -= Math.PI * 2;
+		}
+		
+		// Calculate position based on player center and current orbit angle
+		drone.x = player.x + Math.cos(drone.currentOrbitAngle) * drone.orbitRadius;
+		drone.y = player.y + Math.sin(drone.currentOrbitAngle) * drone.orbitRadius;
 		drone.ownerId = player.num;
 	}
 }
@@ -152,14 +155,10 @@ function Game(id) {
 	let frame = 0;
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 	
-	// Coins system (world pickups)
-	let coins = [];
+	// XP pickups (world pickups - renamed from coins)
+	let coins = [];  // Still called "coins" internally for pickup entities
 	let nextCoinId = 0;
 	let coinSpawnCooldown = 0;
-
-	// BankStore system - one per player, keyed by player.num
-	const bankStores = {};
-	let nextBankStoreId = 0;
 	
 	// Turret system
 	let turrets = [];
@@ -191,41 +190,26 @@ function Game(id) {
 		p.targetAngle = params.angle;
 		p.client = client;
 		
-		// Initialize upgrade multipliers (persist through death for session)
+		// Initialize stat multipliers
 		p.staminaRegenMult = 1.0;
 		p.staminaDrainMult = 1.0;
 		p.speedMult = 1.0;
 		p.snipGraceBonusSec = 0;
-		p.upgrades = []; // Track applied upgrade IDs
-		p.lastBankDepositTime = 0; // Cooldown tracking
 		
-		// Bank meter system (Archero-style)
-		p.coins = 0;
-		p.bankProgress = 0;
-		p.bankTarget = consts.BANK_BASE_TARGET;
-		p.bankLevel = 0;
-		p.isChoosingUpgrade = false;
-		p.upgradeOptions = []; // 3 options when choosing
+		// XP/Level system - start at level 1 with 0 XP
+		p.level = 1;
+		p.xp = 0;
+		p.updateSizeScale();
 		
-		// Drone system - start with 1 drone
-		p.droneCount = 1;
+		// Drone system - drones = level (start with 1)
+		p.droneCount = p.level;
 		p.drones = [];
-		rebuildDronesArray(p, 1);
+		rebuildDronesArray(p, p.droneCount);
 		
 		players.push(p);
 		newPlayers.push(p);
 		nextInd++;
 		initPlayer(p);
-		
-		// Create BankStore for this player at their spawn location
-		const bankStore = {
-			id: nextBankStoreId++,
-			ownerId: p.num,
-			x: p.spawnX,
-			y: p.spawnY,
-			radius: consts.BANKSTORE_RADIUS
-		};
-		bankStores[p.num] = bankStore;
 		
 		if (p.name.indexOf("[BOT]") == -1) {
 			console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) joined.`);
@@ -242,7 +226,6 @@ function Game(id) {
 				"frame": frame,
 				"players": splayers,
 				"coins": coins,
-				"bankStores": Object.values(bankStores),
 				"turrets": turrets,
 				"projectiles": projectiles
 			});
@@ -254,12 +237,6 @@ function Game(id) {
 				return;
 			}
 			if (typeof errorHan !== "function") errorHan = () => {};
-			
-			// Ignore movement input while choosing upgrade (frozen)
-			if (p.isChoosingUpgrade) {
-				errorHan(true);
-				return;
-			}
 			
 			if (!data) {
 				errorHan(false, "No data supplied.");
@@ -278,8 +255,6 @@ function Game(id) {
 		client.on("disconnect", () => {
 			p.die();
 			p.disconnected = true;
-			// Clean up bankstore when player disconnects
-			delete bankStores[p.num];
 			// Clean up turret spawn timer
 			delete turretSpawnTimers[p.num];
 			if (p.name.indexOf("[BOT]") == -1) {
@@ -287,132 +262,21 @@ function Game(id) {
 			}
 		});
 		
-		// Handle upgrade choice (Archero-style level-up)
-		client.on("chooseUpgrade", (data, callback) => {
-			if (typeof callback !== "function") callback = () => {};
-			
-			if (!p.isChoosingUpgrade) {
-				callback(false, "Not in upgrade selection");
-				return;
-			}
-			
-			const upgradeId = data?.upgradeId;
-			if (!upgradeId) {
-				callback(false, "No upgrade ID provided");
-				return;
-			}
-			
-			// Validate that the chosen upgrade is one of the offered options
-			const validOption = p.upgradeOptions.find(opt => opt.id === upgradeId);
-			if (!validOption) {
-				callback(false, "Invalid upgrade choice");
-				return;
-			}
-			
-			// Apply the upgrade
-			const success = applyUpgrade(p, upgradeId);
-			if (!success) {
-				callback(false, "Failed to apply upgrade");
-				return;
-			}
-			
-			p.upgrades.push(upgradeId);
-
-			// Clear choosing state (we may re-trigger immediately if carryover fills next target)
-			p.isChoosingUpgrade = false;
-			p.upgradeOptions = [];
-
-			// Advance level + target
-			p.bankLevel += 1;
-			p.bankTarget = consts.BANK_BASE_TARGET + p.bankLevel * consts.BANK_TARGET_INCREMENT;
-
-			// Carryover: any overage deposited beyond the previous target should apply to next level
-			// We store overage on triggerLevelUp() in p._bankCarryOver.
-			const carry = Math.max(0, p._bankCarryOver || 0);
-			p._bankCarryOver = 0;
-			p.bankProgress = carry;
-
-			// If carryover is enough to immediately fill the next target, prompt again (no extra deposit needed)
-			if (p.bankProgress >= p.bankTarget) {
-				triggerLevelUp(p);
-			}
-
-			// Ensure clients get an update even if no economy event happens this tick.
-			p._forceBankUpdate = true;
-
-			console.log(`[${new Date()}] ${p.name} chose upgrade: ${validOption.name} (Level ${p.bankLevel})`);
-			callback(true, "Upgrade applied");
-		});
-		
-		// Handle buy drone request
-		client.on("buyDrone", (data, callback) => {
-			if (typeof callback !== "function") callback = () => {};
-			
-			// Check if player is at their bank position
-			const store = bankStores[p.num];
-			if (!store) {
-				callback(false, "No bank store found");
-				return;
-			}
-			
-			const distToStore = Math.hypot(p.x - store.x, p.y - store.y);
-			if (distToStore > store.radius) {
-				callback(false, "Not at home base");
-				return;
-			}
-			
-			// Check drone cap
-			const maxDrones = consts.MAX_DRONES || 6;
-			if ((p.droneCount || 1) >= maxDrones) {
-				callback(false, "Max drones reached");
-				return;
-			}
-			
-			// Check cost
-			const cost = getDroneNextCost(p.droneCount || 1);
-			if ((p.coins || 0) < cost) {
-				callback(false, "Not enough coins");
-				return;
-			}
-			
-			// Purchase successful
-			p.coins -= cost;
-			p.droneCount = (p.droneCount || 1) + 1;
-			rebuildDronesArray(p, p.droneCount);
-			
-			// Mark for update
-			p._forceBankUpdate = true;
-			
-			console.log(`[${new Date()}] ${p.name} bought drone #${p.droneCount} for ${cost} coins`);
-			callback(true, "Drone purchased");
-		});
-		
 		return true;
 	};
 	
-	// Serialize player with bank meter stats
-	// viewerNum: the player requesting this data (for private fields like upgradeOptions)
+	// Serialize player with XP/level stats
 	function serializePlayer(player, viewerNum) {
 		const data = player.serialData();
 		data.staminaRegenMult = player.staminaRegenMult || 1.0;
 		data.staminaDrainMult = player.staminaDrainMult || 1.0;
 		data.speedMult = player.speedMult || 1.0;
 		data.snipGraceBonusSec = player.snipGraceBonusSec || 0;
-		data.upgrades = player.upgrades || [];
 		
-		// Bank meter fields
-		data.coins = player.coins || 0;
-		data.bankProgress = player.bankProgress || 0;
-		data.bankTarget = player.bankTarget || consts.BANK_BASE_TARGET;
-		data.bankLevel = player.bankLevel || 0;
-		data.isChoosingUpgrade = player.isChoosingUpgrade || false;
-		
-		// Only send upgradeOptions to the owner (privacy)
-		if (viewerNum === player.num && player.isChoosingUpgrade) {
-			data.upgradeOptions = player.upgradeOptions;
-		} else {
-			data.upgradeOptions = [];
-		}
+		// XP/Level fields
+		data.level = player.level || 1;
+		data.xp = player.xp || 0;
+		data.sizeScale = player.sizeScale || 1.0;
 		
 		// Drone data
 		data.droneCount = player.droneCount || 1;
@@ -442,7 +306,6 @@ function Game(id) {
 			"frame": frame,
 			"players": splayers,
 			"coins": coins,
-			"bankStores": Object.values(bankStores),
 			"turrets": turrets,
 			"projectiles": projectiles
 		});
@@ -457,7 +320,6 @@ function Game(id) {
 				"frame": frame,
 				"players": splayers,
 				"coins": coins,
-				"bankStores": Object.values(bankStores),
 				"turrets": turrets,
 				"projectiles": projectiles
 			});
@@ -471,7 +333,8 @@ function Game(id) {
 		const economyDeltas = {
 			coinSpawns: [],
 			coinRemovals: [],
-			bankUpdates: [], // Bank meter updates
+			xpUpdates: [], // XP/Level updates
+			levelUps: [],  // Level up events
 			turretSpawns: [],
 			turretRemovals: [],
 			turretUpdates: [], // HP changes, target changes
@@ -506,7 +369,6 @@ function Game(id) {
 				"frame": frame,
 				"players": splayers,
 				"coins": coins,
-				"bankStores": Object.values(bankStores),
 				"turrets": turrets,
 				"projectiles": projectiles
 			});
@@ -517,8 +379,7 @@ function Game(id) {
 			return {
 				num: val.num,
 				left: !!val.disconnected,
-				targetAngle: val.targetAngle,
-				isChoosingUpgrade: val.isChoosingUpgrade
+				targetAngle: val.targetAngle
 			};
 		});
 		
@@ -532,7 +393,8 @@ function Game(id) {
 		// Add economy deltas if they exist
 		if (economyDeltas.coinSpawns.length > 0) data.coinSpawns = economyDeltas.coinSpawns;
 		if (economyDeltas.coinRemovals.length > 0) data.coinRemovals = economyDeltas.coinRemovals;
-		if (economyDeltas.bankUpdates.length > 0) data.bankUpdates = economyDeltas.bankUpdates;
+		if (economyDeltas.xpUpdates.length > 0) data.xpUpdates = economyDeltas.xpUpdates;
+		if (economyDeltas.levelUps.length > 0) data.levelUps = economyDeltas.levelUps;
 		if (economyDeltas.turretSpawns.length > 0) data.turretSpawns = economyDeltas.turretSpawns;
 		if (economyDeltas.turretRemovals.length > 0) data.turretRemovals = economyDeltas.turretRemovals;
 		if (economyDeltas.turretUpdates.length > 0) data.turretUpdates = economyDeltas.turretUpdates;
@@ -566,11 +428,13 @@ function Game(id) {
 		const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
 
 		for (const p of dead) {
-			// Drop coins as loot when player dies (always drop at least minimum)
+			// Drop XP as loot when player dies (always drop at least minimum)
 			if (!p.handledDead) {
-				const heldCoins = p.coins || 0;
-				const fromHeld = Math.floor(heldCoins * consts.COIN_DROP_PERCENT);
-				const dropAmount = Math.max(consts.COIN_DROP_MIN, fromHeld);
+				// Calculate XP to drop based on current level and XP
+				const XP_PER_LEVEL = consts.XP_PER_LEVEL || 100;
+				const totalXp = (p.level - 1) * XP_PER_LEVEL + p.xp;
+				const fromXp = Math.floor(totalXp * consts.COIN_DROP_PERCENT);
+				const dropAmount = Math.max(consts.COIN_DROP_MIN, fromXp);
 				
 				// Spawn coins in a burst pattern around death location
 				const numCoins = Math.min(Math.ceil(dropAmount / consts.COIN_VALUE), 20); // Cap visual coins at 20
@@ -598,7 +462,8 @@ function Game(id) {
 					coins.push(newCoin);
 					economyDeltas.coinSpawns.push(newCoin);
 				}
-				p.coins = Math.max(0, heldCoins - fromHeld);
+				// Note: XP is dropped as pickups, but player state is handled separately
+				// (death penalty is applied when player respawns, not here)
 			}
 			
 			if (!p.handledDead) {
@@ -616,7 +481,7 @@ function Game(id) {
 		
 		// 1. Spawn turrets for each player
 		for (const p of players) {
-			if (p.dead || p.isChoosingUpgrade) continue;
+			if (p.dead) continue;
 			
 			// Initialize spawn timer if needed
 			if (turretSpawnTimers[p.num] === undefined) {
@@ -732,7 +597,7 @@ function Game(id) {
 			let minDist = turret.range;
 			
 			for (const p of players) {
-				if (p.dead || p.num === turret.ownerId || p.isChoosingUpgrade) continue;
+				if (p.dead || p.num === turret.ownerId) continue;
 				
 				const dist = Math.hypot(p.x - turret.x, p.y - turret.y);
 				if (dist < minDist) {
@@ -803,7 +668,7 @@ function Game(id) {
 			if (p.dead || !p.drones) continue;
 			
 			// Update drone positions (orbit around player)
-			updateDronePositions(p);
+			updateDronePositions(p, deltaSeconds);
 			
 			// Check if player is in own territory (for HP regen)
 			const inTerritory = p.territory && p.territory.length >= 3 && 
@@ -817,9 +682,6 @@ function Game(id) {
 					drone.hp = Math.min(drone.maxHp, drone.hp + regenRate * deltaSeconds);
 				}
 				
-				// Skip targeting/shooting if dead or choosing upgrade
-				if (p.isChoosingUpgrade) continue;
-				
 				// Reduce cooldown
 				if (drone.cooldownRemaining > 0) {
 					drone.cooldownRemaining -= deltaSeconds;
@@ -830,7 +692,7 @@ function Game(id) {
 				let minDist = drone.range;
 				
 				for (const enemy of players) {
-					if (enemy.dead || enemy.num === p.num || enemy.isChoosingUpgrade) continue;
+					if (enemy.dead || enemy.num === p.num) continue;
 					// Don't target snipped invulnerable players (if you want this behavior)
 					// if (enemy.isSnipped) continue;
 					
@@ -910,7 +772,7 @@ function Game(id) {
 			// Check collision with players (except owner)
 			let hit = false;
 			for (const p of players) {
-				if (p.dead || p.num === proj.ownerId || p.isChoosingUpgrade) continue;
+				if (p.dead || p.num === proj.ownerId) continue;
 				
 				const dist = Math.hypot(p.x - proj.x, p.y - proj.y);
 				if (dist < playerRadius + projectileRadius) {
@@ -983,10 +845,11 @@ function Game(id) {
 		for (const p of dead) {
 			if (p.handledDead) continue; // Skip if already processed
 			
-			// Drop coins as loot when player dies
-			const heldCoins = p.coins || 0;
-			const fromHeld = Math.floor(heldCoins * consts.COIN_DROP_PERCENT);
-			const dropAmount = Math.max(consts.COIN_DROP_MIN, fromHeld);
+			// Drop XP as loot when player dies
+			const XP_PER_LEVEL = consts.XP_PER_LEVEL || 100;
+			const totalXp = (p.level - 1) * XP_PER_LEVEL + p.xp;
+			const fromXp = Math.floor(totalXp * consts.COIN_DROP_PERCENT);
+			const dropAmount = Math.max(consts.COIN_DROP_MIN, fromXp);
 			
 			const numCoins = Math.min(Math.ceil(dropAmount / consts.COIN_VALUE), 20);
 			const valuePerCoin = Math.ceil(dropAmount / numCoins);
@@ -1011,7 +874,6 @@ function Game(id) {
 				coins.push(newCoin);
 				economyDeltas.coinSpawns.push(newCoin);
 			}
-			p.coins = Math.max(0, heldCoins - fromHeld);
 			
 			possColors.push(p.baseColor);
 			p.handledDead = true;
@@ -1040,47 +902,33 @@ function Game(id) {
 			}
 		}
 
-		// Process alive players economy
+		// Process alive players economy (XP/Leveling)
 		for (const p of players) {
-			// Skip economy processing while choosing upgrade (frozen state)
-			if (p.isChoosingUpgrade) {
-				// Still allow forced bank updates (e.g. triggered by chooseUpgrade)
-				if (p._forceBankUpdate) {
-					economyDeltas.bankUpdates.push({
-						num: p.num,
-						coins: p.coins,
-						bankProgress: p.bankProgress,
-						bankTarget: p.bankTarget,
-						bankLevel: p.bankLevel,
-						isChoosingUpgrade: p.isChoosingUpgrade,
-						upgradeOptions: p.isChoosingUpgrade ? p.upgradeOptions : []
-					});
-					p._forceBankUpdate = false;
-				}
-				continue;
-			}
+			if (p.dead) continue;
 			
 			let changed = false;
+			const XP_PER_LEVEL = consts.XP_PER_LEVEL || 100;
 
-			// 1. Coin pickups -> add to coins (not bankProgress yet)
+			// 1. XP pickups (coins) -> add directly to XP
+			const scaledRadius = p.getScaledRadius ? p.getScaledRadius() : PLAYER_RADIUS;
 			for (let i = coins.length - 1; i >= 0; i--) {
 				const coin = coins[i];
 				const dist = Math.hypot(p.x - coin.x, p.y - coin.y);
-				if (dist < PLAYER_RADIUS + consts.COIN_RADIUS) {
-					p.coins += coin.value;
+				if (dist < scaledRadius + consts.COIN_RADIUS) {
+					p.xp += coin.value;
 					economyDeltas.coinRemovals.push(coin.id);
 					coins.splice(i, 1);
 					changed = true;
 				}
 			}
 
-			// 2. Territory rewards -> add to coins
+			// 2. Territory rewards -> add directly to XP
 			if (p._pendingTerritoryAreaGained > 0) {
-				p._territoryCoinCarry += p._pendingTerritoryAreaGained * consts.COINS_PER_AREA_UNIT;
-				const coinsGained = Math.floor(p._territoryCoinCarry);
-				if (coinsGained > 0) {
-					p.coins += coinsGained;
-					p._territoryCoinCarry -= coinsGained;
+				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * consts.COINS_PER_AREA_UNIT;
+				const xpGained = Math.floor(p._territoryCoinCarry);
+				if (xpGained > 0) {
+					p.xp += xpGained;
+					p._territoryCoinCarry -= xpGained;
 					changed = true;
 					
 					// Emit capture event for visual feedback
@@ -1088,45 +936,44 @@ function Game(id) {
 						playerNum: p.num,
 						x: p.x,
 						y: p.y,
-						coinsGained: coinsGained,
+						xpGained: xpGained,
 						areaGained: p._pendingTerritoryAreaGained
 					});
 				}
 				p._pendingTerritoryAreaGained = 0;
 			}
 
-			// 3. Deposit coins -> bankProgress (only at player's own bank circle)
-			const store = bankStores[p.num];
-			if (store && p.coins > 0) {
-				const distToStore = Math.hypot(p.x - store.x, p.y - store.y);
-				const now = Date.now();
-				if (distToStore < store.radius && (now - p.lastBankDepositTime) >= consts.BANK_DEPOSIT_COOLDOWN_MS) {
-					// Deposit all coins into bankProgress
-					p.bankProgress += p.coins;
-					p.coins = 0;
-					p.lastBankDepositTime = now;
-					changed = true;
-					
-					// Check if bank meter is full -> trigger level-up
-					if (p.bankProgress >= p.bankTarget && !p.isChoosingUpgrade) {
-						triggerLevelUp(p);
-						changed = true;
-					}
-				}
+			// 3. Auto-level up when XP threshold reached
+			let leveledUp = false;
+			while (p.xp >= XP_PER_LEVEL) {
+				p.xp -= XP_PER_LEVEL;
+				p.level += 1;
+				leveledUp = true;
+				changed = true;
+				
+				// Apply level benefits: +1 drone, update size
+				applyLevelBenefits(p);
+				
+				economyDeltas.levelUps.push({
+					playerNum: p.num,
+					newLevel: p.level,
+					x: p.x,
+					y: p.y
+				});
+				
+				console.log(`[${new Date()}] ${p.name} reached level ${p.level}!`);
 			}
 
-			if (changed || p._forceBankUpdate) {
-				economyDeltas.bankUpdates.push({
+			if (changed || p._forceXpUpdate) {
+				economyDeltas.xpUpdates.push({
 					num: p.num,
-					coins: p.coins,
-					bankProgress: p.bankProgress,
-					bankTarget: p.bankTarget,
-					bankLevel: p.bankLevel,
-					isChoosingUpgrade: p.isChoosingUpgrade,
-					upgradeOptions: p.isChoosingUpgrade ? p.upgradeOptions : [],
+					level: p.level,
+					xp: p.xp,
+					xpPerLevel: XP_PER_LEVEL,
+					sizeScale: p.sizeScale,
 					droneCount: p.droneCount || 1
 				});
-				p._forceBankUpdate = false;
+				p._forceXpUpdate = false;
 			}
 			
 			// Always send drone updates (positions change every frame)
@@ -1146,21 +993,21 @@ function Game(id) {
 		}
 	}
 	
-	function triggerLevelUp(player) {
-		if (player.isChoosingUpgrade) return;
-
-		// Compute carryover and keep the meter visually \"full\" during selection.
-		const carry = Math.max(0, (player.bankProgress || 0) - (player.bankTarget || 0));
-		player._bankCarryOver = carry;
-		player.bankProgress = player.bankTarget;
-
-		player.isChoosingUpgrade = true;
-		player.upgradeOptions = pickUpgradeOptions(3);
-
-		// Ensure clients receive the upgradeOptions immediately
-		player._forceBankUpdate = true;
-
-		console.log(`[${new Date()}] ${player.name} reached bank level ${player.bankLevel + 1}! Choosing upgrade...`);
+	/**
+	 * Apply level-up benefits: +1 drone and increased player size
+	 */
+	function applyLevelBenefits(player) {
+		// Update size scale based on new level
+		player.updateSizeScale();
+		
+		// Add one drone (up to max)
+		const maxDrones = consts.MAX_DRONES || 50;
+		const newDroneCount = Math.min(player.level, maxDrones);
+		
+		if (newDroneCount > (player.droneCount || 1)) {
+			player.droneCount = newDroneCount;
+			rebuildDronesArray(player, player.droneCount);
+		}
 	}
 }
 
