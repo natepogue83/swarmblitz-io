@@ -32,14 +32,15 @@
     "@fortawesome/fontawesome-free": "^6.2.0",
     "jquery": "^3.6.1",
     "mimi-server": "^0.0.1",
+    "polygon-clipping": "^0.15.7",
     "socket.io": "^4.5.3",
     "socket.io-client": "^4.5.3"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^23.0.2",
-    "cross-env": "^7.0.3",
     "@rollup/plugin-node-resolve": "^15.0.1",
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
     "nodemon": "^3.1.11",
     "rollup": "^3.3.0",
     "terser": "^5.15.1",

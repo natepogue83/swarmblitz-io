@@ -273,7 +273,8 @@ function Game(id) {
 			levelUps: [],  // Level up events
 			hitscanEvents: [], // Drone hitscan laser shots
 			captureEvents: [], // Capture success events for visual feedback
-			droneUpdates: [] // Drone position updates
+			droneUpdates: [], // Drone position updates
+			killEvents: [] // Kill events for kill counter
 		};
 
 		// Coin spawning
@@ -327,6 +328,7 @@ function Game(id) {
 		if (economyDeltas.hitscanEvents.length > 0) data.hitscanEvents = economyDeltas.hitscanEvents;
 		if (economyDeltas.captureEvents.length > 0) data.captureEvents = economyDeltas.captureEvents;
 		if (economyDeltas.droneUpdates.length > 0) data.droneUpdates = economyDeltas.droneUpdates;
+		if (economyDeltas.killEvents.length > 0) data.killEvents = economyDeltas.killEvents;
 		
 		if (snews.length > 0) {
 			data.newPlayers = snews;
@@ -347,20 +349,51 @@ function Game(id) {
 
 	function update(economyDeltas, deltaSeconds) {
 		const dead = [];
-		updateFrame(players, dead);
+		
+		// Callback for collision kills (from updateFrame)
+		const notifyKill = (killerIdx, victimIdx) => {
+			const killer = players[killerIdx];
+			const victim = players[victimIdx];
+			if (killer && victim) {
+				economyDeltas.killEvents.push({
+					killerNum: killer.num,
+					victimNum: victim.num,
+					victimName: victim.name || 'Unknown',
+					killType: 'collision'
+				});
+			}
+		};
+		
+		updateFrame(players, dead, notifyKill);
+		
+		// Check for snip deaths (players who died while snipped)
+		for (const p of dead) {
+			if (p.snippedBy != null) {
+				// This player died from a snip - credit the snipper
+				economyDeltas.killEvents.push({
+					killerNum: p.snippedBy,
+					victimNum: p.num,
+					victimName: p.name || 'Unknown',
+					killType: 'snip'
+				});
+			}
+		}
 		
 		const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
 
 		for (const p of dead) {
 			// Drop XP as loot when player dies (always drop at least minimum)
 			if (!p.handledDead) {
-				// Calculate XP to drop based on current level and XP
+				// Calculate total XP based on current level and XP
 				// Sum up XP from all previous levels plus current XP
 				let totalXp = p.xp;
 				for (let lvl = 1; lvl < p.level; lvl++) {
 					totalXp += getXpForLevel(lvl);
 				}
-				const fromXp = Math.floor(totalXp * consts.COIN_DROP_PERCENT);
+				
+				// Drop 15% as loot coins
+				const dropPercent = consts.COIN_DROP_PERCENT ?? 0.15;
+				const fromXp = Math.floor(totalXp * dropPercent);
 				const dropAmount = Math.max(consts.COIN_DROP_MIN, fromXp);
 				
 				// Spawn coins in a burst pattern around death location
@@ -389,8 +422,57 @@ function Game(id) {
 					coins.push(newCoin);
 					economyDeltas.coinSpawns.push(newCoin);
 				}
-				// Note: XP is dropped as pickups, but player state is handled separately
-				// (death penalty is applied when player respawns, not here)
+				
+				// Transfer 15% directly to killer (if there is one)
+				const killerPercent = consts.KILLER_XP_PERCENT ?? 0.20;
+				const killerXpCalc = Math.floor(totalXp * killerPercent);
+				const killerXp = Math.max(consts.KILLER_XP_MIN || 20, killerXpCalc);
+				
+				// Find the killer from killEvents
+				const killEvent = economyDeltas.killEvents.find(evt => evt.victimNum === p.num);
+				if (killEvent) {
+					const killer = players.find(pl => pl.num === killEvent.killerNum && !pl.dead);
+					if (killer) {
+						// Add XP to killer
+						killer.xp += killerXp;
+						
+						// Check for level up
+						let xpNeeded = getXpForLevel(killer.level);
+						while (killer.xp >= xpNeeded && killer.level < (consts.MAX_DRONES || 50)) {
+							killer.xp -= xpNeeded;
+							killer.level++;
+							
+							// Update size scale
+							const sizePerLevel = consts.PLAYER_SIZE_SCALE_PER_LEVEL || 0.04;
+							const maxScale = consts.PLAYER_SIZE_SCALE_MAX || 2.0;
+							killer.sizeScale = Math.min(maxScale, 1.0 + (killer.level - 1) * sizePerLevel);
+							
+							// Rebuild drones for new level
+							rebuildDronesArray(killer, killer.level);
+							
+							// Send level up event
+							economyDeltas.levelUps.push({
+								playerNum: killer.num,
+								newLevel: killer.level,
+								droneCount: killer.drones.length
+							});
+							
+							xpNeeded = getXpForLevel(killer.level);
+						}
+						
+						// Send XP update
+						economyDeltas.xpUpdates.push({
+							num: killer.num,
+							xp: killer.xp,
+							level: killer.level,
+							xpPerLevel: getXpForLevel(killer.level),
+							sizeScale: killer.sizeScale,
+							droneCount: killer.drones.length
+						});
+						
+						console.log(`[KILL REWARD] ${killer.name} received ${killerXp} XP for killing ${p.name} (victim had ${totalXp} total XP)`);
+					}
+				}
 			}
 			
 			if (!p.handledDead) {
@@ -424,6 +506,12 @@ function Game(id) {
 					drone.cooldownRemaining -= deltaSeconds;
 				}
 				
+				// Drones are disabled when owner is snipped (can't target or fire)
+				if (p.isSnipped) {
+					drone.targetId = null;
+					continue; // Skip targeting and firing
+				}
+				
 				// Find target (nearest enemy player in range, measured from the owner center)
 				let target = null;
 				let minDist = drone.range;
@@ -449,17 +537,28 @@ function Game(id) {
 				if (target && drone.cooldownRemaining <= 0) {
 					drone.cooldownRemaining = consts.DRONE_COOLDOWN || 1.0;
 					
-					// Calculate damage dynamically from config (first drone = full, rest = extra)
+					// Calculate damage dynamically from config
+					// First drone = full damage, 2nd = EXTRA_MULT, 3rd+ = decay factor applied
 					const droneIndex = p.drones.indexOf(drone);
 					const baseDamage = consts.DRONE_DAMAGE || 10;
-					const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
-					let damage = droneIndex === 0 ? baseDamage : extraDamage;
+					const extraMult = consts.DRONE_DAMAGE_EXTRA_MULT ?? 0.35;
+					const decayFactor = consts.DRONE_DAMAGE_DECAY_FACTOR ?? 0.9;
+					
+					let damage;
+					if (droneIndex === 0) {
+						damage = baseDamage;
+					} else if (droneIndex === 1) {
+						damage = baseDamage * extraMult;
+					} else {
+						// 3rd drone and beyond: apply decay factor for each drone after the 2nd
+						damage = baseDamage * extraMult * Math.pow(decayFactor, droneIndex - 1);
+					}
 					
 					// Apply damage reduction if target is in their own territory
-					const targetInTerritory = target.lands && target.lands.length > 0 && 
-						pointInPolygon(target.lands, target.x, target.y);
+					const targetInTerritory = target.territory && target.territory.length > 0 && 
+						pointInPolygon({ x: target.x, y: target.y }, target.territory);
 					if (targetInTerritory) {
-						const reduction = consts.TERRITORY_DAMAGE_REDUCTION || 0.5;
+						const reduction = consts.TERRITORY_DAMAGE_REDUCTION ?? 0.5;
 						damage = damage * (1 - reduction);
 					}
 					
@@ -485,6 +584,14 @@ function Game(id) {
 					if (target.hp <= 0) {
 						target.die();
 						dead.push(target);
+						
+						// Send kill event for the drone owner
+						economyDeltas.killEvents.push({
+							killerNum: p.num,
+							victimNum: target.num,
+							victimName: target.name || 'Unknown',
+							killType: 'drone'
+						});
 					}
 				}
 			}
@@ -495,13 +602,15 @@ function Game(id) {
 		for (const p of dead) {
 			if (p.handledDead) continue; // Skip if already processed
 			
-			// Drop XP as loot when player dies
-			// Sum up XP from all previous levels plus current XP
+			// Calculate total XP
 			let totalXp = p.xp;
 			for (let lvl = 1; lvl < p.level; lvl++) {
 				totalXp += getXpForLevel(lvl);
 			}
-			const fromXp = Math.floor(totalXp * consts.COIN_DROP_PERCENT);
+			
+			// Drop 15% as loot coins
+			const dropPercent = consts.COIN_DROP_PERCENT ?? 0.15;
+			const fromXp = Math.floor(totalXp * dropPercent);
 			const dropAmount = Math.max(consts.COIN_DROP_MIN, fromXp);
 			
 			const numCoins = Math.min(Math.ceil(dropAmount / consts.COIN_VALUE), 20);
@@ -526,6 +635,57 @@ function Game(id) {
 				newCoin.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.y));
 				coins.push(newCoin);
 				economyDeltas.coinSpawns.push(newCoin);
+			}
+			
+			// Transfer 15% directly to killer (if there is one)
+			const killerPercent = consts.KILLER_XP_PERCENT ?? 0.15;
+			const killerXpCalc = Math.floor(totalXp * killerPercent);
+			const killerXp = Math.max(consts.KILLER_XP_MIN || 5, killerXpCalc);
+			
+			// Find the killer from killEvents
+			const killEvent = economyDeltas.killEvents.find(evt => evt.victimNum === p.num);
+			if (killEvent) {
+				const killer = players.find(pl => pl.num === killEvent.killerNum && !pl.dead);
+				if (killer) {
+					// Add XP to killer
+					killer.xp += killerXp;
+					
+					// Check for level up
+					let xpNeeded = getXpForLevel(killer.level);
+					while (killer.xp >= xpNeeded && killer.level < (consts.MAX_DRONES || 50)) {
+						killer.xp -= xpNeeded;
+						killer.level++;
+						
+						// Update size scale
+						const sizePerLevel = consts.PLAYER_SIZE_SCALE_PER_LEVEL || 0.04;
+						const maxScale = consts.PLAYER_SIZE_SCALE_MAX || 2.0;
+						killer.sizeScale = Math.min(maxScale, 1.0 + (killer.level - 1) * sizePerLevel);
+						
+						// Rebuild drones for new level
+						rebuildDronesArray(killer, killer.level);
+						
+						// Send level up event
+						economyDeltas.levelUps.push({
+							playerNum: killer.num,
+							newLevel: killer.level,
+							droneCount: killer.drones.length
+						});
+						
+						xpNeeded = getXpForLevel(killer.level);
+					}
+					
+					// Send XP update
+					economyDeltas.xpUpdates.push({
+						num: killer.num,
+						xp: killer.xp,
+						level: killer.level,
+						xpPerLevel: getXpForLevel(killer.level),
+						sizeScale: killer.sizeScale,
+						droneCount: killer.drones.length
+					});
+					
+					console.log(`[KILL REWARD] ${killer.name} received ${killerXp} XP for killing ${p.name} (victim had ${totalXp} total XP)`);
+				}
 			}
 			
 			possColors.push(p.baseColor);

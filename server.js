@@ -3,6 +3,7 @@ import MiServer from "mimi-server";
 import { Server } from "socket.io";
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { exec, fork } from "child_process";
 import { config } from "./config.js";
 import { fileURLToPath } from "url";
@@ -24,6 +25,27 @@ const io = new Server(server);
 
 // Routing
 app.use("/font", express.static(path.join(__dirname, "node_modules/@fortawesome/fontawesome-free")));
+
+// API endpoint to list music playlist files
+app.get("/api/playlist", (req, res) => {
+	const playlistDir = path.join(__dirname, "public", "music", "playlist");
+	
+	fs.readdir(playlistDir, (err, files) => {
+		if (err) {
+			console.error("Error reading playlist directory:", err);
+			return res.json({ tracks: [] });
+		}
+		
+		// Filter for MP3 files only
+		const mp3Files = files.filter(file => 
+			file.toLowerCase().endsWith('.mp3') || 
+			file.toLowerCase().endsWith('.ogg') ||
+			file.toLowerCase().endsWith('.wav')
+		);
+		
+		res.json({ tracks: mp3Files });
+	});
+});
 
 import Game from "./src/game-server.js";
 const game = new Game();

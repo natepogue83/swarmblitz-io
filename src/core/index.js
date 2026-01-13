@@ -24,20 +24,43 @@ export function initPlayer(player) {
 }
 
 /**
- * Regenerates player HP when in their own territory.
+ * Updates player stamina based on whether they are in their own territory.
+ * Also regenerates HP when in territory.
  * @param {Player} player 
  * @param {number} deltaSeconds 
  */
-export function updatePlayerInTerritory(player, deltaSeconds) {
+export function updateStamina(player, deltaSeconds) {
 	const inTerritory = player.isInOwnTerritory();
 	
+	// Apply stat multipliers (default to 1.0 if not set)
+	const regenMult = player.staminaRegenMult || 1.0;
+	const drainMult = player.staminaDrainMult || 1.0;
+	
 	if (inTerritory) {
+		// Regenerate stamina
+		player.stamina += consts.STAMINA_REGEN_INSIDE_PER_SEC * regenMult * deltaSeconds;
+		if (player.stamina > player.maxStamina) {
+			player.stamina = player.maxStamina;
+		}
+		
+		// Recover from exhaustion
+		if (player.isExhausted && player.stamina >= consts.EXHAUSTED_RECOVER_THRESHOLD) {
+			player.isExhausted = false;
+		}
+		
 		// Regenerate HP in territory
 		if (player.hp < player.maxHp) {
 			player.hp += (consts.PLAYER_HP_REGEN_IN_TERRITORY || 8) * deltaSeconds;
 			if (player.hp > player.maxHp) {
 				player.hp = player.maxHp;
 			}
+		}
+	} else {
+		// Drain stamina outside territory
+		player.stamina -= consts.STAMINA_DRAIN_OUTSIDE_PER_SEC * drainMult * deltaSeconds;
+		if (player.stamina <= 0) {
+			player.stamina = 0;
+			player.isExhausted = true;
 		}
 	}
 }
@@ -55,7 +78,7 @@ export function updateFrame(players, dead, notifyKill) {
 		// Store previous territory area to detect captures
 		const prevArea = polygonArea(player.territory);
 		
-		updatePlayerInTerritory(player, deltaSeconds);
+		updateStamina(player, deltaSeconds);
 		player.move(deltaSeconds);
 		
 		// Check if player captured territory (area increased)
@@ -70,38 +93,42 @@ export function updateFrame(players, dead, notifyKill) {
 		return !player.dead;
 	});
 	
-	// TERRITORY OVERLAP RESOLUTION - DISABLED due to bug causing random territory loss
-	// When this is fixed, re-enable territory subtraction when players capture overlapping areas
-	// for (const capturer of capturedThisFrame) {
-	// 	if (capturer.dead) continue;
-	// 	
-	// 	for (const other of alive) {
-	// 		if (other === capturer || other.dead) continue;
-	// 		
-	// 		// Check if territories overlap
-	// 		if (polygonsOverlap(capturer.territory, other.territory)) {
-	// 			// Subtract the capturer's territory from the other player's territory
-	// 			const newTerritory = subtractTerritorySimple(other.territory, capturer.territory);
-	// 			
-	// 			// Only update if the result is valid
-	// 			if (newTerritory && newTerritory.length >= 3) {
-	// 				other.territory = newTerritory;
-	// 			} else if (newTerritory && newTerritory.length === 0) {
-	// 				// Other player's territory was completely consumed - they lose their base
-	// 				// Give them a minimal territory at their spawn point
-	// 				const minRadius = consts.CELL_WIDTH * 0.5;
-	// 				other.territory = [];
-	// 				for (let i = 0; i < 8; i++) {
-	// 					const angle = (i / 8) * Math.PI * 2;
-	// 					other.territory.push({
-	// 						x: other.spawnX + Math.cos(angle) * minRadius,
-	// 						y: other.spawnY + Math.sin(angle) * minRadius
-	// 					});
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
+	// TERRITORY OVERLAP RESOLUTION
+	// When a player captures territory, subtract it from overlapping enemy territories
+	for (const capturer of capturedThisFrame) {
+		if (capturer.dead) continue;
+		
+		for (const other of alive) {
+			if (other === capturer || other.dead) continue;
+			
+			// Check if territories overlap
+			if (polygonsOverlap(capturer.territory, other.territory)) {
+				// Subtract the capturer's territory from the other player's territory
+				const newTerritory = subtractTerritorySimple(
+					other.territory,
+					capturer.territory,
+					{ x: other.spawnX, y: other.spawnY }
+				);
+				
+				// Only update if the result is valid
+				if (newTerritory && newTerritory.length >= 3) {
+					other.territory = newTerritory;
+				} else if (newTerritory && newTerritory.length === 0) {
+					// Other player's territory was completely consumed - they lose their base
+					// Give them a minimal territory at their spawn point
+					const minRadius = consts.CELL_WIDTH * 0.5;
+					other.territory = [];
+					for (let i = 0; i < 8; i++) {
+						const angle = (i / 8) * Math.PI * 2;
+						other.territory.push({
+							x: other.spawnX + Math.cos(angle) * minRadius,
+							y: other.spawnY + Math.sin(angle) * minRadius
+						});
+					}
+				}
+			}
+		}
+	}
 
 	// Check collisions
 	const removing = new Array(players.length).fill(false);
@@ -122,7 +149,8 @@ export function updateFrame(players, dead, notifyKill) {
 				if (trailHit) {
 					// Instead of immediate death, start the snip fuse
 					if (!players[j].isSnipped) {
-						players[j].startSnip({ x: players[i].x, y: players[i].y }, trailHit);
+						// Pass the snipper's player number for kill tracking
+						players[j].startSnip({ x: players[i].x, y: players[i].y }, trailHit, players[i].num);
 					}
 					// MVP: ignore if victim already snipped.
 					break;
@@ -166,7 +194,8 @@ export function updateFrame(players, dead, notifyKill) {
 		const selfHit = players[i].trail.hitsTrail(players[i].x, players[i].y, 10);
 		if (!removing[i] && selfHit) {
 			if (!players[i].isSnipped) {
-				players[i].startSnip({ x: players[i].x, y: players[i].y }, selfHit);
+				// Self-snip: pass null as snipper (no kill credit)
+				players[i].startSnip({ x: players[i].x, y: players[i].y }, selfHit, null);
 			}
 		}
 	}

@@ -1,6 +1,13 @@
 import { Player, initPlayer, updateFrame, polygonArea } from "./core/index.js";
 import { consts } from "../config.js";
 
+// Helper to calculate XP needed for a level
+function getXpForLevel(level) {
+	const base = consts.XP_BASE_PER_LEVEL || 50;
+	const increment = consts.XP_INCREMENT_PER_LEVEL || 25;
+	return base + (level - 1) * increment;
+}
+
 let running = false;
 let user, socket, frame;
 let players, allPlayers;
@@ -19,6 +26,13 @@ let lastScreenX = 0, lastScreenY = 0;
 let lastZoom = 1;
 let mouseSet = false;
 let viewOffset = { x: 0, y: 0 };
+
+// WASD keyboard control state
+let wasdKeys = { w: false, a: false, s: false, d: false };
+let useWasd = false; // True when WASD keys are being pressed
+let wasdCurrentAngle = 0; // Current smoothed WASD angle
+let wasdTargetAngle = 0; // Target angle based on key presses
+const WASD_TURN_SPEED = 0.15; // Radians per frame for smooth turning
 
 let requestAnimationFrame;
 try {
@@ -71,11 +85,12 @@ function connectGame(io, url, name, callback, flag) {
 			// XP/Level fields
 			pl.level = p.level || 1;
 			pl.xp = p.xp || 0;
+			pl.xpPerLevel = p.xpPerLevel || getXpForLevel(pl.level);
 			pl.sizeScale = p.sizeScale || 1.0;
 			
 			// HP fields
-			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP || 100);
-			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP || 100);
+			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP ?? 100);
+			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
 			
 			// Drone fields
 			pl.droneCount = p.droneCount || 1;
@@ -166,20 +181,64 @@ function updateZoom(zoom) {
 }
 
 function sendTargetAngle() {
-	if (!user || user.dead || !socket || !mouseSet) return;
+	if (!user || user.dead || !socket) return;
 	
-	// Update world mouse position based on last screen position and current view offset.
-	mouseX = (lastScreenX / lastZoom) + viewOffset.x;
-	mouseY = (lastScreenY / lastZoom) + viewOffset.y;
+	let targetAngle;
+	
+	// Check if WASD is being used
+	if (useWasd) {
+		// Calculate target direction from WASD keys
+		let dx = 0, dy = 0;
+		if (wasdKeys.w) dy -= 1;
+		if (wasdKeys.s) dy += 1;
+		if (wasdKeys.a) dx -= 1;
+		if (wasdKeys.d) dx += 1;
+		
+		// If no keys pressed, don't send update
+		if (dx === 0 && dy === 0) return;
+		
+		// Calculate target angle from key combination
+		wasdTargetAngle = Math.atan2(dy, dx);
+		
+		// Smoothly interpolate current angle toward target (omnidirectional)
+		let angleDiff = wasdTargetAngle - wasdCurrentAngle;
+		
+		// Normalize angle difference to [-PI, PI]
+		while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+		while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+		
+		// Smoothly turn toward target
+		if (Math.abs(angleDiff) < WASD_TURN_SPEED) {
+			wasdCurrentAngle = wasdTargetAngle;
+		} else {
+			wasdCurrentAngle += Math.sign(angleDiff) * WASD_TURN_SPEED;
+		}
+		
+		// Normalize current angle to [-PI, PI]
+		while (wasdCurrentAngle > Math.PI) wasdCurrentAngle -= Math.PI * 2;
+		while (wasdCurrentAngle < -Math.PI) wasdCurrentAngle += Math.PI * 2;
+		
+		targetAngle = wasdCurrentAngle;
+	} else {
+		// Mouse control
+		if (!mouseSet) return;
+		
+		// Update world mouse position based on last screen position and current view offset.
+		mouseX = (lastScreenX / lastZoom) + viewOffset.x;
+		mouseY = (lastScreenY / lastZoom) + viewOffset.y;
 
-	// Calculate angle from player to mouse position
-	const dx = mouseX - user.x;
-	const dy = mouseY - user.y;
-	
-	// If mouse is too close to player center, don't update angle
-	if (dx * dx + dy * dy < 100) return;
-	
-	const targetAngle = Math.atan2(dy, dx);
+		// Calculate angle from player to mouse position
+		const dx = mouseX - user.x;
+		const dy = mouseY - user.y;
+		
+		// If mouse is too close to player center, don't update angle
+		if (dx * dx + dy * dy < 100) return;
+		
+		targetAngle = Math.atan2(dy, dx);
+		
+		// Sync WASD angle with mouse when not using WASD (for smooth transition)
+		wasdCurrentAngle = targetAngle;
+	}
 	
 	socket.emit("frame", {
 		frame: frame,
@@ -263,7 +322,20 @@ function processFrame(data) {
 		data.coinSpawns.forEach(c => coinsById.set(c.id, c));
 	}
 	if (data.coinRemovals) {
-		data.coinRemovals.forEach(id => coinsById.delete(id));
+		data.coinRemovals.forEach(id => {
+			const coin = coinsById.get(id);
+			// Check if coin was near the local player (player picked it up)
+			if (coin && user && !user.dead) {
+				const dx = coin.x - user.x;
+				const dy = coin.y - user.y;
+				const dist = Math.sqrt(dx * dx + dy * dy);
+				// If coin was within pickup range, notify renderer
+				if (dist < 60) {
+					invokeRenderer("coinPickup", [coin]);
+				}
+			}
+			coinsById.delete(id);
+		});
 	}
 	
 	// Handle XP/Level updates
@@ -273,6 +345,7 @@ function processFrame(data) {
 			if (p) {
 				p.level = update.level;
 				p.xp = update.xp;
+				p.xpPerLevel = update.xpPerLevel; // Store XP needed for next level
 				p.sizeScale = update.sizeScale;
 				// Update drone count
 				if (update.droneCount !== undefined) {
@@ -318,6 +391,8 @@ function processFrame(data) {
 					// Fallback to local calculation
 					target.hp = Math.max(0, (target.hp || 100) - hit.damage);
 				}
+				// Track last hit time for HP bar visibility
+				target.lastHitTime = Date.now();
 			}
 			console.log(`[CLIENT] Hitscan from (${hit.fromX.toFixed(0)}, ${hit.fromY.toFixed(0)}) to (${hit.toX.toFixed(0)}, ${hit.toY.toFixed(0)})`);
 			// Notify renderer of hitscan for visual effect (laser line)
@@ -333,6 +408,23 @@ function processFrame(data) {
 			invokeRenderer("captureSuccess", [evt.x, evt.y, evt.xpGained, player, isLocalPlayer]);
 		});
 	}
+	
+	// Handle kill events (for kill sound and counter)
+	if (data.killEvents) {
+		data.killEvents.forEach(evt => {
+			// Check if local player got the kill
+			if (user && evt.killerNum === user.num) {
+				kills++;
+				invokeRenderer("playerKill", [evt.killerNum, evt.victimNum, evt.victimName, evt.killType]);
+			}
+			// Check if local player was killed
+			if (user && evt.victimNum === user.num) {
+				const killer = allPlayers[evt.killerNum];
+				const killerName = killer ? (killer.name || 'Unknown') : 'Unknown';
+				invokeRenderer("playerWasKilled", [killerName, evt.killType]);
+			}
+		});
+	}
 
 	if (data.newPlayers) {
 		data.newPlayers.forEach(p => {
@@ -341,10 +433,11 @@ function processFrame(data) {
 			// Copy XP/Level fields
 			pl.level = p.level || 1;
 			pl.xp = p.xp || 0;
+			pl.xpPerLevel = p.xpPerLevel || getXpForLevel(pl.level);
 			pl.sizeScale = p.sizeScale || 1.0;
 			// HP fields
-			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP || 100);
-			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP || 100);
+			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP ?? 100);
+			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
 			// Drone fields
 			pl.droneCount = p.droneCount || 1;
 			pl.drones = p.drones || [];
@@ -429,9 +522,7 @@ function setUser(player) {
 
 function update() {
 	const dead = [];
-	updateFrame(players, dead, (killer, other) => {
-		if (players[killer] === user && killer !== other) kills++;
-	});
+	updateFrame(players, dead);
 	
 	dead.forEach(val => {
 		console.log((val.name || "Unnamed") + " is dead");
@@ -454,6 +545,16 @@ function getKills() {
 	return kills;
 }
 
+// WASD key state management
+function setKeyState(key, pressed) {
+	const k = key.toLowerCase();
+	if (k in wasdKeys) {
+		wasdKeys[k] = pressed;
+		// Check if any WASD key is pressed
+		useWasd = wasdKeys.w || wasdKeys.a || wasdKeys.s || wasdKeys.d;
+	}
+}
+
 // Export stuff
 export { 
 	connectGame, 
@@ -470,6 +571,7 @@ export {
 	sendTargetAngle,
 	setViewOffset,
 	updateZoom,
+	setKeyState,
 	polygonArea
 };
 

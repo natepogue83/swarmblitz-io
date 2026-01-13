@@ -11,9 +11,9 @@ export const consts = {
 	"SPEED": 4,               // Player movement speed per frame
 	"BORDER_WIDTH": 20,       // Border around the map
 	"MAX_PLAYERS": 100,        // Maximum players in a game
-	"NEW_PLAYER_LAG": 30,     // Frames to wait before player can move
+	"NEW_PLAYER_LAG": 60,     // Frames to wait before player can move
 	"LEADERBOARD_NUM": 5,     // Number of players shown on leaderboard
-	"MIN_SNIP_TIME": 2.0,
+	"MIN_SNIP_TIME": 1.5,
 	"MAX_SNIP_TIME": 8.0,
 	"SAFETY_SPEED_ESTIMATE_MULT": 0.9,
 	"SNIP_FUSE_SPEED_MULT": 1.5,
@@ -30,23 +30,31 @@ export const consts = {
 	"COIN_SPAWN_INTERVAL_SEC": 2.5,
 	"COIN_RADIUS": 8,
 	"COIN_VALUE": 5,
-	"COIN_DROP_PERCENT": 0.63,         // Percentage of held XP dropped on death
+	"COIN_DROP_PERCENT": 0.15,         // Percentage of XP dropped as loot on death
+	"KILLER_XP_PERCENT": 0.15,         // Percentage of XP transferred directly to killer
 	"COIN_DROP_MIN": 10,               // Minimum XP dropped on death (even if broke)
+	"KILLER_XP_MIN": 20,               // Minimum XP given to killer
 	"COINS_PER_AREA_UNIT": 0.00025,
 	
+	// ===== TRAIL SPEED BUFF =====
+	// When players leave their territory, they gain speed over time (risk/reward)
+	"TRAIL_SPEED_BUFF_MAX": 1.4,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
+	"TRAIL_SPEED_BUFF_RAMP_TIME": 5,  // Seconds to reach max speed buff
+	"TRAIL_SPEED_BUFF_EASE": 2,       // Easing exponent (1 = linear, 2 = quadratic ease-in, higher = slower start)
+	
 	// ===== XP / LEVELING SYSTEM =====
-	"XP_BASE_PER_LEVEL": 50,         // Base XP needed to level up (level 1 → 2)
-	"XP_INCREMENT_PER_LEVEL": 20,    // XP cost increases by this * level each level
+	"XP_BASE_PER_LEVEL": 10,         // Base XP needed to level up (level 1 → 2)
+	"XP_INCREMENT_PER_LEVEL": 0,    // XP cost increases by this * level each level
 	// Formula: XP needed for level L = BASE + (L-1) * INCREMENT
 	// Level 1→2: 50, Level 2→3: 65, Level 3→4: 80, etc.
-	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.05,  // Size increase per level (5%)
-	"PLAYER_SIZE_SCALE_MAX": 1.6,     // Maximum size multiplier
+	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.04,  // Size increase per level (5%)
+	"PLAYER_SIZE_SCALE_MAX": 2,     // Maximum size multiplier
 	
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)
 	"PLAYER_MAX_HP": 100,
 	"PLAYER_HP_REGEN_IN_TERRITORY": 50,  // SHP per second when in own territory (fast regen)
-	"TERRITORY_DAMAGE_REDUCTION": 0.7,   // Damage reduction when in own territory (0.5 = 50% less damage)
+	"TERRITORY_DAMAGE_REDUCTION": 0.4,   // Damage reduction when in own territory (0.5 = 50% less damage)
 	
 	// ===== DRONE SYSTEM =====
 	// Note: Drones are now granted automatically via leveling (1 per level)
@@ -56,7 +64,8 @@ export const consts = {
 	"DRONE_ORBIT_SPEED": 2,         // Radians per second (orbit rotation speed)
 	"DRONE_RADIUS": 10,               // Visual/collision radius
 	"DRONE_DAMAGE": 5,               // Damage for first drone (hitscan)
-	"DRONE_DAMAGE_EXTRA": .5,          // Damage for additional drones (diminishing returns)
-	"DRONE_RANGE": 225,               // Targeting range (increased for better engagement)
-	"DRONE_COOLDOWN": .2             // Seconds between shots
+	"DRONE_DAMAGE_EXTRA_MULT": 0.5,   // Damage multiplier for 2nd drone (relative to 1st)
+	"DRONE_DAMAGE_DECAY_FACTOR": 0.75,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
+	"DRONE_RANGE": 158,               // Targeting range (reduced 30% from 225)
+	"DRONE_COOLDOWN": .1             // Seconds between shots
 };

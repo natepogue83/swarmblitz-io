@@ -1,7 +1,8 @@
 import Color from "./color.js";
 import { consts } from "../../config.js";
+import polygonClipping from "polygon-clipping";
 
-export const PLAYER_RADIUS = 20;
+export const PLAYER_RADIUS = 15;
 const TRAIL_MIN_DIST = 10;
 const SHADOW_OFFSET = 10;
 
@@ -246,6 +247,7 @@ export default function Player(sdata) {
 	
 	// Snip system state
 	this.isSnipped = sdata.isSnipped ?? false;
+	this.snippedBy = sdata.snippedBy ?? null; // Player number who caused the snip (null for self-snip)
 	this.snipTimeRemaining = sdata.snipTimeRemaining ?? 0;
 	this.snipMaxTime = sdata.snipMaxTime ?? 0;
 	this.snipStartPoint = sdata.snipStartPoint ?? null;
@@ -256,6 +258,10 @@ export default function Player(sdata) {
 	this.snipTotalTrailLength = sdata.snipTotalTrailLength ?? 0;
 	// Exponential fuse acceleration state
 	this.snipElapsed = sdata.snipElapsed ?? 0; // seconds since snip started
+	
+	// Trail speed buff state
+	this.trailStartTime = sdata.trailStartTime ?? null; // When player left territory (null if in territory)
+	this.currentSpeedBuff = sdata.currentSpeedBuff ?? 1.0; // Current speed multiplier
 	
 	// HP system (for combat damage from drones)
 	this.hp = sdata.hp ?? (consts.PLAYER_MAX_HP || 100);
@@ -310,8 +316,32 @@ Player.prototype.move = function(deltaSeconds) {
 		this.angle += Math.sign(angleDiff) * turnSpeed;
 	}
 	
-	// Speed multiplier (no stamina system)
-	const speedMultiplier = 1.0;
+	// Check if in own territory for speed buff
+	const inTerritory = this.isInOwnTerritory();
+	
+	// Calculate trail speed buff (increases speed when outside territory over time)
+	// Speed buff is disabled when snipped - player moves at base speed
+	const now = Date.now();
+	if (inTerritory) {
+		// Reset trail time when in territory
+		this.trailStartTime = null;
+		this.currentSpeedBuff = 1.0;
+	} else if (this.isSnipped) {
+		// No speed buff while snipped - stuck at base speed
+		this.trailStartTime = null;
+		this.currentSpeedBuff = 1.0;
+	} else {
+		// Outside territory - track time and calculate speed buff
+		if (this.trailStartTime === null) {
+			this.trailStartTime = now;
+		}
+		
+		const timeOutsideSec = (now - this.trailStartTime) / 1000;
+		this.currentSpeedBuff = this.calculateSpeedBuff(timeOutsideSec);
+	}
+	
+	// Apply speed buff to movement
+	const speedMultiplier = this.currentSpeedBuff;
 
 	// Move in current direction
 	this.x += Math.cos(this.angle) * this.speed * speedMultiplier;
@@ -320,9 +350,6 @@ Player.prototype.move = function(deltaSeconds) {
 	// Clamp to map bounds (sliding against walls)
 	this.x = Math.max(PLAYER_RADIUS, Math.min(this.mapSize - PLAYER_RADIUS, this.x));
 	this.y = Math.max(PLAYER_RADIUS, Math.min(this.mapSize - PLAYER_RADIUS, this.y));
-	
-	// Trail logic
-	const inTerritory = this.isInOwnTerritory();
 	
 	// If snipped, don't do normal trail/capture logic - updateSnip handles safety check
 	if (this.isSnipped) {
@@ -346,6 +373,25 @@ Player.prototype.move = function(deltaSeconds) {
 
 Player.prototype.isInOwnTerritory = function() {
 	return pointInPolygon({ x: this.x, y: this.y }, this.territory);
+};
+
+/**
+ * Calculate speed buff based on time outside territory
+ * Uses config values: TRAIL_SPEED_BUFF_MAX, TRAIL_SPEED_BUFF_RAMP_TIME, TRAIL_SPEED_BUFF_EASE
+ */
+Player.prototype.calculateSpeedBuff = function(timeOutsideSec) {
+	const maxBuff = consts.TRAIL_SPEED_BUFF_MAX || 1.2;
+	const rampTime = consts.TRAIL_SPEED_BUFF_RAMP_TIME || 4;
+	const ease = consts.TRAIL_SPEED_BUFF_EASE || 2;
+	
+	// Progress from 0 to 1 over ramp time
+	const progress = Math.min(1, timeOutsideSec / rampTime);
+	
+	// Apply easing (higher ease = slower start)
+	const easedProgress = Math.pow(progress, ease);
+	
+	// Calculate buff: 1.0 to maxBuff
+	return 1.0 + (maxBuff - 1.0) * easedProgress;
 };
 
 Player.prototype.captureTerritory = function() {
@@ -695,315 +741,264 @@ function lineEdgeIntersection(p1, p2, e1, e2) {
 /**
  * Subtract clipPoly from subjectPoly.
  * Returns the part of subjectPoly that is OUTSIDE clipPoly.
- * Uses a simple, robust approach for game territories.
+ * Uses a robust vertex/intersection based approach with proper boundary tracing.
  */
-export function subtractTerritorySimple(subjectPoly, clipPoly) {
+export function subtractTerritorySimple(subjectPoly, clipPoly, preferPoint) {
+	return subtractTerritory(subjectPoly, clipPoly, preferPoint);
+}
+
+/**
+ * Robust territory subtraction using polygon boolean operations.
+ *
+ * - Handles edge-only overlaps (no subject vertices inside clip).
+ * - Handles splits (difference yields multiple polygons) by selecting a single best piece.
+ * - Optionally prefers the piece containing `preferPoint` (e.g. defender's spawn).
+ */
+export function subtractTerritory(subjectPoly, clipPoly, preferPoint) {
 	if (!subjectPoly || subjectPoly.length < 3) return subjectPoly;
 	if (!clipPoly || clipPoly.length < 3) return subjectPoly;
-	
-	// Quick overlap check
-	if (!polygonsOverlap(subjectPoly, clipPoly)) {
+	if (!polygonsOverlap(subjectPoly, clipPoly)) return subjectPoly;
+
+	const toRing = (poly) => poly.map(p => [p.x, p.y]);
+	const pcSubject = [toRing(subjectPoly)];
+	const pcClip = [toRing(clipPoly)];
+
+	let diff;
+	try {
+		diff = polygonClipping.difference(pcSubject, pcClip);
+	} catch (err) {
+		// Fallback: keep original (better than corrupting territory).
+		// This should be rare; polygon-clipping is usually robust.
 		return subjectPoly;
 	}
-	
-	// Count vertices inside/outside
-	let insideCount = 0;
-	for (const p of subjectPoly) {
-		if (pointInPolygon(p, clipPoly)) insideCount++;
-	}
-	
-	// If all vertices are inside, territory is consumed
-	if (insideCount === subjectPoly.length) {
-		return [];
-	}
-	
-	// If no vertices are inside, check if clip is entirely inside subject
-	if (insideCount === 0) {
-		let clipInsideSubject = 0;
-		for (const p of clipPoly) {
-			if (pointInPolygon(p, subjectPoly)) clipInsideSubject++;
-		}
-		if (clipInsideSubject === clipPoly.length) {
-			// Clip is entirely inside subject - create a cut
-			return cutHoleInPolygon(subjectPoly, clipPoly);
-		}
-		// No real overlap despite polygonsOverlap returning true (edge cases)
-		return subjectPoly;
-	}
-	
-	// Standard case: partial overlap
-	// Build result by tracing subject boundary, cutting at clip intersections
-	const result = [];
-	const n = subjectPoly.length;
-	
-	// Collect all points with their position info
-	const allPoints = [];
-	
-	for (let i = 0; i < n; i++) {
-		const curr = subjectPoly[i];
-		const next = subjectPoly[(i + 1) % n];
-		const currInside = pointInPolygon(curr, clipPoly);
-		const nextInside = pointInPolygon(next, clipPoly);
-		
-		// Add current vertex if outside
-		if (!currInside) {
-			allPoints.push({ x: curr.x, y: curr.y, type: 'vertex', edge: i, t: 0 });
-		}
-		
-		// Find intersections with clip boundary
-		const intersections = [];
-		for (let j = 0; j < clipPoly.length; j++) {
-			const c1 = clipPoly[j];
-			const c2 = clipPoly[(j + 1) % clipPoly.length];
-			const inter = segmentIntersection(curr, next, c1, c2);
-			if (inter) {
-				intersections.push({
-					x: inter.x,
-					y: inter.y,
-					type: 'intersection',
-					edge: i,
-					t: inter.t,
-					clipEdge: j,
-					clipT: inter.u,
-					entering: !currInside // if curr is outside and we hit clip, we're entering
-				});
-			}
-		}
-		
-		// Sort intersections by t (position along edge)
-		intersections.sort((a, b) => a.t - b.t);
-		
-		// Add intersections
-		for (const inter of intersections) {
-			allPoints.push(inter);
-		}
-	}
-	
-	if (allPoints.length < 3) {
-		return [];
-	}
-	
-	// Now trace the boundary: follow subject outside clip, then clip boundary when inside
-	// Find a starting point that's outside clip
-	let startIdx = allPoints.findIndex(p => p.type === 'vertex' || !p.entering);
-	if (startIdx === -1) startIdx = 0;
-	
-	const traced = [];
-	const used = new Set();
-	let idx = startIdx;
-	let onClip = false;
-	let clipIdx = -1;
-	let clipDir = 1; // 1 = forward, -1 = backward
-	let safety = 0;
-	const maxIter = allPoints.length * 3 + clipPoly.length * 2;
-	
-	while (safety++ < maxIter) {
-		const pt = allPoints[idx];
-		
-		if (used.has(idx) && traced.length > 2) {
-			break;
-		}
-		used.add(idx);
-		
-		if (!onClip) {
-			// We're tracing the subject boundary
-			traced.push({ x: pt.x, y: pt.y });
-			
-			if (pt.type === 'intersection' && pt.entering) {
-				// Entering clip - switch to tracing clip boundary
-				onClip = true;
-				clipIdx = pt.clipEdge;
-				// Trace clip boundary in reverse (counter-clockwise) to stay on outside
-				clipDir = -1;
-			}
-			
-			// Move to next point on subject
-			idx = (idx + 1) % allPoints.length;
-		} else {
-			// We're tracing the clip boundary
-			// Add clip vertices until we find an exit intersection
-			
-			// Look for exit intersection on current or nearby edges
-			let foundExit = false;
-			for (let scan = 0; scan < allPoints.length; scan++) {
-				const candidate = allPoints[scan];
-				if (candidate.type === 'intersection' && !candidate.entering && !used.has(scan)) {
-					// Check if this exit is on current clip edge or nearby
-					const edgeDiff = (candidate.clipEdge - clipIdx + clipPoly.length) % clipPoly.length;
-					if (clipDir === -1) {
-						// Going backwards, check if candidate is on path
-						const backDiff = (clipIdx - candidate.clipEdge + clipPoly.length) % clipPoly.length;
-						if (backDiff <= 3 || edgeDiff <= 3) {
-							// Add clip vertices between current position and exit
-							addClipVerticesBetween(traced, clipPoly, clipIdx, candidate.clipEdge, clipDir);
-							traced.push({ x: candidate.x, y: candidate.y });
-							used.add(scan);
-							idx = (scan + 1) % allPoints.length;
-							onClip = false;
-							foundExit = true;
-							break;
-						}
-					}
-				}
-			}
-			
-			if (!foundExit) {
-				// No exit found, add clip vertex and continue
-				const clipVertex = clipPoly[clipIdx];
-				if (pointInPolygon(clipVertex, subjectPoly)) {
-					traced.push({ x: clipVertex.x, y: clipVertex.y });
-				}
-				clipIdx = (clipIdx + clipDir + clipPoly.length) % clipPoly.length;
-				
-				// Safety: if we've gone all the way around, break
-				if (safety > clipPoly.length * 2) {
-					onClip = false;
-					idx = (idx + 1) % allPoints.length;
-				}
-			}
-		}
-		
-		// Check if we've returned to start
-		if (idx === startIdx && traced.length > 2) {
-			break;
-		}
-	}
-	
-	// Clean up
-	const cleaned = cleanPolygonPoints(traced);
-	
-	if (cleaned.length < 3) {
-		return [];
-	}
-	
-	// Ensure positive area
-	const area = polygonAreaSigned(cleaned);
-	if (Math.abs(area) < 50) {
-		return [];
-	}
-	if (area < 0) {
-		cleaned.reverse();
-	}
-	
-	return cleaned;
-}
 
-/**
- * Add clip polygon vertices between two edge indices
- */
-function addClipVerticesBetween(result, clipPoly, fromEdge, toEdge, dir) {
-	const n = clipPoly.length;
-	let idx = fromEdge;
-	let safety = 0;
-	while (idx !== toEdge && safety++ < n) {
-		idx = (idx + dir + n) % n;
-		if (idx !== toEdge) {
-			result.push({ x: clipPoly[idx].x, y: clipPoly[idx].y });
-		}
-	}
-}
+	if (!diff || diff.length === 0) return [];
 
-/**
- * Segment intersection with t and u parameters
- */
-function segmentIntersection(p1, p2, p3, p4) {
-	const d = (p1.x - p2.x) * (p3.y - p4.y) - (p1.y - p2.y) * (p3.x - p4.x);
-	if (Math.abs(d) < 1e-10) return null;
-	
-	const t = ((p1.x - p3.x) * (p3.y - p4.y) - (p1.y - p3.y) * (p3.x - p4.x)) / d;
-	const u = -((p1.x - p2.x) * (p1.y - p3.y) - (p1.y - p2.y) * (p1.x - p3.x)) / d;
-	
-	if (t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999) {
-		return {
-			x: p1.x + t * (p2.x - p1.x),
-			y: p1.y + t * (p2.y - p1.y),
-			t,
-			u
-		};
-	}
-	return null;
-}
+	const EPS = 1e-6;
+	const cleanedCandidates = [];
 
-/**
- * Cut a hole in polygon by connecting to the hole boundary
- */
-function cutHoleInPolygon(subject, hole) {
-	// Find the rightmost point of the hole
-	let holeRightIdx = 0;
-	for (let i = 1; i < hole.length; i++) {
-		if (hole[i].x > hole[holeRightIdx].x) {
-			holeRightIdx = i;
-		}
-	}
-	const holeRight = hole[holeRightIdx];
-	
-	// Find the closest point on subject boundary to the right of holeRight
-	let bestDist = Infinity;
-	let bestSubjectIdx = 0;
-	for (let i = 0; i < subject.length; i++) {
-		const p = subject[i];
-		if (p.x >= holeRight.x) {
-			const dist = Math.sqrt((p.x - holeRight.x) ** 2 + (p.y - holeRight.y) ** 2);
-			if (dist < bestDist) {
-				bestDist = dist;
-				bestSubjectIdx = i;
+	for (const poly of diff) {
+		if (!poly || poly.length === 0) continue;
+		const outer = poly[0];
+		if (!outer || outer.length < 4) continue; // polygon-clipping returns closed rings
+
+		let pts = outer.map(([x, y]) => ({ x, y }));
+		// Drop closing point if it equals the first.
+		if (pts.length >= 2) {
+			const a = pts[0];
+			const b = pts[pts.length - 1];
+			if (Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS) {
+				pts = pts.slice(0, -1);
 			}
 		}
-	}
-	
-	// Build new polygon: subject up to bestSubjectIdx, then hole (reversed), then rest of subject
-	const result = [];
-	
-	// Add subject vertices up to and including bestSubjectIdx
-	for (let i = 0; i <= bestSubjectIdx; i++) {
-		result.push({ x: subject[i].x, y: subject[i].y });
-	}
-	
-	// Add hole vertices in reverse order starting from holeRightIdx
-	for (let i = 0; i < hole.length; i++) {
-		const idx = (holeRightIdx - i + hole.length) % hole.length;
-		result.push({ x: hole[idx].x, y: hole[idx].y });
-	}
-	
-	// Close back to the cut point on subject
-	result.push({ x: subject[bestSubjectIdx].x, y: subject[bestSubjectIdx].y });
-	
-	// Add remaining subject vertices
-	for (let i = bestSubjectIdx + 1; i < subject.length; i++) {
-		result.push({ x: subject[i].x, y: subject[i].y });
-	}
-	
-	return cleanPolygonPoints(result);
-}
 
-/**
- * Clean up polygon by removing duplicate/near-duplicate points
- */
-function cleanPolygonPoints(points) {
-	if (!points || points.length < 3) return points || [];
-	
-	const cleaned = [];
-	for (const p of points) {
-		if (cleaned.length === 0) {
-			cleaned.push({ x: p.x, y: p.y });
-		} else {
+		// Dedupe consecutive near-identical points.
+		const cleaned = [];
+		for (const p of pts) {
+			if (cleaned.length === 0) {
+				cleaned.push(p);
+				continue;
+			}
 			const last = cleaned[cleaned.length - 1];
-			if (Math.abs(p.x - last.x) > 1 || Math.abs(p.y - last.y) > 1) {
-				cleaned.push({ x: p.x, y: p.y });
-			}
+			if (Math.abs(p.x - last.x) < EPS && Math.abs(p.y - last.y) < EPS) continue;
+			cleaned.push(p);
+		}
+		// Also drop last if it matches first.
+		if (cleaned.length >= 2) {
+			const a = cleaned[0];
+			const b = cleaned[cleaned.length - 1];
+			if (Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS) cleaned.pop();
+		}
+
+		if (cleaned.length >= 3) {
+			cleanedCandidates.push(cleaned);
+		}
+	}
+
+	if (cleanedCandidates.length === 0) return [];
+
+	const hasPrefer =
+		preferPoint &&
+		typeof preferPoint.x === "number" &&
+		typeof preferPoint.y === "number" &&
+		Number.isFinite(preferPoint.x) &&
+		Number.isFinite(preferPoint.y);
+
+	let candidates = cleanedCandidates;
+	if (hasPrefer) {
+		const containing = cleanedCandidates.filter(poly => pointInPolygon(preferPoint, poly));
+		// If the preferred point is not in any remaining piece, treat territory as consumed.
+		// (In-game this means their base got cut out; the caller can respawn a minimal base.)
+		if (containing.length === 0) return [];
+		candidates = containing;
+	}
+
+	let best = candidates[0];
+	let bestArea = polygonAreaAbs(best);
+	for (let i = 1; i < candidates.length; i++) {
+		const area = polygonAreaAbs(candidates[i]);
+		if (area > bestArea) {
+			bestArea = area;
+			best = candidates[i];
+		}
+	}
+
+	return best;
+}
+
+/**
+ * Find all intersections of line segment (p1->p2) with polygon edges,
+ * including which edge index each intersection is on.
+ */
+function findAllPolygonIntersectionsWithEdges(p1, p2, polygon) {
+	const intersections = [];
+	
+	for (let i = 0; i < polygon.length; i++) {
+		const e1 = polygon[i];
+		const e2 = polygon[(i + 1) % polygon.length];
+		const intersection = getLineIntersection(p1, p2, e1, e2);
+		if (intersection) {
+			intersections.push({ point: intersection, edgeIndex: i });
 		}
 	}
 	
-	// Check first/last
-	if (cleaned.length >= 2) {
-		const first = cleaned[0];
-		const last = cleaned[cleaned.length - 1];
-		if (Math.abs(first.x - last.x) < 2 && Math.abs(first.y - last.y) < 2) {
-			cleaned.pop();
+	return intersections;
+}
+
+/**
+ * Get clip polygon vertices that should be added between entry and exit points.
+ * When subtracting clipPoly from subjectPoly, we need to trace the clip boundary
+ * from entry to exit - these vertices form the new "cut edge" of the result.
+ * 
+ * Key insight: We must trace the clip boundary between entry and exit points,
+ * but only include vertices that are inside (or on the boundary of) the subject polygon.
+ * The previous implementation failed when no clip vertices were in the pre-computed list,
+ * causing a straight line to be drawn instead of following the clip boundary.
+ */
+function getClipBoundaryVertices(entryEdgeIndex, exitEdgeIndex, clipPoly, clipVerticesInsideSubject, subjectPoly) {
+	const n = clipPoly.length;
+	
+	// Early return if entry and exit are on the same edge
+	if (entryEdgeIndex === exitEdgeIndex) {
+		return [];
+	}
+	
+	// We need to walk from the entry edge to the exit edge along the clip polygon
+	// For polygon subtraction, we try both directions and pick the one that gives us
+	// vertices inside the subject polygon (which are the ones forming the cut boundary)
+	
+	// Helper to check if a point is inside or very close to the subject polygon boundary
+	const isInsideOrNearSubject = (point) => {
+		// First try exact check
+		if (pointInPolygon(point, subjectPoly)) return true;
+		
+		// Also check if point is very close to subject boundary (within tolerance)
+		// This handles edge cases where clip vertices lie exactly on subject boundary
+		const tolerance = 5; // Small tolerance for boundary cases
+		for (let i = 0; i < subjectPoly.length; i++) {
+			const a = subjectPoly[i];
+			const b = subjectPoly[(i + 1) % subjectPoly.length];
+			const dist = pointToSegmentDistance(point, a, b);
+			if (dist < tolerance) return true;
+		}
+		return false;
+	};
+	
+	// Calculate distances in both directions
+	let forwardSteps = 0;
+	let idx = entryEdgeIndex;
+	while (idx !== exitEdgeIndex) {
+		idx = (idx + 1) % n;
+		forwardSteps++;
+		if (forwardSteps > n) break;
+	}
+	
+	let backwardSteps = 0;
+	idx = entryEdgeIndex;
+	while (idx !== exitEdgeIndex) {
+		idx = (idx - 1 + n) % n;
+		backwardSteps++;
+		if (backwardSteps > n) break;
+	}
+	
+	// Collect vertices in both directions, filtering to those inside subject
+	const forwardVertices = [];
+	idx = (entryEdgeIndex + 1) % n;
+	let count = 0;
+	while (idx !== (exitEdgeIndex + 1) % n && count < n) {
+		const vertex = clipPoly[idx];
+		if (isInsideOrNearSubject(vertex)) {
+			forwardVertices.push({ x: vertex.x, y: vertex.y });
+		}
+		idx = (idx + 1) % n;
+		count++;
+	}
+	
+	const backwardVertices = [];
+	idx = entryEdgeIndex;
+	count = 0;
+	while (idx !== exitEdgeIndex && count < n) {
+		const vertex = clipPoly[idx];
+		if (isInsideOrNearSubject(vertex)) {
+			backwardVertices.unshift({ x: vertex.x, y: vertex.y });
+		}
+		idx = (idx - 1 + n) % n;
+		count++;
+	}
+	
+	// Choose the direction that has more valid boundary vertices
+	// This ensures we trace the correct path around the clip
+	if (forwardVertices.length >= backwardVertices.length && forwardVertices.length > 0) {
+		return forwardVertices;
+	} else if (backwardVertices.length > 0) {
+		return backwardVertices;
+	}
+	
+	// If neither direction has vertices inside subject, use the shorter path
+	// and add ALL vertices - the entry/exit points will bound the valid region
+	const result = [];
+	if (forwardSteps <= backwardSteps) {
+		idx = (entryEdgeIndex + 1) % n;
+		count = 0;
+		while (idx !== (exitEdgeIndex + 1) % n && count < n) {
+			result.push({ x: clipPoly[idx].x, y: clipPoly[idx].y });
+			idx = (idx + 1) % n;
+			count++;
+		}
+	} else {
+		idx = entryEdgeIndex;
+		count = 0;
+		while (idx !== exitEdgeIndex && count < n) {
+			result.unshift({ x: clipPoly[idx].x, y: clipPoly[idx].y });
+			idx = (idx - 1 + n) % n;
+			count++;
 		}
 	}
 	
-	return cleaned;
+	return result;
+}
+
+/**
+ * Calculate distance from point to line segment
+ */
+function pointToSegmentDistance(point, a, b) {
+	const dx = b.x - a.x;
+	const dy = b.y - a.y;
+	const lengthSq = dx * dx + dy * dy;
+	
+	if (lengthSq === 0) {
+		// Segment is a point
+		return Math.sqrt((point.x - a.x) ** 2 + (point.y - a.y) ** 2);
+	}
+	
+	// Project point onto line, clamped to segment
+	let t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq;
+	t = Math.max(0, Math.min(1, t));
+	
+	const projX = a.x + t * dx;
+	const projY = a.y + t * dy;
+	
+	return Math.sqrt((point.x - projX) ** 2 + (point.y - projY) ** 2);
 }
 
 /**
@@ -1059,14 +1054,19 @@ function findPolygonEdgeIntersection(p1, p2, polygon) {
 	return closest;
 }
 
-Player.prototype.startSnip = function(collisionPoint, hitInfo) {
+Player.prototype.startSnip = function(collisionPoint, hitInfo, snipperNum) {
 	if (this.isSnipped) return; // Ignore if already snipped (per MVP recommendation)
 	
 	this.isSnipped = true;
+	this.snippedBy = snipperNum ?? null; // Track who caused the snip (null for self-snip)
 	this.snipStartPoint = { x: collisionPoint.x, y: collisionPoint.y };
 	this.snipTrailIndex = hitInfo.index;
 	this.snipProgressDist = 0;
 	this.snipElapsed = 0;
+	
+	// Reset speed buff when snipped (lose all accumulated speed)
+	this.trailStartTime = null;
+	this.currentSpeedBuff = 1.0;
 	
 	// Calculate total trail length from snip point to player
 	let totalTrailLength = 0;
@@ -1263,6 +1263,7 @@ Player.prototype.updateSnip = function(deltaSeconds) {
 
 Player.prototype.clearSnip = function() {
 	this.isSnipped = false;
+	this.snippedBy = null;
 	this.snipTimeRemaining = 0;
 	this.snipFusePosition = null;
 	this.snipElapsed = 0;
@@ -1321,9 +1322,15 @@ Player.prototype.render = function(ctx, fade, outlineThicknessMultiplier) {
 	this.renderBody(ctx, fade);
 };
 
+// Render just the trail (for layering control)
+Player.prototype.renderTrail = function(ctx) {
+	this.trail.render(ctx);
+};
+
 // Render just the player body, trail, and overlays (not territory)
 // Used when territories are rendered separately for proper overlap resolution
-Player.prototype.renderBody = function(ctx, fade) {
+// skipTrail: if true, only renders the body (trail rendered separately)
+Player.prototype.renderBody = function(ctx, fade, skipTrail) {
 	fade = fade || 1;
 	
 	// Apply size scaling based on level
@@ -1337,8 +1344,10 @@ Player.prototype.renderBody = function(ctx, fade) {
 		snipAlpha = 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(time * 4));
 	}
 	
-	// Render trail
-	this.trail.render(ctx);
+	// Render trail (unless skipped for separate layer rendering)
+	if (!skipTrail) {
+		this.trail.render(ctx);
+	}
 	
 	// Render player shadow
 	ctx.fillStyle = this.shadowColor.deriveAlpha(fade * snipAlpha).rgbString();
@@ -1450,6 +1459,7 @@ Player.prototype.serialData = function() {
 		sizeScale: this.sizeScale,
 		snipGraceBonusSec: this.snipGraceBonusSec,
 		isSnipped: this.isSnipped,
+		snippedBy: this.snippedBy,
 		snipTimeRemaining: this.snipTimeRemaining,
 		snipMaxTime: this.snipMaxTime,
 		snipStartPoint: this.snipStartPoint,
@@ -1459,7 +1469,10 @@ Player.prototype.serialData = function() {
 		snipTotalTrailLength: this.snipTotalTrailLength,
 		snipElapsed: this.snipElapsed,
 		hp: this.hp,
-		maxHp: this.maxHp
+		maxHp: this.maxHp,
+		// Speed buff state
+		trailStartTime: this.trailStartTime,
+		currentSpeedBuff: this.currentSpeedBuff
 	};
 };
 
