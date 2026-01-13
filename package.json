@@ -13,7 +13,7 @@
     "start": "npm run build && node server.js",
     "predev": "npm run cleanup",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "cross-env VITE=true nodemon --watch server.js --watch src/ server.js",
+    "dev:server": "cross-env VITE=true nodemon --watch server.js --watch src/ --watch config.js server.js",
     "dev:client": "vite"
   },
   "repository": "stevenjoezhang/paper.io",

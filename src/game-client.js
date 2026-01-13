@@ -5,8 +5,6 @@ let running = false;
 let user, socket, frame;
 let players, allPlayers;
 let coinsById = new Map();
-let turretsById = new Map();
-let projectilesById = new Map();
 let dronesById = new Map(); // Stores all drones keyed by id
 let kills;
 let timeout = undefined;
@@ -62,23 +60,11 @@ function connectGame(io, url, name, callback, flag) {
 		if (data.coins) {
 			data.coins.forEach(c => coinsById.set(c.id, c));
 		}
-		
-		// Load turrets
-		if (data.turrets) {
-			data.turrets.forEach(t => turretsById.set(t.id, t));
-		}
-		
-		// Load projectiles
-		if (data.projectiles) {
-			data.projectiles.forEach(p => projectilesById.set(p.id, p));
-		}
 
 		// Load players
 		data.players.forEach(p => {
 			const pl = new Player(p);
 			// Copy stat multipliers
-			pl.staminaRegenMult = p.staminaRegenMult || 1.0;
-			pl.staminaDrainMult = p.staminaDrainMult || 1.0;
 			pl.speedMult = p.speedMult || 1.0;
 			pl.snipGraceBonusSec = p.snipGraceBonusSec || 0;
 			
@@ -223,14 +209,6 @@ function getCoins() {
 	return Array.from(coinsById.values());
 }
 
-function getTurrets() {
-	return Array.from(turretsById.values());
-}
-
-function getProjectiles() {
-	return Array.from(projectilesById.values());
-}
-
 function getDrones() {
 	return Array.from(dronesById.values());
 }
@@ -311,7 +289,7 @@ function processFrame(data) {
 		});
 	}
 	
-	// Handle drone updates (positions, HP, targeting)
+	// Handle drone updates (positions, targeting)
 	if (data.droneUpdates) {
 		data.droneUpdates.forEach(update => {
 			const p = allPlayers[update.ownerNum];
@@ -327,48 +305,10 @@ function processFrame(data) {
 		});
 	}
 	
-	// Handle turret updates
-	if (data.turretSpawns) {
-		data.turretSpawns.forEach(t => turretsById.set(t.id, t));
-	}
-	if (data.turretRemovals) {
-		data.turretRemovals.forEach(id => turretsById.delete(id));
-	}
-	if (data.turretUpdates) {
-		data.turretUpdates.forEach(update => {
-			const t = turretsById.get(update.id);
-			if (t) {
-				// Check if ownership changed (turret captured)
-				const ownerChanged = update.ownerId !== undefined && t.ownerId !== update.ownerId;
-				
-				if (update.targetId !== undefined) t.targetId = update.targetId;
-				if (update.hp !== undefined) t.hp = update.hp;
-				// Handle turret capture (ownership transfer)
-				if (update.ownerId !== undefined) t.ownerId = update.ownerId;
-				if (update.ringIndex !== undefined) t.ringIndex = update.ringIndex;
-				if (update.damage !== undefined) t.damage = update.damage;
-				if (update.range !== undefined) t.range = update.range;
-				if (update.cooldown !== undefined) t.cooldown = update.cooldown;
-				if (update.maxHp !== undefined) t.maxHp = update.maxHp;
-				
-				// Notify renderer of turret capture for visual effect
-				if (ownerChanged) {
-					const newOwner = allPlayers[t.ownerId];
-					invokeRenderer("turretCaptured", [t.x, t.y, newOwner]);
-				}
-			}
-		});
-	}
-	// Handle projectile updates
-	if (data.projectileSpawns) {
-		data.projectileSpawns.forEach(p => projectilesById.set(p.id, p));
-	}
-	if (data.projectileRemovals) {
-		data.projectileRemovals.forEach(id => projectilesById.delete(id));
-	}
-	if (data.projectileHits) {
-		// Notify renderer of projectile hits for visual effects
-		data.projectileHits.forEach(hit => {
+	// Handle hitscan events (drone laser shots)
+	if (data.hitscanEvents) {
+		console.log(`[CLIENT] Received ${data.hitscanEvents.length} hitscan events`);
+		data.hitscanEvents.forEach(hit => {
 			const target = allPlayers[hit.targetNum];
 			if (target) {
 				// Use server's authoritative HP value
@@ -379,7 +319,9 @@ function processFrame(data) {
 					target.hp = Math.max(0, (target.hp || 100) - hit.damage);
 				}
 			}
-			invokeRenderer("projectileHit", [hit.x, hit.y, hit.damage]);
+			console.log(`[CLIENT] Hitscan from (${hit.fromX.toFixed(0)}, ${hit.fromY.toFixed(0)}) to (${hit.toX.toFixed(0)}, ${hit.toY.toFixed(0)})`);
+			// Notify renderer of hitscan for visual effect (laser line)
+			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage]);
 		});
 	}
 	
@@ -475,8 +417,6 @@ function reset() {
 	players = [];
 	allPlayers = [];
 	coinsById.clear();
-	turretsById.clear();
-	projectilesById.clear();
 	dronesById.clear();
 	kills = 0;
 	invokeRenderer("reset");
@@ -498,19 +438,6 @@ function update() {
 		delete allPlayers[val.num];
 		invokeRenderer("removePlayer", [val]);
 	});
-	
-	// Update projectile positions locally (client-side interpolation)
-	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
-	for (const [id, proj] of projectilesById) {
-		// Move projectile based on velocity
-		proj.x += proj.vx;
-		proj.y += proj.vy;
-		
-		// Remove if out of bounds (client-side cleanup for smooth visuals)
-		if (proj.x < 0 || proj.x > mapSize || proj.y < 0 || proj.y > mapSize) {
-			projectilesById.delete(id);
-		}
-	}
 	
 	invokeRenderer("update", [frame]);
 }
@@ -534,8 +461,6 @@ export {
 	getPlayers, 
 	getOthers, 
 	getCoins,
-	getTurrets,
-	getProjectiles,
 	getDrones,
 	disconnect, 
 	setRenderer, 

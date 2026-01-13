@@ -1,52 +1,75 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import { consts } from "../config.js";
 
+// ===== XP HELPER =====
+// Calculate XP needed to reach the next level from current level
+function getXpForLevel(level) {
+	const base = consts.XP_BASE_PER_LEVEL || 50;
+	const increment = consts.XP_INCREMENT_PER_LEVEL || 15;
+	return base + (level - 1) * increment;
+}
+
 // ===== DRONE SYSTEM =====
 
 let nextDroneId = 0;
 
 /**
  * Create a drone entity.
+ * @param {number} ownerId - Player number who owns this drone
+ * @param {number} orbitAngleOffset - Starting angle offset for orbit
+ * @param {number} droneIndex - Index of this drone (0 = first drone, 1+ = additional)
  */
-function createDrone(ownerId, orbitAngleOffset) {
+function createDrone(ownerId, orbitAngleOffset, droneIndex) {
+	// First drone does full damage, additional drones do reduced damage
+	const baseDamage = consts.DRONE_DAMAGE || 10;
+	const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
+	const damage = droneIndex === 0 ? baseDamage : extraDamage;
+	
 	return {
 		id: nextDroneId++,
 		ownerId,
 		x: 0,
 		y: 0,
-		hp: consts.DRONE_HP || 40,
-		maxHp: consts.DRONE_HP || 40,
-		damage: consts.DRONE_DAMAGE || 4,
+		damage: damage,
 		range: consts.DRONE_RANGE || 200,
 		cooldownRemaining: 0,
 		orbitRadius: consts.DRONE_ORBIT_RADIUS || 55,
 		orbitAngleOffset,           // Starting offset for this drone (evenly spaced)
 		currentOrbitAngle: orbitAngleOffset,  // Current angle (animated)
-		targetId: null
+		targetId: null,
+		droneIndex: droneIndex      // Track which drone this is for damage calculation
 	};
 }
 
 /**
  * Rebuild drone array with evenly spaced orbit offsets.
- * Preserves HP of existing drones where possible.
+ * Preserves cooldown of existing drones where possible.
+ * First drone does full damage, additional drones do reduced damage.
  */
 function rebuildDronesArray(player, count) {
 	const oldDrones = player.drones || [];
 	const newDrones = [];
 	
+	const baseDamage = consts.DRONE_DAMAGE || 10;
+	const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
+	
 	for (let i = 0; i < count; i++) {
 		const offset = (i * Math.PI * 2) / count;
+		// First drone (index 0) does full damage, rest do reduced
+		const damage = i === 0 ? baseDamage : extraDamage;
 		
-		// Try to reuse existing drone data (preserve HP, cooldown)
+		// Try to reuse existing drone data (preserve cooldown)
 		if (i < oldDrones.length) {
 			const old = oldDrones[i];
 			old.orbitAngleOffset = offset;
 			// Update current orbit angle to maintain smooth spacing
 			old.currentOrbitAngle = offset;
+			old.droneIndex = i;
+			old.damage = damage;  // Update damage based on new position
 			newDrones.push(old);
 		} else {
-			// Create new drone
-			newDrones.push(createDrone(player.num, offset));
+			// Create new drone with proper index
+			newDrones.push(createDrone(player.num, offset, i));
 		}
 	}
 	
@@ -80,72 +103,6 @@ function updateDronePositions(player, deltaSeconds) {
 	}
 }
 
-// ===== TURRET SYSTEM =====
-
-/**
- * Compute turret stats based on ring index (1, 2, or 3).
- * Ring 1 = closest to home (strongest), Ring 3 = farthest (weakest).
- */
-function computeTurretStats(ringIndex) {
-	if (ringIndex === 1) {
-		return {
-			hp: consts.TURRET_RING1_HP || 100,
-			maxHp: consts.TURRET_RING1_HP || 100,
-			damage: consts.TURRET_RING1_DAMAGE || 10,
-			range: consts.TURRET_RING1_RANGE || 350,
-			cooldown: consts.TURRET_RING1_COOLDOWN || 0.5
-		};
-	} else if (ringIndex === 2) {
-		return {
-			hp: consts.TURRET_RING2_HP || 70,
-			maxHp: consts.TURRET_RING2_HP || 70,
-			damage: consts.TURRET_RING2_DAMAGE || 7,
-			range: consts.TURRET_RING2_RANGE || 300,
-			cooldown: consts.TURRET_RING2_COOLDOWN || 0.65
-		};
-	} else {
-		return {
-			hp: consts.TURRET_RING3_HP || 45,
-			maxHp: consts.TURRET_RING3_HP || 45,
-			damage: consts.TURRET_RING3_DAMAGE || 4,
-			range: consts.TURRET_RING3_RANGE || 260,
-			cooldown: consts.TURRET_RING3_COOLDOWN || 0.8
-		};
-	}
-}
-
-/**
- * Determine ring index based on distance from owner's home position.
- */
-function getRingIndex(dist) {
-	const ring1 = consts.TURRET_RING1_RADIUS || 200;
-	const ring2 = consts.TURRET_RING2_RADIUS || 400;
-	if (dist <= ring1) return 1;
-	if (dist <= ring2) return 2;
-	return 3;
-}
-
-/**
- * Create a turret entity.
- */
-function createTurret(id, ownerId, x, y, ringIndex) {
-	const stats = computeTurretStats(ringIndex);
-	return {
-		id,
-		ownerId,
-		x,
-		y,
-		ringIndex,
-		hp: stats.hp,
-		maxHp: stats.maxHp,
-		damage: stats.damage,
-		range: stats.range,
-		cooldown: stats.cooldown,
-		cooldownRemaining: 0,
-		targetId: null // Current target player num (for visual feedback)
-	};
-}
-
 function Game(id) {
 	const possColors = Color.possColors();
 	let nextInd = 0;
@@ -159,15 +116,6 @@ function Game(id) {
 	let coins = [];  // Still called "coins" internally for pickup entities
 	let nextCoinId = 0;
 	let coinSpawnCooldown = 0;
-	
-	// Turret system
-	let turrets = [];
-	let nextTurretId = 0;
-	const turretSpawnTimers = {}; // keyed by player.num
-	
-	// Projectile system
-	let projectiles = [];
-	let nextProjectileId = 0;
 
 	this.id = id;
 	
@@ -191,8 +139,6 @@ function Game(id) {
 		p.client = client;
 		
 		// Initialize stat multipliers
-		p.staminaRegenMult = 1.0;
-		p.staminaDrainMult = 1.0;
 		p.speedMult = 1.0;
 		p.snipGraceBonusSec = 0;
 		
@@ -225,9 +171,7 @@ function Game(id) {
 				"gameid": id,
 				"frame": frame,
 				"players": splayers,
-				"coins": coins,
-				"turrets": turrets,
-				"projectiles": projectiles
+				"coins": coins
 			});
 		});
 		
@@ -255,8 +199,6 @@ function Game(id) {
 		client.on("disconnect", () => {
 			p.die();
 			p.disconnected = true;
-			// Clean up turret spawn timer
-			delete turretSpawnTimers[p.num];
 			if (p.name.indexOf("[BOT]") == -1) {
 				console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) left.`);
 			}
@@ -268,8 +210,6 @@ function Game(id) {
 	// Serialize player with XP/level stats
 	function serializePlayer(player, viewerNum) {
 		const data = player.serialData();
-		data.staminaRegenMult = player.staminaRegenMult || 1.0;
-		data.staminaDrainMult = player.staminaDrainMult || 1.0;
 		data.speedMult = player.speedMult || 1.0;
 		data.snipGraceBonusSec = player.snipGraceBonusSec || 0;
 		
@@ -305,9 +245,7 @@ function Game(id) {
 			"gameid": id,
 			"frame": frame,
 			"players": splayers,
-			"coins": coins,
-			"turrets": turrets,
-			"projectiles": projectiles
+			"coins": coins
 		});
 		
 		client.on("requestFrame", () => {
@@ -319,9 +257,7 @@ function Game(id) {
 				"gameid": id,
 				"frame": frame,
 				"players": splayers,
-				"coins": coins,
-				"turrets": turrets,
-				"projectiles": projectiles
+				"coins": coins
 			});
 		});
 		
@@ -335,14 +271,9 @@ function Game(id) {
 			coinRemovals: [],
 			xpUpdates: [], // XP/Level updates
 			levelUps: [],  // Level up events
-			turretSpawns: [],
-			turretRemovals: [],
-			turretUpdates: [], // HP changes, target changes
-			projectileSpawns: [],
-			projectileRemovals: [],
-			projectileHits: [], // Hit events for visual feedback
+			hitscanEvents: [], // Drone hitscan laser shots
 			captureEvents: [], // Capture success events for visual feedback
-			droneUpdates: [] // Drone position/HP updates
+			droneUpdates: [] // Drone position updates
 		};
 
 		// Coin spawning
@@ -368,9 +299,7 @@ function Game(id) {
 				"gameid": id,
 				"frame": frame,
 				"players": splayers,
-				"coins": coins,
-				"turrets": turrets,
-				"projectiles": projectiles
+				"coins": coins
 			});
 			return serializePlayer(val, val.num);
 		});
@@ -395,12 +324,7 @@ function Game(id) {
 		if (economyDeltas.coinRemovals.length > 0) data.coinRemovals = economyDeltas.coinRemovals;
 		if (economyDeltas.xpUpdates.length > 0) data.xpUpdates = economyDeltas.xpUpdates;
 		if (economyDeltas.levelUps.length > 0) data.levelUps = economyDeltas.levelUps;
-		if (economyDeltas.turretSpawns.length > 0) data.turretSpawns = economyDeltas.turretSpawns;
-		if (economyDeltas.turretRemovals.length > 0) data.turretRemovals = economyDeltas.turretRemovals;
-		if (economyDeltas.turretUpdates.length > 0) data.turretUpdates = economyDeltas.turretUpdates;
-		if (economyDeltas.projectileSpawns.length > 0) data.projectileSpawns = economyDeltas.projectileSpawns;
-		if (economyDeltas.projectileRemovals.length > 0) data.projectileRemovals = economyDeltas.projectileRemovals;
-		if (economyDeltas.projectileHits.length > 0) data.projectileHits = economyDeltas.projectileHits;
+		if (economyDeltas.hitscanEvents.length > 0) data.hitscanEvents = economyDeltas.hitscanEvents;
 		if (economyDeltas.captureEvents.length > 0) data.captureEvents = economyDeltas.captureEvents;
 		if (economyDeltas.droneUpdates.length > 0) data.droneUpdates = economyDeltas.droneUpdates;
 		
@@ -431,8 +355,11 @@ function Game(id) {
 			// Drop XP as loot when player dies (always drop at least minimum)
 			if (!p.handledDead) {
 				// Calculate XP to drop based on current level and XP
-				const XP_PER_LEVEL = consts.XP_PER_LEVEL || 100;
-				const totalXp = (p.level - 1) * XP_PER_LEVEL + p.xp;
+				// Sum up XP from all previous levels plus current XP
+				let totalXp = p.xp;
+				for (let lvl = 1; lvl < p.level; lvl++) {
+					totalXp += getXpForLevel(lvl);
+				}
 				const fromXp = Math.floor(totalXp * consts.COIN_DROP_PERCENT);
 				const dropAmount = Math.max(consts.COIN_DROP_MIN, fromXp);
 				
@@ -477,190 +404,6 @@ function Game(id) {
 			p.client.disconnect(true);
 		}
 
-		// ===== TURRET SYSTEM UPDATE =====
-		
-		// 1. Spawn turrets for each player
-		for (const p of players) {
-			if (p.dead) continue;
-			
-			// Initialize spawn timer if needed
-			if (turretSpawnTimers[p.num] === undefined) {
-				turretSpawnTimers[p.num] = consts.TURRET_SPAWN_INTERVAL_SEC || 8;
-			}
-			
-			// Decrement timer
-			turretSpawnTimers[p.num] -= deltaSeconds;
-			
-			if (turretSpawnTimers[p.num] <= 0) {
-				turretSpawnTimers[p.num] = consts.TURRET_SPAWN_INTERVAL_SEC || 8;
-				
-				// Check turret cap for this player
-				const playerTurrets = turrets.filter(t => t.ownerId === p.num);
-				if (playerTurrets.length >= (consts.MAX_TURRETS_PER_PLAYER || 15)) {
-					continue;
-				}
-				
-				// Try to spawn a turret in player's territory
-				const spawnPos = findTurretSpawnPosition(p, playerTurrets);
-				if (spawnPos) {
-					const homeX = p.spawnX;
-					const homeY = p.spawnY;
-					const dist = Math.hypot(spawnPos.x - homeX, spawnPos.y - homeY);
-					const ringIndex = getRingIndex(dist);
-					
-					const turret = createTurret(nextTurretId++, p.num, spawnPos.x, spawnPos.y, ringIndex);
-					turrets.push(turret);
-					economyDeltas.turretSpawns.push(turret);
-				}
-			}
-		}
-		
-		// 1b. Check for turret captures (turrets inside enemy territory become theirs)
-		for (const turret of turrets) {
-			const currentOwner = players.find(p => p.num === turret.ownerId && !p.dead);
-			if (!currentOwner) continue;
-			
-			// Only consider capture if turret is NOT in current owner's territory
-			// This prevents flip-flopping when territories overlap
-			const inOwnerTerritory = currentOwner.territory && currentOwner.territory.length >= 3 &&
-				pointInPolygon({ x: turret.x, y: turret.y }, currentOwner.territory);
-			
-			if (inOwnerTerritory) continue; // Turret is safe in owner's territory
-			
-			// Check if turret is inside another player's territory
-			for (const p of players) {
-				if (p.dead || p.num === turret.ownerId) continue;
-				
-				// Check if turret position is inside this player's territory
-				if (p.territory && p.territory.length >= 3 && 
-					pointInPolygon({ x: turret.x, y: turret.y }, p.territory)) {
-					
-					// Transfer ownership!
-					const oldOwnerId = turret.ownerId;
-					turret.ownerId = p.num;
-					
-					// Recalculate ring index based on new owner's home position
-					const dist = Math.hypot(turret.x - p.spawnX, turret.y - p.spawnY);
-					turret.ringIndex = getRingIndex(dist);
-					
-					// Update stats based on new ring
-					const stats = computeTurretStats(turret.ringIndex);
-					turret.damage = stats.damage;
-					turret.range = stats.range;
-					turret.cooldown = stats.cooldown;
-					// Keep current HP but update maxHp
-					turret.maxHp = stats.maxHp;
-					turret.hp = Math.min(turret.hp, turret.maxHp);
-					
-					// Reset target (will find new enemies)
-					turret.targetId = null;
-					
-					// Notify clients of the ownership change
-					economyDeltas.turretUpdates.push({
-						id: turret.id,
-						ownerId: turret.ownerId,
-						ringIndex: turret.ringIndex,
-						damage: turret.damage,
-						range: turret.range,
-						cooldown: turret.cooldown,
-						maxHp: turret.maxHp,
-						hp: turret.hp,
-						targetId: turret.targetId
-					});
-					
-					console.log(`Turret ${turret.id} captured by ${p.name} from player ${oldOwnerId}`);
-					break; // Turret can only be in one territory
-				}
-			}
-		}
-		
-		// 2. Update turrets (targeting + shooting projectiles)
-		for (let i = turrets.length - 1; i >= 0; i--) {
-			const turret = turrets[i];
-			
-			// Check if owner still exists
-			const owner = players.find(p => p.num === turret.ownerId && !p.dead);
-			if (!owner) {
-				// Owner left/died - remove turret
-				economyDeltas.turretRemovals.push(turret.id);
-				turrets.splice(i, 1);
-				continue;
-			}
-			
-			// Reduce cooldown
-			if (turret.cooldownRemaining > 0) {
-				turret.cooldownRemaining -= deltaSeconds;
-			}
-			
-			// Find target (nearest enemy in range)
-			let target = null;
-			let minDist = turret.range;
-			
-			for (const p of players) {
-				if (p.dead || p.num === turret.ownerId) continue;
-				
-				const dist = Math.hypot(p.x - turret.x, p.y - turret.y);
-				if (dist < minDist) {
-					minDist = dist;
-					target = p;
-				}
-			}
-			
-			// Update target for visual feedback
-			const prevTargetId = turret.targetId;
-			turret.targetId = target ? target.num : null;
-			
-			// Fire projectile if ready and has target
-			if (target && turret.cooldownRemaining <= 0) {
-				turret.cooldownRemaining = turret.cooldown;
-				
-				// Calculate direction towards target (lead prediction for moving targets)
-				const dx = target.x - turret.x;
-				const dy = target.y - turret.y;
-				const dist = Math.hypot(dx, dy);
-				
-				// Simple lead prediction: estimate where target will be
-				const projectileSpeed = consts.PROJECTILE_SPEED || 8;
-				const timeToTarget = dist / (projectileSpeed * 60); // Convert to seconds
-				const predictedX = target.x + Math.cos(target.angle) * target.speed * timeToTarget * 60;
-				const predictedY = target.y + Math.sin(target.angle) * target.speed * timeToTarget * 60;
-				
-				// Direction to predicted position
-				const pdx = predictedX - turret.x;
-				const pdy = predictedY - turret.y;
-				const pDist = Math.hypot(pdx, pdy);
-				
-				const vx = (pdx / pDist) * projectileSpeed;
-				const vy = (pdy / pDist) * projectileSpeed;
-				
-				// Create projectile
-				const projectile = {
-					id: nextProjectileId++,
-					ownerId: turret.ownerId,
-					turretId: turret.id,
-					x: turret.x,
-					y: turret.y,
-					vx,
-					vy,
-					damage: turret.damage,
-					lifetime: consts.PROJECTILE_MAX_LIFETIME || 3,
-					radius: consts.PROJECTILE_RADIUS || 6
-				};
-				
-				projectiles.push(projectile);
-				economyDeltas.projectileSpawns.push(projectile);
-			}
-			
-			// Send update if target changed
-			if (prevTargetId !== turret.targetId) {
-				economyDeltas.turretUpdates.push({
-					id: turret.id,
-					targetId: turret.targetId,
-					hp: turret.hp
-				});
-			}
-		}
-		
 		// ===== DRONE SYSTEM UPDATE =====
 		
 		// Update all player drones
@@ -676,27 +419,24 @@ function Game(id) {
 			
 			// Update each drone
 			for (const drone of p.drones) {
-				// HP regeneration when owner is in safe territory
-				if (inTerritory && drone.hp < drone.maxHp) {
-					const regenRate = consts.DRONE_HP_REGEN_IN_TERRITORY || 8;
-					drone.hp = Math.min(drone.maxHp, drone.hp + regenRate * deltaSeconds);
-				}
-				
 				// Reduce cooldown
 				if (drone.cooldownRemaining > 0) {
 					drone.cooldownRemaining -= deltaSeconds;
 				}
 				
-				// Find target (nearest enemy player in range)
+				// Find target (nearest enemy player in range, measured from the owner center)
 				let target = null;
 				let minDist = drone.range;
+				const ownerX = p.x;
+				const ownerY = p.y;
 				
 				for (const enemy of players) {
 					if (enemy.dead || enemy.num === p.num) continue;
 					// Don't target snipped invulnerable players (if you want this behavior)
 					// if (enemy.isSnipped) continue;
 					
-					const dist = Math.hypot(enemy.x - drone.x, enemy.y - drone.y);
+					// Measure from player center so range matches the rendered ring
+					const dist = Math.hypot(enemy.x - ownerX, enemy.y - ownerY);
 					if (dist < minDist) {
 						minDist = dist;
 						target = enemy;
@@ -705,149 +445,62 @@ function Game(id) {
 				
 				drone.targetId = target ? target.num : null;
 				
-				// Fire projectile if ready and has target
+				// Hitscan fire if ready and has target
 				if (target && drone.cooldownRemaining <= 0) {
 					drone.cooldownRemaining = consts.DRONE_COOLDOWN || 1.0;
 					
-					// Calculate direction towards target with lead prediction
-					const dx = target.x - drone.x;
-					const dy = target.y - drone.y;
-					const dist = Math.hypot(dx, dy);
+					// Calculate damage dynamically from config (first drone = full, rest = extra)
+					const droneIndex = p.drones.indexOf(drone);
+					const baseDamage = consts.DRONE_DAMAGE || 10;
+					const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
+					let damage = droneIndex === 0 ? baseDamage : extraDamage;
 					
-					const projectileSpeed = consts.PROJECTILE_SPEED || 8;
-					const timeToTarget = dist / (projectileSpeed * 60);
-					const predictedX = target.x + Math.cos(target.angle) * target.speed * timeToTarget * 60;
-					const predictedY = target.y + Math.sin(target.angle) * target.speed * timeToTarget * 60;
+					// Apply damage reduction if target is in their own territory
+					const targetInTerritory = target.lands && target.lands.length > 0 && 
+						pointInPolygon(target.lands, target.x, target.y);
+					if (targetInTerritory) {
+						const reduction = consts.TERRITORY_DAMAGE_REDUCTION || 0.5;
+						damage = damage * (1 - reduction);
+					}
 					
-					const pdx = predictedX - drone.x;
-					const pdy = predictedY - drone.y;
-					const pDist = Math.hypot(pdx, pdy);
+					// Hitscan: instant damage to target
+					target.hp -= damage;
+					if (target.hp < 0) target.hp = 0;
 					
-					const vx = (pdx / pDist) * projectileSpeed;
-					const vy = (pdy / pDist) * projectileSpeed;
+					console.log(`[HITSCAN] Drone ${drone.id} (owner: ${p.name}) hit ${target.name} for ${damage.toFixed(1)} dmg${targetInTerritory ? ' (in territory)' : ''}. HP: ${target.hp}/${target.maxHp}`);
 					
-					// Create projectile (same system as turrets)
-					const projectile = {
-						id: nextProjectileId++,
+					// Send hitscan event for visual feedback (laser line from drone to target)
+					economyDeltas.hitscanEvents.push({
+						fromX: drone.x,
+						fromY: drone.y,
+						toX: target.x,
+						toY: target.y,
 						ownerId: p.num,
-						droneId: drone.id,
-						x: drone.x,
-						y: drone.y,
-						vx,
-						vy,
-						damage: drone.damage,
-						lifetime: consts.PROJECTILE_MAX_LIFETIME || 3,
-						radius: consts.PROJECTILE_RADIUS || 6
-					};
-					
-					projectiles.push(projectile);
-					economyDeltas.projectileSpawns.push(projectile);
-				}
-			}
-		}
-		
-		// 2b. Update projectiles (movement + collision)
-		const projectileRadius = consts.PROJECTILE_RADIUS || 6;
-		const playerRadius = consts.CELL_WIDTH / 2;
-		
-		for (let i = projectiles.length - 1; i >= 0; i--) {
-			const proj = projectiles[i];
-			
-			// Move projectile
-			proj.x += proj.vx;
-			proj.y += proj.vy;
-			
-			// Reduce lifetime
-			proj.lifetime -= deltaSeconds;
-			
-			// Check if out of bounds or expired
-			if (proj.lifetime <= 0 || 
-				proj.x < 0 || proj.x > mapSize || 
-				proj.y < 0 || proj.y > mapSize) {
-				economyDeltas.projectileRemovals.push(proj.id);
-				projectiles.splice(i, 1);
-				continue;
-			}
-			
-			// Check collision with players (except owner)
-			let hit = false;
-			for (const p of players) {
-				if (p.dead || p.num === proj.ownerId) continue;
-				
-				const dist = Math.hypot(p.x - proj.x, p.y - proj.y);
-				if (dist < playerRadius + projectileRadius) {
-					// Hit!
-					p.hp -= proj.damage;
-					if (p.hp < 0) p.hp = 0;
-					
-					economyDeltas.projectileHits.push({
-						projectileId: proj.id,
-						targetNum: p.num,
-						x: proj.x,
-						y: proj.y,
-						damage: proj.damage,
-						remainingHp: p.hp  // Send current HP so client can sync
+						targetNum: target.num,
+						damage: damage,
+						remainingHp: target.hp
 					});
 					
-					// Check for death - add to dead array for proper processing
-					if (p.hp <= 0) {
-						p.die();
-						dead.push(p);
+					// Check for death
+					if (target.hp <= 0) {
+						target.die();
+						dead.push(target);
 					}
-					
-					// Remove projectile
-					economyDeltas.projectileRemovals.push(proj.id);
-					projectiles.splice(i, 1);
-					hit = true;
-					break;
-				}
-			}
-			
-			// Check collision with enemy drones (drones can be damaged)
-			if (!hit) {
-				const droneRadius = consts.DRONE_RADIUS || 10;
-				for (const p of players) {
-					if (p.dead || p.num === proj.ownerId || !p.drones) continue;
-					
-					for (const drone of p.drones) {
-						if (drone.hp <= 0) continue;
-						
-						const dist = Math.hypot(drone.x - proj.x, drone.y - proj.y);
-						if (dist < droneRadius + projectileRadius) {
-							// Hit drone!
-							drone.hp -= proj.damage;
-							if (drone.hp < 0) drone.hp = 0;
-							
-							economyDeltas.projectileHits.push({
-								projectileId: proj.id,
-								droneId: drone.id,
-								ownerNum: p.num,
-								x: proj.x,
-								y: proj.y,
-								damage: proj.damage,
-								isDroneHit: true
-							});
-							
-							// Remove projectile
-							economyDeltas.projectileRemovals.push(proj.id);
-							projectiles.splice(i, 1);
-							hit = true;
-							break;
-						}
-					}
-					if (hit) break;
 				}
 			}
 		}
 		
-		// 3. Process players who died from projectile damage
+		// Process players who died from hitscan damage
 		// (These were added to dead[] after the initial death processing loop)
 		for (const p of dead) {
 			if (p.handledDead) continue; // Skip if already processed
 			
 			// Drop XP as loot when player dies
-			const XP_PER_LEVEL = consts.XP_PER_LEVEL || 100;
-			const totalXp = (p.level - 1) * XP_PER_LEVEL + p.xp;
+			// Sum up XP from all previous levels plus current XP
+			let totalXp = p.xp;
+			for (let lvl = 1; lvl < p.level; lvl++) {
+				totalXp += getXpForLevel(lvl);
+			}
 			const fromXp = Math.floor(totalXp * consts.COIN_DROP_PERCENT);
 			const dropAmount = Math.max(consts.COIN_DROP_MIN, fromXp);
 			
@@ -879,35 +532,17 @@ function Game(id) {
 			p.handledDead = true;
 			
 			if (p.name.indexOf("[BOT]") == -1) {
-				console.log(`${p.name || "Unnamed"} (${p.num}) died from turret damage.`);
+				console.log(`${p.name || "Unnamed"} (${p.num}) died from combat damage.`);
 			}
 			p.client.emit("dead");
 			p.client.disconnect(true);
 		}
 		
-		// 4. Remove turrets of dead players (cleanup)
-		const deadPlayerNums = new Set(dead.map(p => p.num));
-		for (let i = turrets.length - 1; i >= 0; i--) {
-			if (deadPlayerNums.has(turrets[i].ownerId)) {
-				economyDeltas.turretRemovals.push(turrets[i].id);
-				turrets.splice(i, 1);
-			}
-		}
-		
-		// Also remove projectiles from dead players
-		for (let i = projectiles.length - 1; i >= 0; i--) {
-			if (deadPlayerNums.has(projectiles[i].ownerId)) {
-				economyDeltas.projectileRemovals.push(projectiles[i].id);
-				projectiles.splice(i, 1);
-			}
-		}
-
 		// Process alive players economy (XP/Leveling)
 		for (const p of players) {
 			if (p.dead) continue;
 			
 			let changed = false;
-			const XP_PER_LEVEL = consts.XP_PER_LEVEL || 100;
 
 			// 1. XP pickups (coins) -> add directly to XP
 			const scaledRadius = p.getScaledRadius ? p.getScaledRadius() : PLAYER_RADIUS;
@@ -945,9 +580,11 @@ function Game(id) {
 
 			// 3. Auto-level up when XP threshold reached
 			let leveledUp = false;
-			while (p.xp >= XP_PER_LEVEL) {
-				p.xp -= XP_PER_LEVEL;
+			let xpNeeded = getXpForLevel(p.level);
+			while (p.xp >= xpNeeded) {
+				p.xp -= xpNeeded;
 				p.level += 1;
+				xpNeeded = getXpForLevel(p.level);
 				leveledUp = true;
 				changed = true;
 				
@@ -969,7 +606,7 @@ function Game(id) {
 					num: p.num,
 					level: p.level,
 					xp: p.xp,
-					xpPerLevel: XP_PER_LEVEL,
+					xpPerLevel: getXpForLevel(p.level),
 					sizeScale: p.sizeScale,
 					droneCount: p.droneCount || 1
 				});
@@ -984,8 +621,6 @@ function Game(id) {
 						id: d.id,
 						x: d.x,
 						y: d.y,
-						hp: d.hp,
-						maxHp: d.maxHp,
 						targetId: d.targetId
 					}))
 				});
@@ -1009,53 +644,6 @@ function Game(id) {
 			rebuildDronesArray(player, player.droneCount);
 		}
 	}
-}
-
-/**
- * Find a valid spawn position for a turret within the player's territory.
- * Tries to find a spot that respects minimum spacing from other turrets.
- */
-function findTurretSpawnPosition(player, existingTurrets) {
-	const territory = player.territory;
-	if (!territory || territory.length < 3) return null;
-	
-	const minSpacing = consts.MIN_TURRET_SPACING || 60;
-	const maxAttempts = 30;
-	
-	// Calculate bounding box of territory
-	let minX = Infinity, maxX = -Infinity;
-	let minY = Infinity, maxY = -Infinity;
-	for (const pt of territory) {
-		if (pt.x < minX) minX = pt.x;
-		if (pt.x > maxX) maxX = pt.x;
-		if (pt.y < minY) minY = pt.y;
-		if (pt.y > maxY) maxY = pt.y;
-	}
-	
-	for (let attempt = 0; attempt < maxAttempts; attempt++) {
-		// Random point in bounding box
-		const x = minX + Math.random() * (maxX - minX);
-		const y = minY + Math.random() * (maxY - minY);
-		
-		// Check if point is inside territory
-		if (!pointInPolygon({ x, y }, territory)) continue;
-		
-		// Check spacing from existing turrets
-		let tooClose = false;
-		for (const t of existingTurrets) {
-			const dist = Math.hypot(t.x - x, t.y - y);
-			if (dist < minSpacing) {
-				tooClose = true;
-				break;
-			}
-		}
-		
-		if (!tooClose) {
-			return { x, y };
-		}
-	}
-	
-	return null; // Could not find valid position
 }
 
 function findEmptySpawn(players, mapSize) {

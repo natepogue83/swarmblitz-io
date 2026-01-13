@@ -1,7 +1,7 @@
 import Color from "./color.js";
 import { consts } from "../../config.js";
 
-export const PLAYER_RADIUS = 15;
+export const PLAYER_RADIUS = 20;
 const TRAIL_MIN_DIST = 10;
 const SHADOW_OFFSET = 10;
 
@@ -240,16 +240,9 @@ export default function Player(sdata) {
 	this.sizeScale = Math.min(sizeScaleMax, Math.max(1.0, 1.0 + (this.level - 1) * sizeScalePerLevel));
 
 	// Stat multipliers
-	this.staminaRegenMult = sdata.staminaRegenMult ?? 1.0;
-	this.staminaDrainMult = sdata.staminaDrainMult ?? 1.0;
 	this.snipGraceBonusSec = sdata.snipGraceBonusSec ?? 0;
 	this._pendingTerritoryAreaGained = 0; // Accumulates area in px^2
 	this._territoryCoinCarry = 0; // Carryover for fractional coin conversion
-
-	// Stamina system
-	this.maxStamina = sdata.maxStamina ?? consts.MAX_STAMINA;
-	this.stamina = sdata.stamina ?? this.maxStamina;
-	this.isExhausted = sdata.isExhausted ?? false;
 	
 	// Snip system state
 	this.isSnipped = sdata.isSnipped ?? false;
@@ -264,7 +257,7 @@ export default function Player(sdata) {
 	// Exponential fuse acceleration state
 	this.snipElapsed = sdata.snipElapsed ?? 0; // seconds since snip started
 	
-	// HP system (for turret damage)
+	// HP system (for combat damage from drones)
 	this.hp = sdata.hp ?? (consts.PLAYER_MAX_HP || 100);
 	this.maxHp = sdata.maxHp ?? (consts.PLAYER_MAX_HP || 100);
 	
@@ -317,8 +310,8 @@ Player.prototype.move = function(deltaSeconds) {
 		this.angle += Math.sign(angleDiff) * turnSpeed;
 	}
 	
-	// Apply stamina-based speed modifier
-	const speedMultiplier = this.isExhausted ? consts.EXHAUSTED_SPEED_MULT : 1.0;
+	// Speed multiplier (no stamina system)
+	const speedMultiplier = 1.0;
 
 	// Move in current direction
 	this.x += Math.cos(this.angle) * this.speed * speedMultiplier;
@@ -1105,8 +1098,7 @@ Player.prototype.startSnip = function(collisionPoint, hitInfo) {
 	// Initial displayed timer (exactness comes from updateSnip recalculation).
 	// We keep this consistent with our exponential model at t=0:
 	// remainingTime = (1/k) * ln(1 + remainingDist * k / v0)
-	const speedMultiplier = this.isExhausted ? consts.EXHAUSTED_SPEED_MULT : 1.0;
-	const currentSpeedPerFrame = this.speed * speedMultiplier;
+	const currentSpeedPerFrame = this.speed;
 	const fps = 60;
 	const v0 = currentSpeedPerFrame * consts.SNIP_FUSE_SPEED_MULT * fps;
 	const k = consts.SNIP_EXP_ACCEL_PER_SEC;
@@ -1135,8 +1127,7 @@ Player.prototype.updateSnip = function(deltaSeconds) {
 	// We recompute v0 from the player's current effective speed so the fuse is always >= 1.5x faster,
 	// even if debuffs/buffs change mid-snip.
 	this.snipElapsed += deltaSeconds;
-	const speedMultiplier = this.isExhausted ? consts.EXHAUSTED_SPEED_MULT : 1.0;
-	const currentSpeedPerFrame = this.speed * speedMultiplier;
+	const currentSpeedPerFrame = this.speed;
 	const fps = deltaSeconds > 0 ? (1 / deltaSeconds) : 60;
 	const v0 = currentSpeedPerFrame * consts.SNIP_FUSE_SPEED_MULT * fps;
 	const k = consts.SNIP_EXP_ACCEL_PER_SEC;
@@ -1355,6 +1346,9 @@ Player.prototype.renderBody = function(ctx, fade) {
 	ctx.arc(this.x + 2, this.y + 4, scaledRadius, 0, Math.PI * 2);
 	ctx.fill();
 	
+	// Check if in own territory for gold glow effect
+	const inOwnTerritory = this.isInOwnTerritory();
+	
 	// Render player body
 	if (this.isSnipped) {
 		// Ghost effect: red-tinted, semi-transparent
@@ -1366,6 +1360,44 @@ Player.prototype.renderBody = function(ctx, fade) {
 	ctx.beginPath();
 	ctx.arc(this.x, this.y, scaledRadius, 0, Math.PI * 2);
 	ctx.fill();
+	
+	// Green-to-gold glow effect when in own territory (safety indicator)
+	if (inOwnTerritory && !this.isSnipped) {
+		const time = Date.now() / 1000;
+		const pulse = 0.5 + 0.5 * Math.sin(time * 2.5); // 0 to 1 pulse for color lerp
+		const intensity = 0.7 + 0.3 * Math.sin(time * 3); // Intensity pulse
+		const glowRadius = scaledRadius * 2.2;
+		
+		// Interpolate between green (0, 200, 80) and gold (255, 215, 0)
+		const r = Math.round(0 + pulse * 255);
+		const g = Math.round(200 + pulse * 15);  // 200 -> 215
+		const b = Math.round(80 - pulse * 80);   // 80 -> 0
+		
+		// Outer glow ring
+		ctx.save();
+		ctx.shadowColor = `rgba(${r}, ${g}, ${b}, 0.8)`;
+		ctx.shadowBlur = 15 * intensity;
+		ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.6 * intensity * fade})`;
+		ctx.lineWidth = 3;
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, scaledRadius + 4, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.restore();
+		
+		// Radial glow aura
+		const gradient = ctx.createRadialGradient(
+			this.x, this.y, scaledRadius,
+			this.x, this.y, glowRadius
+		);
+		gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${0.4 * intensity * fade})`);
+		gradient.addColorStop(0.4, `rgba(${r}, ${g}, ${b}, ${0.25 * intensity * fade})`);
+		gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+		
+		ctx.fillStyle = gradient;
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
+		ctx.fill();
+	}
 	
 	// Snipped glow ring
 	if (this.isSnipped) {
@@ -1396,29 +1428,6 @@ Player.prototype.renderBody = function(ctx, fade) {
 	}
 	ctx.fillText(this.name, this.x, this.y - scaledRadius - 8);
 
-	// Render tiny stamina bar under player
-	if (this.stamina !== undefined) {
-		const barWidth = scaledRadius * 2;
-		const barHeight = 4;
-		const barX = this.x - barWidth / 2;
-		const barY = this.y + scaledRadius + 8;
-		
-		// Background
-		ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
-		ctx.fillRect(barX, barY, barWidth, barHeight);
-		
-		// Foreground
-		const staminaRatio = this.stamina / this.maxStamina;
-		if (this.isExhausted) {
-			ctx.fillStyle = `rgba(255, 68, 68, ${fade})`;
-		} else if (staminaRatio < 0.3) {
-			ctx.fillStyle = `rgba(255, 204, 0, ${fade})`;
-		} else {
-			ctx.fillStyle = `rgba(68, 255, 68, ${fade})`;
-		}
-		
-		ctx.fillRect(barX, barY, barWidth * staminaRatio, barHeight);
-	}
 };
 
 Player.prototype.serialData = function() {
@@ -1439,14 +1448,7 @@ Player.prototype.serialData = function() {
 		level: this.level,
 		xp: this.xp,
 		sizeScale: this.sizeScale,
-		// Stamina fields
-		staminaRegenMult: this.staminaRegenMult,
-		staminaDrainMult: this.staminaDrainMult,
-		speedMult: this.speedMult,
 		snipGraceBonusSec: this.snipGraceBonusSec,
-		stamina: this.stamina,
-		maxStamina: this.maxStamina,
-		isExhausted: this.isExhausted,
 		isSnipped: this.isSnipped,
 		snipTimeRemaining: this.snipTimeRemaining,
 		snipMaxTime: this.snipMaxTime,

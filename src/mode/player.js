@@ -5,6 +5,7 @@ import { consts } from "../../config.js";
 
 // Drone rendering constants
 const DRONE_VISUAL_RADIUS = consts.DRONE_RADIUS || 10;
+const DRONE_RANGE = consts.DRONE_RANGE || 250;
 
 const SHADOW_OFFSET = 5;
 const ANIMATE_FRAMES = 24;
@@ -37,8 +38,11 @@ const dyingPlayers = []; // Track players with death animations
 // Loot coin animation system
 const lootCoins = []; // Animated coins dropping from deaths
 
-// Projectile hit effects
-const projectileHitEffects = [];
+// Hitscan laser effects (drone shots)
+const hitscanEffects = [];
+
+// Damage number effects
+const damageNumbers = [];
 
 // Capture feedback effects
 const captureEffects = [];
@@ -139,8 +143,11 @@ function reset() {
 	// Clear loot coin animations
 	lootCoins.length = 0;
 	
-	// Clear projectile hit effects
-	projectileHitEffects.length = 0;
+	// Clear hitscan effects
+	hitscanEffects.length = 0;
+	
+	// Clear damage numbers
+	damageNumbers.length = 0;
 	
 	// Clear capture effects
 	captureEffects.length = 0;
@@ -226,7 +233,10 @@ function paintUIBar(ctx) {
 	// XP/Level HUD
 	const xp = user.xp || 0;
 	const level = user.level || 1;
-	const xpPerLevel = consts.XP_PER_LEVEL || 100;
+	// Calculate XP needed for current level (scaling formula)
+	const base = consts.XP_BASE_PER_LEVEL || 50;
+	const increment = consts.XP_INCREMENT_PER_LEVEL || 15;
+	const xpPerLevel = base + (level - 1) * increment;
 	
 	// XP bar
 	const xpBarWidth = 150;
@@ -286,34 +296,6 @@ function paintUIBar(ctx) {
 	ctx.font = "14px Changa";
 	ctx.fillText(sizeText, xpBarX + xpBarWidth + 115, BAR_HEIGHT - 15);
 
-	// Stamina bar
-	const staminaWidth = 100;
-	const staminaHeight = 18;
-	const staminaX = xpBarX + xpBarWidth + 175;
-	const staminaY = (BAR_HEIGHT - staminaHeight) / 2;
-
-	// Background
-	ctx.fillStyle = "rgba(100, 100, 100, 0.5)";
-	ctx.fillRect(staminaX, staminaY, staminaWidth, staminaHeight);
-
-	// Foreground (Stamina)
-	const staminaRatio = (user.stamina || 0) / (user.maxStamina || 100);
-	if (user.isExhausted) {
-		ctx.fillStyle = "#ff4444"; // Red when exhausted
-	} else if (staminaRatio < 0.3) {
-		ctx.fillStyle = "#ffcc00"; // Yellow when low
-	} else {
-		ctx.fillStyle = "#44ff44"; // Green normally
-	}
-	ctx.fillRect(staminaX, staminaY, staminaWidth * staminaRatio, staminaHeight);
-
-	// Stamina Text
-	ctx.fillStyle = "white";
-	ctx.font = "bold 10px Changa";
-	ctx.textAlign = "center";
-	ctx.fillText(user.isExhausted ? "EXHAUSTED" : "STAMINA", staminaX + staminaWidth / 2, staminaY + staminaHeight - 4);
-	ctx.textAlign = "left";
-
 	// Calculate rank
 	const sorted = [];
 	client.getPlayers().forEach(val => {
@@ -327,7 +309,7 @@ function paintUIBar(ctx) {
 	const rankText = "Rank: " + (rank === -1 ? "--" : rank + 1) + " of " + sorted.length;
 	ctx.font = "16px Changa";
 	ctx.fillStyle = "white";
-	ctx.fillText(rankText, staminaX + staminaWidth + 15, BAR_HEIGHT - 15);
+	ctx.fillText(rankText, xpBarX + xpBarWidth + 175, BAR_HEIGHT - 15);
 
 	// Rolling the leaderboard bars
 	if (sorted.length > 0) {
@@ -406,21 +388,6 @@ function paint(ctx) {
 	
 	// Render animated loot coins
 	renderLootCoins(ctx);
-	
-	// Render turrets
-	const turrets = client.getTurrets();
-	for (const turret of turrets) {
-		renderTurret(ctx, turret);
-	}
-	
-	// Render projectiles
-	const projectiles = client.getProjectiles();
-	for (const proj of projectiles) {
-		renderProjectile(ctx, proj);
-	}
-	
-	// Render projectile hit effects
-	renderProjectileHitEffects(ctx);
 	
 	// Render drones
 	renderAllDrones(ctx);
@@ -525,6 +492,12 @@ function paint(ctx) {
 		
 		const outlineThickness = getOutlineThickness(p);
 		
+		// Render drone range circle BEFORE player body (local player only)
+		// This puts it behind the player visually
+		if (user && p.num === user.num) {
+			renderDroneRangeCircle(ctx, p);
+		}
+		
 		// Render player (skip territory since we rendered it separately)
 		if (fr < ANIMATE_FRAMES) {
 			p.renderBody(ctx, fr / ANIMATE_FRAMES);
@@ -532,8 +505,8 @@ function paint(ctx) {
 			p.renderBody(ctx, 1);
 		}
 		
-		// Render HP bar above player (only if damaged)
-		if (p.hp !== undefined && p.hp < p.maxHp) {
+		// Render HP bar above player (always visible)
+		if (p.hp !== undefined) {
 			renderPlayerHpBar(ctx, p);
 		}
 		
@@ -542,6 +515,12 @@ function paint(ctx) {
 	
 	// Render death particles
 	renderDeathParticles(ctx);
+	
+	// Render hitscan laser effects (on top of everything)
+	renderHitscanEffects(ctx);
+
+	// Render damage numbers
+	renderDamageNumbers(ctx);
 
 	// Reset transform for fixed UI
 	ctx.restore();
@@ -981,112 +960,11 @@ function renderLootCoins(ctx) {
 	}
 }
 
-// ===== TURRET RENDERING =====
-
-function renderTurret(ctx, turret) {
-	const ownerPlayer = client.getPlayers().find(p => p.num === turret.ownerId);
-	const baseColor = ownerPlayer ? ownerPlayer.baseColor : null;
-	const isUserTurret = user && turret.ownerId === user.num;
-	const turretRadius = consts.TURRET_RADIUS || 18;
-	
-	ctx.save();
-	
-	// Ring-based size scaling (ring 1 = bigger)
-	const sizeMultiplier = turret.ringIndex === 1 ? 1.2 : (turret.ringIndex === 2 ? 1.0 : 0.85);
-	const radius = turretRadius * sizeMultiplier;
-	
-	// Shadow
-	ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
-	ctx.beginPath();
-	ctx.arc(turret.x + 3, turret.y + 3, radius, 0, Math.PI * 2);
-	ctx.fill();
-	
-	// Base color (owner's color or gray)
-	if (baseColor) {
-		ctx.fillStyle = baseColor.deriveAlpha(isUserTurret ? 0.9 : 0.7).rgbString();
-	} else {
-		ctx.fillStyle = isUserTurret ? "rgba(100, 150, 100, 0.9)" : "rgba(150, 150, 150, 0.7)";
-	}
-	
-	// Turret body (hexagon for visual interest)
-	ctx.beginPath();
-	for (let i = 0; i < 6; i++) {
-		const angle = (i / 6) * Math.PI * 2 - Math.PI / 2;
-		const x = turret.x + Math.cos(angle) * radius;
-		const y = turret.y + Math.sin(angle) * radius;
-		if (i === 0) ctx.moveTo(x, y);
-		else ctx.lineTo(x, y);
-	}
-	ctx.closePath();
-	ctx.fill();
-	
-	// Border (thicker for stronger turrets)
-	ctx.strokeStyle = baseColor ? baseColor.deriveLumination(-0.2).rgbString() : "#555";
-	ctx.lineWidth = turret.ringIndex === 1 ? 3 : (turret.ringIndex === 2 ? 2 : 1.5);
-	ctx.stroke();
-	
-	// Inner detail - targeting reticle
-	if (turret.targetId !== null) {
-		// Turret is targeting - show active indicator
-		const time = Date.now() / 200;
-		const pulse = 0.5 + 0.5 * Math.sin(time * 4);
-		ctx.strokeStyle = `rgba(255, 100, 100, ${0.5 + 0.5 * pulse})`;
-		ctx.lineWidth = 2;
-		ctx.beginPath();
-		ctx.arc(turret.x, turret.y, radius * 0.5, 0, Math.PI * 2);
-		ctx.stroke();
-	} else {
-		// Idle indicator
-		ctx.fillStyle = baseColor ? baseColor.deriveLumination(0.2).rgbString() : "#888";
-		ctx.beginPath();
-		ctx.arc(turret.x, turret.y, radius * 0.3, 0, Math.PI * 2);
-		ctx.fill();
-	}
-	
-	// Ring indicator (small dots for ring level)
-	ctx.fillStyle = isUserTurret ? "#FFD700" : "#AAA";
-	const dotRadius = 3;
-	const dotDist = radius + 8;
-	for (let i = 0; i < turret.ringIndex; i++) {
-		const angle = -Math.PI / 2 + (i - (turret.ringIndex - 1) / 2) * 0.4;
-		const dx = turret.x + Math.cos(angle) * dotDist;
-		const dy = turret.y + Math.sin(angle) * dotDist;
-		ctx.beginPath();
-		ctx.arc(dx, dy, dotRadius, 0, Math.PI * 2);
-		ctx.fill();
-	}
-	
-	// HP bar (only show if damaged)
-	if (turret.hp < turret.maxHp) {
-		const barWidth = radius * 2;
-		const barHeight = 4;
-		const barX = turret.x - barWidth / 2;
-		const barY = turret.y - radius - 10;
-		
-		// Background
-		ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-		ctx.fillRect(barX, barY, barWidth, barHeight);
-		
-		// HP fill
-		const hpRatio = turret.hp / turret.maxHp;
-		if (hpRatio > 0.5) {
-			ctx.fillStyle = "#44ff44";
-		} else if (hpRatio > 0.25) {
-			ctx.fillStyle = "#ffcc00";
-		} else {
-			ctx.fillStyle = "#ff4444";
-		}
-		ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
-	}
-	
-	ctx.restore();
-}
-
 function renderPlayerHpBar(ctx, player) {
 	const barWidth = PLAYER_RADIUS * 2.5;
-	const barHeight = 5;
+	const barHeight = 8;
 	const barX = player.x - barWidth / 2;
-	const barY = player.y - PLAYER_RADIUS - 35; // Above name
+	const barY = player.y + PLAYER_RADIUS + 5; // Below player
 	
 	// Background
 	ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
@@ -1109,108 +987,165 @@ function renderPlayerHpBar(ctx, player) {
 	ctx.strokeRect(barX, barY, barWidth, barHeight);
 }
 
-// ===== PROJECTILE RENDERING =====
+// ===== DRONE RANGE CIRCLE (LOCAL PLAYER ONLY) =====
 
-function renderProjectile(ctx, proj) {
-	const ownerPlayer = client.getPlayers().find(p => p.num === proj.ownerId);
-	const baseColor = ownerPlayer ? ownerPlayer.baseColor : null;
-	const radius = proj.radius || (consts.PROJECTILE_RADIUS || 6);
+function renderDroneRangeCircle(ctx, player) {
+	const range = DRONE_RANGE;
+	const x = player.x;
+	const y = player.y;
 	
+	// Dotted circle style
 	ctx.save();
 	
-	// Calculate direction for trail effect
-	const speed = Math.hypot(proj.vx, proj.vy);
-	const dirX = proj.vx / speed;
-	const dirY = proj.vy / speed;
+	// Use player's color with some transparency
+	const baseColor = player.baseColor;
+	ctx.strokeStyle = baseColor.deriveAlpha(0.15).rgbString();
+	ctx.lineWidth = 2;
 	
-	// Trail (motion blur effect)
-	const trailLength = 15;
-	const gradient = ctx.createLinearGradient(
-		proj.x - dirX * trailLength, 
-		proj.y - dirY * trailLength,
-		proj.x, 
-		proj.y
-	);
+	// Set dashed line pattern (dash length, gap length)
+	ctx.setLineDash([12, 8]);
 	
-	if (baseColor) {
-		gradient.addColorStop(0, baseColor.deriveAlpha(0).rgbString());
-		gradient.addColorStop(1, baseColor.deriveAlpha(0.8).rgbString());
-	} else {
-		gradient.addColorStop(0, 'rgba(255, 200, 100, 0)');
-		gradient.addColorStop(1, 'rgba(255, 200, 100, 0.8)');
-	}
+	// Animate the dash offset for a subtle rotating effect
+	const time = Date.now() / 1000;
+	ctx.lineDashOffset = -time * 20; // Rotate at 20 pixels per second
 	
-	ctx.strokeStyle = gradient;
-	ctx.lineWidth = radius * 1.5;
-	ctx.lineCap = 'round';
+	// Draw the circle
 	ctx.beginPath();
-	ctx.moveTo(proj.x - dirX * trailLength, proj.y - dirY * trailLength);
-	ctx.lineTo(proj.x, proj.y);
+	ctx.arc(x, y, range, 0, Math.PI * 2);
 	ctx.stroke();
-	
-	// Outer glow
-	ctx.shadowBlur = 10;
-	ctx.shadowColor = baseColor ? baseColor.rgbString() : '#FFA500';
-	
-	// Main projectile body
-	if (baseColor) {
-		ctx.fillStyle = baseColor.deriveLumination(0.2).rgbString();
-	} else {
-		ctx.fillStyle = '#FFCC00';
-	}
-	ctx.beginPath();
-	ctx.arc(proj.x, proj.y, radius, 0, Math.PI * 2);
-	ctx.fill();
-	
-	// Inner bright core
-	ctx.fillStyle = 'rgba(255, 255, 200, 0.9)';
-	ctx.beginPath();
-	ctx.arc(proj.x, proj.y, radius * 0.5, 0, Math.PI * 2);
-	ctx.fill();
 	
 	ctx.restore();
 }
 
-// ===== PROJECTILE HIT EFFECTS =====
+// ===== HITSCAN LASER EFFECTS =====
 
-class ProjectileHitEffect {
-	constructor(x, y, damage) {
-		this.x = x;
-		this.y = y;
+class HitscanEffect {
+	constructor(fromX, fromY, toX, toY, ownerId, damage) {
+		this.fromX = fromX;
+		this.fromY = fromY;
+		this.toX = toX;
+		this.toY = toY;
+		this.ownerId = ownerId;
 		this.damage = damage;
 		this.spawnTime = Date.now();
-		this.duration = 300; // ms
+		this.duration = 300; // ms - visible laser effect
+		this.life = 1;
+	}
+	
+	update() {
+		const elapsed = Date.now() - this.spawnTime;
+		this.life = 1 - (elapsed / this.duration);
+		return this.life > 0;
+	}
+	
+	render(ctx) {
+		if (this.life <= 0) return;
+		
+		const ownerPlayer = client.getPlayers().find(p => p.num === this.ownerId);
+		const baseColor = ownerPlayer ? ownerPlayer.baseColor : null;
+		
+		ctx.save();
+		
+		// Laser line with glow
+		ctx.lineCap = 'round';
+		
+		// Outer glow (thicker, more transparent)
+		ctx.lineWidth = 12 * this.life;
+		if (baseColor) {
+			ctx.strokeStyle = baseColor.deriveAlpha(0.5 * this.life).rgbString();
+		} else {
+			ctx.strokeStyle = `rgba(255, 50, 50, ${0.5 * this.life})`;
+		}
+		ctx.beginPath();
+		ctx.moveTo(this.fromX, this.fromY);
+		ctx.lineTo(this.toX, this.toY);
+		ctx.stroke();
+		
+		// Core laser line (thinner, brighter)
+		ctx.lineWidth = 5 * this.life;
+		if (baseColor) {
+			ctx.strokeStyle = baseColor.deriveLumination(0.4).deriveAlpha(0.95 * this.life).rgbString();
+		} else {
+			ctx.strokeStyle = `rgba(255, 150, 150, ${0.95 * this.life})`;
+		}
+		ctx.beginPath();
+		ctx.moveTo(this.fromX, this.fromY);
+		ctx.lineTo(this.toX, this.toY);
+		ctx.stroke();
+		
+		// Bright center
+		ctx.lineWidth = 2 * this.life;
+		ctx.strokeStyle = `rgba(255, 255, 255, ${this.life})`;
+		ctx.beginPath();
+		ctx.moveTo(this.fromX, this.fromY);
+		ctx.lineTo(this.toX, this.toY);
+		ctx.stroke();
+		
+		// Impact flash at target
+		const flashSize = 20 * this.life;
+		const gradient = ctx.createRadialGradient(this.toX, this.toY, 0, this.toX, this.toY, flashSize);
+		if (baseColor) {
+			gradient.addColorStop(0, baseColor.deriveLumination(0.6).deriveAlpha(this.life).rgbString());
+			gradient.addColorStop(0.4, baseColor.deriveAlpha(0.6 * this.life).rgbString());
+			gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+		} else {
+			gradient.addColorStop(0, `rgba(255, 255, 200, ${this.life})`);
+			gradient.addColorStop(0.4, `rgba(255, 100, 100, ${0.6 * this.life})`);
+			gradient.addColorStop(1, 'rgba(255, 50, 50, 0)');
+		}
+		ctx.fillStyle = gradient;
+		ctx.beginPath();
+		ctx.arc(this.toX, this.toY, flashSize, 0, Math.PI * 2);
+		ctx.fill();
+		
+		ctx.restore();
+	}
+}
+
+function spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage) {
+	hitscanEffects.push(new HitscanEffect(fromX, fromY, toX, toY, ownerId, damage));
+}
+
+function updateHitscanEffects() {
+	for (let i = hitscanEffects.length - 1; i >= 0; i--) {
+		if (!hitscanEffects[i].update()) {
+			hitscanEffects.splice(i, 1);
+		}
+	}
+}
+
+function renderHitscanEffects(ctx) {
+	for (const effect of hitscanEffects) {
+		effect.render(ctx);
+	}
+}
+
+// ===== DAMAGE NUMBERS =====
+
+class DamageNumberEffect {
+	constructor(x, y, damage) {
+		this.x = x + (Math.random() - 0.5) * 20; // Slight random offset
+		this.y = y - 10;
+		this.damage = damage;
+		this.spawnTime = Date.now();
+		this.duration = 800; // ms
 		this.life = 1;
 		
-		// Particles
-		this.particles = [];
-		const numParticles = 6 + Math.floor(damage / 5);
-		for (let i = 0; i < numParticles; i++) {
-			const angle = Math.random() * Math.PI * 2;
-			const speed = 2 + Math.random() * 4;
-			this.particles.push({
-				x: x,
-				y: y,
-				vx: Math.cos(angle) * speed,
-				vy: Math.sin(angle) * speed,
-				size: 2 + Math.random() * 3,
-				life: 1
-			});
-		}
+		// Velocity for floating up
+		this.vy = -1.5 - Math.random() * 1.0;
+		this.vx = (Math.random() - 0.5) * 1.5;
 	}
 	
 	update() {
 		const elapsed = Date.now() - this.spawnTime;
 		this.life = 1 - (elapsed / this.duration);
 		
-		// Update particles
-		for (const p of this.particles) {
-			p.x += p.vx;
-			p.y += p.vy;
-			p.vx *= 0.95;
-			p.vy *= 0.95;
-			p.life = this.life;
-		}
+		this.x += this.vx;
+		this.y += this.vy;
+		
+		// Decelerate
+		this.vx *= 0.98;
+		this.vy *= 0.98;
 		
 		return this.life > 0;
 	}
@@ -1219,44 +1154,47 @@ class ProjectileHitEffect {
 		if (this.life <= 0) return;
 		
 		ctx.save();
+		ctx.globalAlpha = this.life;
 		
-		// Impact flash
-		const flashSize = 20 * this.life;
-		const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, flashSize);
-		gradient.addColorStop(0, `rgba(255, 255, 200, ${this.life})`);
-		gradient.addColorStop(0.4, `rgba(255, 150, 50, ${this.life * 0.6})`);
-		gradient.addColorStop(1, 'rgba(255, 100, 0, 0)');
-		ctx.fillStyle = gradient;
-		ctx.beginPath();
-		ctx.arc(this.x, this.y, flashSize, 0, Math.PI * 2);
-		ctx.fill();
+		// Text style
+		const fontSize = 16 + Math.min(10, this.damage / 5); // Scale with damage
+		ctx.font = `bold ${fontSize}px Changa`;
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
 		
-		// Particles
-		ctx.fillStyle = `rgba(255, 200, 100, ${this.life})`;
-		for (const p of this.particles) {
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
-			ctx.fill();
+		// Outline
+		ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+		ctx.lineWidth = 3;
+		
+		// Color based on damage amount or just a nice orange/red
+		if (this.damage > 20) {
+			ctx.fillStyle = '#ff4444'; // Bright red for big hits
+		} else {
+			ctx.fillStyle = '#ff8844'; // Orange for normal hits
 		}
+		
+		const text = `-${this.damage.toFixed(1)}`;
+		ctx.strokeText(text, this.x, this.y);
+		ctx.fillText(text, this.x, this.y);
 		
 		ctx.restore();
 	}
 }
 
-function spawnProjectileHitEffect(x, y, damage) {
-	projectileHitEffects.push(new ProjectileHitEffect(x, y, damage));
+function spawnDamageNumber(x, y, damage) {
+	damageNumbers.push(new DamageNumberEffect(x, y, damage));
 }
 
-function updateProjectileHitEffects() {
-	for (let i = projectileHitEffects.length - 1; i >= 0; i--) {
-		if (!projectileHitEffects[i].update()) {
-			projectileHitEffects.splice(i, 1);
+function updateDamageNumbers() {
+	for (let i = damageNumbers.length - 1; i >= 0; i--) {
+		if (!damageNumbers[i].update()) {
+			damageNumbers.splice(i, 1);
 		}
 	}
 }
 
-function renderProjectileHitEffects(ctx) {
-	for (const effect of projectileHitEffects) {
+function renderDamageNumbers(ctx) {
+	for (const effect of damageNumbers) {
 		effect.render(ctx);
 	}
 }
@@ -1318,29 +1256,6 @@ function renderDrone(ctx, drone, ownerPlayer, isUserDrone) {
 		ctx.fill();
 	}
 	
-	// HP bar (only show if damaged)
-	if (drone.hp < drone.maxHp) {
-		const barWidth = radius * 2.2;
-		const barHeight = 3;
-		const barX = x - barWidth / 2;
-		const barY = y - radius - 6;
-		
-		// Background
-		ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-		ctx.fillRect(barX, barY, barWidth, barHeight);
-		
-		// HP fill
-		const hpRatio = Math.max(0, drone.hp / drone.maxHp);
-		if (hpRatio > 0.5) {
-			ctx.fillStyle = "#44ff44";
-		} else if (hpRatio > 0.25) {
-			ctx.fillStyle = "#ffcc00";
-		} else {
-			ctx.fillStyle = "#ff4444";
-		}
-		ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
-	}
-	
 	ctx.restore();
 }
 
@@ -1353,8 +1268,6 @@ function renderAllDrones(ctx) {
 		const isUserDrones = user && p.num === user.num;
 		
 		for (const drone of p.drones) {
-			// Skip rendering drones with 0 HP
-			if (drone.hp <= 0) continue;
 			renderDrone(ctx, drone, p, isUserDrones);
 		}
 	}
@@ -1496,106 +1409,6 @@ function spawnCaptureEffect(x, y, xpGained, player, isLocalPlayer) {
 	captureEffects.push(new CaptureEffect(x, y, xpGained, player, isLocalPlayer));
 }
 
-// Turret capture effect - simpler burst effect
-class TurretCaptureEffect {
-	constructor(x, y, newOwner) {
-		this.x = x;
-		this.y = y;
-		this.newOwner = newOwner;
-		this.spawnTime = Date.now();
-		this.color = newOwner ? newOwner.baseColor : null;
-		
-		// Burst particles
-		this.particles = [];
-		for (let i = 0; i < 20; i++) {
-			const angle = (i / 20) * Math.PI * 2;
-			const speed = 3 + Math.random() * 4;
-			this.particles.push({
-				x: x,
-				y: y,
-				vx: Math.cos(angle) * speed,
-				vy: Math.sin(angle) * speed,
-				size: 4 + Math.random() * 4,
-				life: 1
-			});
-		}
-		
-		// Ring effect
-		this.ringRadius = 10;
-		this.ringMaxRadius = 60;
-	}
-	
-	update() {
-		const elapsed = (Date.now() - this.spawnTime) / 1000;
-		const progress = Math.min(1, elapsed / 0.6);
-		
-		// Update ring
-		this.ringRadius = 10 + (this.ringMaxRadius - 10) * progress;
-		
-		// Update particles
-		for (const p of this.particles) {
-			p.x += p.vx;
-			p.y += p.vy;
-			p.vx *= 0.94;
-			p.vy *= 0.94;
-			p.life = 1 - progress;
-		}
-		
-		return progress < 1;
-	}
-	
-	render(ctx) {
-		const elapsed = (Date.now() - this.spawnTime) / 1000;
-		const progress = Math.min(1, elapsed / 0.6);
-		const alpha = 1 - progress;
-		
-		const colorStr = this.color ? this.color.rgbString() : '#00FF00';
-		
-		// Ring
-		ctx.save();
-		ctx.strokeStyle = this.color ? this.color.deriveAlpha(alpha * 0.8).rgbString() : `rgba(0, 255, 0, ${alpha * 0.8})`;
-		ctx.lineWidth = 3 * alpha;
-		ctx.beginPath();
-		ctx.arc(this.x, this.y, this.ringRadius, 0, Math.PI * 2);
-		ctx.stroke();
-		ctx.restore();
-		
-		// Particles
-		for (const p of this.particles) {
-			if (p.life <= 0) continue;
-			ctx.save();
-			ctx.globalAlpha = p.life;
-			ctx.fillStyle = colorStr;
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
-			ctx.fill();
-			ctx.restore();
-		}
-		
-		// "CAPTURED!" text
-		if (alpha > 0.3) {
-			ctx.save();
-			ctx.globalAlpha = alpha;
-			ctx.fillStyle = colorStr;
-			ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-			ctx.lineWidth = 3;
-			ctx.font = 'bold 14px Changa';
-			ctx.textAlign = 'center';
-			ctx.textBaseline = 'middle';
-			ctx.strokeText('CAPTURED!', this.x, this.y - 30);
-			ctx.fillText('CAPTURED!', this.x, this.y - 30);
-			ctx.restore();
-		}
-		
-		ctx.globalAlpha = 1;
-	}
-}
-
-// Store turret capture effects in the capture effects array for simplicity
-function spawnTurretCaptureEffect(x, y, newOwner) {
-	captureEffects.push(new TurretCaptureEffect(x, y, newOwner));
-}
-
 function updateCaptureEffects() {
 	for (let i = captureEffects.length - 1; i >= 0; i--) {
 		if (!captureEffects[i].update()) {
@@ -1702,8 +1515,11 @@ function updateDeathEffects() {
 	// Update loot coin animations
 	updateLootCoins();
 	
-	// Update projectile hit effects
-	updateProjectileHitEffects();
+	// Update hitscan effects
+	updateHitscanEffects();
+	
+	// Update damage numbers
+	updateDamageNumbers();
 	
 	// Update capture effects
 	updateCaptureEffects();
@@ -1770,9 +1586,11 @@ export { update };
 
 export { spawnLootCoins };
 
-// Projectile hit visual effect handler (called from game-client)
-export function projectileHit(x, y, damage) {
-	spawnProjectileHitEffect(x, y, damage);
+// Hitscan visual effect handler (called from game-client)
+export function hitscan(fromX, fromY, toX, toY, ownerId, damage) {
+	console.log(`[RENDERER] Spawning hitscan effect from (${fromX.toFixed(0)}, ${fromY.toFixed(0)}) to (${toX.toFixed(0)}, ${toY.toFixed(0)})`);
+	spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage);
+	spawnDamageNumber(toX, toY, damage);
 }
 
 // Capture success visual effect handler (called from game-client)
@@ -1780,10 +1598,6 @@ export function captureSuccess(x, y, xpGained, player, isLocalPlayer) {
 	spawnCaptureEffect(x, y, xpGained, player, isLocalPlayer);
 }
 
-// Turret captured visual effect handler (called from game-client)
-export function turretCaptured(x, y, newOwner) {
-	spawnTurretCaptureEffect(x, y, newOwner);
-}
 
 // Level up visual effect handler (called from game-client)
 export function levelUp(x, y, newLevel, player) {

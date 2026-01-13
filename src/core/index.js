@@ -24,43 +24,20 @@ export function initPlayer(player) {
 }
 
 /**
- * Updates player stamina based on whether they are in their own territory.
- * Also regenerates HP when in territory.
+ * Regenerates player HP when in their own territory.
  * @param {Player} player 
  * @param {number} deltaSeconds 
  */
-export function updateStamina(player, deltaSeconds) {
+export function updatePlayerInTerritory(player, deltaSeconds) {
 	const inTerritory = player.isInOwnTerritory();
 	
-	// Apply stat multipliers (default to 1.0 if not set)
-	const regenMult = player.staminaRegenMult || 1.0;
-	const drainMult = player.staminaDrainMult || 1.0;
-	
 	if (inTerritory) {
-		// Regenerate stamina
-		player.stamina += consts.STAMINA_REGEN_INSIDE_PER_SEC * regenMult * deltaSeconds;
-		if (player.stamina > player.maxStamina) {
-			player.stamina = player.maxStamina;
-		}
-		
-		// Recover from exhaustion
-		if (player.isExhausted && player.stamina >= consts.EXHAUSTED_RECOVER_THRESHOLD) {
-			player.isExhausted = false;
-		}
-		
 		// Regenerate HP in territory
 		if (player.hp < player.maxHp) {
 			player.hp += (consts.PLAYER_HP_REGEN_IN_TERRITORY || 8) * deltaSeconds;
 			if (player.hp > player.maxHp) {
 				player.hp = player.maxHp;
 			}
-		}
-	} else {
-		// Drain stamina outside territory
-		player.stamina -= consts.STAMINA_DRAIN_OUTSIDE_PER_SEC * drainMult * deltaSeconds;
-		if (player.stamina <= 0) {
-			player.stamina = 0;
-			player.isExhausted = true;
 		}
 	}
 }
@@ -78,7 +55,7 @@ export function updateFrame(players, dead, notifyKill) {
 		// Store previous territory area to detect captures
 		const prevArea = polygonArea(player.territory);
 		
-		updateStamina(player, deltaSeconds);
+		updatePlayerInTerritory(player, deltaSeconds);
 		player.move(deltaSeconds);
 		
 		// Check if player captured territory (area increased)
