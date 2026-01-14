@@ -41,6 +41,22 @@ try {
 	requestAnimationFrame = callback => { setTimeout(callback, 1000 / 30) };
 }
 
+// Get current viewport dimensions for AOI calculation
+function getViewportDimensions() {
+	// Use the actual window dimensions
+	const width = window.innerWidth || document.documentElement.clientWidth || 800;
+	const height = window.innerHeight || document.documentElement.clientHeight || 600;
+	return { width, height };
+}
+
+// Send viewport update to server
+function sendViewportUpdate() {
+	if (socket && socket.connected) {
+		const viewport = getViewportDimensions();
+		socket.emit("viewport", viewport);
+	}
+}
+
 // Public API
 function connectGame(io, url, name, callback, flag) {
 	if (running) return;
@@ -63,6 +79,9 @@ function connectGame(io, url, name, callback, flag) {
 	socket.on("connect", () => {
 		console.info("Connected to server.");
 	});
+	
+	// Listen for window resize to update AOI on server
+	window.addEventListener("resize", sendViewportUpdate);
 	
 	socket.on("game", data => {
 		if (timeout != undefined) clearTimeout(timeout);
@@ -139,11 +158,13 @@ function connectGame(io, url, name, callback, flag) {
 		invokeRenderer("disconnect", []);
 	});
 	
+	const viewport = getViewportDimensions();
 	socket.emit("hello", {
 		name: name,
 		type: 0,
 		gameid: -1,
-		god: flag
+		god: flag,
+		viewport: viewport  // Send initial viewport dimensions
 	}, (success, msg) => {
 		if (success) console.info("Connected to game!");
 		else {
@@ -273,6 +294,7 @@ function getDrones() {
 }
 
 function disconnect() {
+	window.removeEventListener("resize", sendViewportUpdate);
 	socket.disconnect();
 	running = false;
 }
@@ -445,6 +467,28 @@ function processFrame(data) {
 			addPlayer(pl);
 			if (!p.territory || p.territory.length === 0) {
 				initPlayer(pl);
+			}
+		});
+	}
+	
+	// Handle players leaving AOI (server stopped sending them)
+	if (data.leftPlayers) {
+		data.leftPlayers.forEach(num => {
+			const p = allPlayers[num];
+			if (p && p !== user) {
+				// Remove their drones from the map
+				if (p.drones) {
+					for (const d of p.drones) {
+						dronesById.delete(d.id);
+					}
+				}
+				// Remove from players array
+				const idx = players.indexOf(p);
+				if (idx !== -1) {
+					players.splice(idx, 1);
+				}
+				delete allPlayers[num];
+				invokeRenderer("removePlayer", [p]);
 			}
 		});
 	}

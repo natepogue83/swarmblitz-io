@@ -58,7 +58,7 @@ io.on("connection", socket => {
 			return;
 		}
 		if (data.name && data.name.length > 32) fn(false, "Your name is too long!");
-		else if (!game.addPlayer(socket, data.name)) fn(false, "There're too many platers!");
+		else if (!game.addPlayer(socket, data.name, data.viewport)) fn(false, "There're too many platers!");
 		else fn(true);
 	});
 	socket.on("pings", (fn) => {

@@ -6,6 +6,26 @@ const DEBUG_LEVELING_LOGS = false;
 const DEBUG_HITSCAN_LOGS = false;
 const DEBUG_KILL_REWARD_LOGS = false;
 
+// ===== AREA OF INTEREST (AOI) OPTIMIZATION =====
+// Instead of sending all player data to everyone, each player only receives
+// data about players within their AOI radius. This reduces O(N²) to O(N×K).
+// AOI radius is now DYNAMIC based on each player's viewport size
+const AOI_MIN_RADIUS = consts.AOI_MIN_RADIUS ?? 400;   // Minimum AOI radius
+const AOI_BUFFER = consts.AOI_BUFFER ?? 150;           // Extra buffer beyond viewport (spawn off-screen)
+const AOI_HYSTERESIS = consts.AOI_HYSTERESIS ?? 100;   // Extra buffer before removing from AOI (prevents flicker)
+const GRID_CELL_SIZE = consts.AOI_GRID_SIZE ?? 200;    // Spatial grid cell size
+
+// Calculate AOI radius for a player based on their viewport
+function calculateAOIRadius(viewport) {
+	if (!viewport || !viewport.width || !viewport.height) {
+		return AOI_MIN_RADIUS;
+	}
+	// Use the diagonal of the viewport plus buffer to ensure nothing pops in on screen
+	// diagonal = sqrt(width² + height²) / 2 (half because player is centered)
+	const halfDiagonal = Math.sqrt(viewport.width * viewport.width + viewport.height * viewport.height) / 2;
+	return Math.max(AOI_MIN_RADIUS, halfDiagonal + AOI_BUFFER);
+}
+
 // ===== XP HELPER =====
 // Calculate XP needed to reach the next level from current level
 function getXpForLevel(level) {
@@ -113,6 +133,106 @@ function updateDronePositions(player, deltaSeconds) {
 	}
 }
 
+// ===== SPATIAL GRID =====
+// Efficiently find nearby players without checking every player
+class SpatialGrid {
+	constructor(mapSize, cellSize) {
+		this.cellSize = cellSize;
+		this.gridWidth = Math.ceil(mapSize / cellSize);
+		this.cells = new Map();  // Map of "x,y" -> Set of players
+	}
+	
+	_cellKey(x, y) {
+		const cx = Math.floor(x / this.cellSize);
+		const cy = Math.floor(y / this.cellSize);
+		return `${cx},${cy}`;
+	}
+	
+	_cellCoords(x, y) {
+		return {
+			cx: Math.floor(x / this.cellSize),
+			cy: Math.floor(y / this.cellSize)
+		};
+	}
+	
+	insert(player) {
+		const key = this._cellKey(player.x, player.y);
+		if (!this.cells.has(key)) {
+			this.cells.set(key, new Set());
+		}
+		this.cells.get(key).add(player);
+		player._gridCell = key;
+	}
+	
+	remove(player) {
+		if (player._gridCell && this.cells.has(player._gridCell)) {
+			this.cells.get(player._gridCell).delete(player);
+		}
+		player._gridCell = null;
+	}
+	
+	update(player) {
+		const newKey = this._cellKey(player.x, player.y);
+		if (player._gridCell !== newKey) {
+			this.remove(player);
+			this.insert(player);
+		}
+	}
+	
+	// Get all players within radius of a point
+	getNearby(x, y, radius) {
+		const nearby = [];
+		const cellRadius = Math.ceil(radius / this.cellSize);
+		const { cx, cy } = this._cellCoords(x, y);
+		
+		for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+			for (let dy = -cellRadius; dy <= cellRadius; dy++) {
+				const key = `${cx + dx},${cy + dy}`;
+				const cell = this.cells.get(key);
+				if (cell) {
+					for (const player of cell) {
+						const dist = Math.hypot(player.x - x, player.y - y);
+						if (dist <= radius) {
+							nearby.push(player);
+						}
+					}
+				}
+			}
+		}
+		return nearby;
+	}
+	
+	// Get all players within radius, including a buffer zone
+	getNearbyWithBuffer(x, y, radius, buffer) {
+		const nearby = [];
+		const inBuffer = [];
+		const cellRadius = Math.ceil((radius + buffer) / this.cellSize);
+		const { cx, cy } = this._cellCoords(x, y);
+		
+		for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+			for (let dy = -cellRadius; dy <= cellRadius; dy++) {
+				const key = `${cx + dx},${cy + dy}`;
+				const cell = this.cells.get(key);
+				if (cell) {
+					for (const player of cell) {
+						const dist = Math.hypot(player.x - x, player.y - y);
+						if (dist <= radius) {
+							nearby.push(player);
+						} else if (dist <= radius + buffer) {
+							inBuffer.push(player);
+						}
+					}
+				}
+			}
+		}
+		return { nearby, inBuffer };
+	}
+	
+	clear() {
+		this.cells.clear();
+	}
+}
+
 function Game(id) {
 	const possColors = Color.possColors();
 	let nextInd = 0;
@@ -122,6 +242,9 @@ function Game(id) {
 	let frame = 0;
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 	
+	// Spatial grid for efficient nearby queries
+	const spatialGrid = new SpatialGrid(mapSize, GRID_CELL_SIZE);
+	
 	// XP pickups (world pickups - renamed from coins)
 	let coins = [];  // Still called "coins" internally for pickup entities
 	let nextCoinId = 0;
@@ -129,7 +252,7 @@ function Game(id) {
 
 	this.id = id;
 	
-	this.addPlayer = (client, name) => {
+	this.addPlayer = (client, name, viewport) => {
 		if (players.length >= consts.MAX_PLAYERS) return false;
 		
 		const start = findEmptySpawn(players, mapSize);
@@ -162,10 +285,21 @@ function Game(id) {
 		p.drones = [];
 		rebuildDronesArray(p, p.droneCount);
 		
+		// AOI tracking - which players this player knows about
+		p.knownPlayers = new Set();  // Set of player nums this client has received
+		p.knownCoins = new Set();    // Set of coin IDs this client has received
+		
+		// Viewport-based AOI - calculate radius based on client's screen size
+		p.viewport = viewport || { width: 800, height: 600 };
+		p.aoiRadius = calculateAOIRadius(p.viewport);
+		
 		players.push(p);
 		newPlayers.push(p);
 		nextInd++;
 		initPlayer(p);
+		
+		// Add to spatial grid
+		spatialGrid.insert(p);
 		
 		if (p.name.indexOf("[BOT]") == -1) {
 			console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) joined.`);
@@ -175,14 +309,39 @@ function Game(id) {
 			if (p.frame === frame) return;
 			p.frame = frame;
 			
-			const splayers = players.map(val => serializePlayer(val, p.num));
+			// On full refresh, only send nearby players (AOI based on viewport)
+			const aoiRadius = p.aoiRadius || calculateAOIRadius(p.viewport);
+			const nearbyPlayers = spatialGrid.getNearby(p.x, p.y, aoiRadius);
+			const nearbyCoins = coins.filter(c => 
+				Math.hypot(c.x - p.x, c.y - p.y) <= aoiRadius
+			);
+			
+			// Update known sets
+			p.knownPlayers.clear();
+			p.knownCoins.clear();
+			for (const np of nearbyPlayers) {
+				p.knownPlayers.add(np.num);
+			}
+			for (const c of nearbyCoins) {
+				p.knownCoins.add(c.id);
+			}
+			
+			const splayers = nearbyPlayers.map(val => serializePlayer(val, p.num));
 			client.emit("game", {
 				"num": p.num,
 				"gameid": id,
 				"frame": frame,
 				"players": splayers,
-				"coins": coins
+				"coins": nearbyCoins
 			});
+		});
+		
+		// Handle viewport updates (when player resizes window)
+		client.on("viewport", (viewport) => {
+			if (viewport && typeof viewport.width === "number" && typeof viewport.height === "number") {
+				p.viewport = viewport;
+				p.aoiRadius = calculateAOIRadius(viewport);
+			}
 		});
 		
 		client.on("frame", (data, errorHan) => {
@@ -209,6 +368,7 @@ function Game(id) {
 		client.on("disconnect", () => {
 			p.die();
 			p.disconnected = true;
+			spatialGrid.remove(p);
 			if (p.name.indexOf("[BOT]") == -1) {
 				console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) left.`);
 			}
@@ -246,7 +406,8 @@ function Game(id) {
 	this.addGod = client => {
 		const g = {
 			client,
-			frame
+			frame,
+			isGod: true  // Gods see everything (for spectating)
 		};
 		gods.push(g);
 		
@@ -276,6 +437,8 @@ function Game(id) {
 
 	function tick() {
 		const deltaSeconds = 1 / 60;
+		
+		// Global economy deltas (will be filtered per-player later)
 		const economyDeltas = {
 			coinSpawns: [],
 			coinRemovals: [],
@@ -303,53 +466,227 @@ function Game(id) {
 			coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC;
 		}
 
-		const snews = newPlayers.map(val => {
-			const splayers = players.map(p => serializePlayer(p, val.num));
+		// Handle new players - send them initial game state (AOI-filtered)
+		for (const val of newPlayers) {
+			const aoiRadius = val.aoiRadius || calculateAOIRadius(val.viewport);
+			const nearbyPlayers = spatialGrid.getNearby(val.x, val.y, aoiRadius);
+			const nearbyCoins = coins.filter(c => 
+				Math.hypot(c.x - val.x, c.y - val.y) <= aoiRadius
+			);
+			
+			// Initialize known sets
+			val.knownPlayers = val.knownPlayers || new Set();
+			val.knownCoins = val.knownCoins || new Set();
+			val.knownPlayers.clear();
+			val.knownCoins.clear();
+			for (const np of nearbyPlayers) {
+				val.knownPlayers.add(np.num);
+			}
+			for (const c of nearbyCoins) {
+				val.knownCoins.add(c.id);
+			}
+			
+			const splayers = nearbyPlayers.map(p => serializePlayer(p, val.num));
 			val.client.emit("game", {
 				"num": val.num,
 				"gameid": id,
 				"frame": frame,
 				"players": splayers,
-				"coins": coins
+				"coins": nearbyCoins
 			});
-			return serializePlayer(val, val.num);
-		});
+		}
+		newPlayers = [];
 		
-		const moves = players.map(val => {
-			return {
+		// Run game simulation
+		update(economyDeltas, deltaSeconds);
+		
+		// Update spatial grid for all alive players
+		for (const p of players) {
+			if (!p.dead && !p.disconnected) {
+				spatialGrid.update(p);
+			}
+		}
+		
+		// Build per-player update packets with AOI filtering
+		for (const p of players) {
+			if (p.disconnected || p.dead) continue;
+			
+			// Ensure AOI tracking sets exist
+			if (!p.knownPlayers) p.knownPlayers = new Set();
+			if (!p.knownCoins) p.knownCoins = new Set();
+			
+			// Always know about self
+			p.knownPlayers.add(p.num);
+			
+			// Use player's viewport-based AOI radius
+			const aoiRadius = p.aoiRadius || calculateAOIRadius(p.viewport);
+			const { nearby, inBuffer } = spatialGrid.getNearbyWithBuffer(p.x, p.y, aoiRadius, AOI_HYSTERESIS);
+			
+			// Always include self in nearby
+			if (!nearby.includes(p)) {
+				nearby.push(p);
+			}
+			
+			const nearbyNums = new Set(nearby.map(np => np.num));
+			const bufferNums = new Set(inBuffer.map(np => np.num));
+			
+			// Determine players entering and leaving AOI
+			const entering = [];
+			const leaving = [];
+			
+			// Check for new players entering AOI
+			for (const np of nearby) {
+				if (!p.knownPlayers.has(np.num)) {
+					entering.push(np);
+					p.knownPlayers.add(np.num);
+				}
+			}
+			
+			// Check for players leaving AOI (not in nearby or buffer)
+			for (const knownNum of p.knownPlayers) {
+				if (!nearbyNums.has(knownNum) && !bufferNums.has(knownNum)) {
+					leaving.push(knownNum);
+				}
+			}
+			for (const leaveNum of leaving) {
+				p.knownPlayers.delete(leaveNum);
+			}
+			
+			// Build moves array for only known players
+			const moves = [];
+			for (const np of nearby) {
+				moves.push({
+					num: np.num,
+					left: !!np.disconnected || np.dead,
+					targetAngle: np.targetAngle
+				});
+			}
+			// Include buffer players but mark them as "left" if they died
+			for (const bp of inBuffer) {
+				if (p.knownPlayers.has(bp.num)) {
+					moves.push({
+						num: bp.num,
+						left: !!bp.disconnected || bp.dead,
+						targetAngle: bp.targetAngle
+					});
+				}
+			}
+			
+			// Filter economy deltas by AOI
+			const filteredData = {
+				frame: frame + 1,
+				moves
+			};
+			
+			// Coin spawns within AOI
+			if (economyDeltas.coinSpawns.length > 0) {
+				const nearbyCoinSpawns = economyDeltas.coinSpawns.filter(c => 
+					Math.hypot(c.x - p.x, c.y - p.y) <= aoiRadius
+				);
+				if (nearbyCoinSpawns.length > 0) {
+					filteredData.coinSpawns = nearbyCoinSpawns;
+					for (const c of nearbyCoinSpawns) {
+						p.knownCoins.add(c.id);
+					}
+				}
+			}
+			
+			// Coin removals - only if player knew about the coin
+			if (economyDeltas.coinRemovals.length > 0) {
+				const knownRemovals = economyDeltas.coinRemovals.filter(id => 
+					p.knownCoins.has(id)
+				);
+				if (knownRemovals.length > 0) {
+					filteredData.coinRemovals = knownRemovals;
+					for (const id of knownRemovals) {
+						p.knownCoins.delete(id);
+					}
+				}
+			}
+			
+			// XP updates for known players only
+			if (economyDeltas.xpUpdates.length > 0) {
+				const nearbyXp = economyDeltas.xpUpdates.filter(u => 
+					p.knownPlayers.has(u.num) || u.num === p.num
+				);
+				if (nearbyXp.length > 0) filteredData.xpUpdates = nearbyXp;
+			}
+			
+			// Level ups for known players
+			if (economyDeltas.levelUps.length > 0) {
+				const nearbyLvl = economyDeltas.levelUps.filter(u => 
+					p.knownPlayers.has(u.playerNum) || u.playerNum === p.num
+				);
+				if (nearbyLvl.length > 0) filteredData.levelUps = nearbyLvl;
+			}
+			
+			// Hitscan events within AOI
+			if (economyDeltas.hitscanEvents.length > 0) {
+				const nearbyHits = economyDeltas.hitscanEvents.filter(h => 
+					Math.hypot(h.fromX - p.x, h.fromY - p.y) <= aoiRadius ||
+					Math.hypot(h.toX - p.x, h.toY - p.y) <= aoiRadius
+				);
+				if (nearbyHits.length > 0) filteredData.hitscanEvents = nearbyHits;
+			}
+			
+			// Capture events for known players
+			if (economyDeltas.captureEvents.length > 0) {
+				const nearbyCap = economyDeltas.captureEvents.filter(e => 
+					p.knownPlayers.has(e.playerNum) || e.playerNum === p.num
+				);
+				if (nearbyCap.length > 0) filteredData.captureEvents = nearbyCap;
+			}
+			
+			// Drone updates for known players
+			if (economyDeltas.droneUpdates.length > 0) {
+				const nearbyDrones = economyDeltas.droneUpdates.filter(d => 
+					p.knownPlayers.has(d.ownerNum) || d.ownerNum === p.num
+				);
+				if (nearbyDrones.length > 0) filteredData.droneUpdates = nearbyDrones;
+			}
+			
+			// Kill events - always send if local player is killer or victim
+			if (economyDeltas.killEvents.length > 0) {
+				const relevantKills = economyDeltas.killEvents.filter(k => 
+					k.killerNum === p.num || k.victimNum === p.num ||
+					p.knownPlayers.has(k.killerNum) || p.knownPlayers.has(k.victimNum)
+				);
+				if (relevantKills.length > 0) filteredData.killEvents = relevantKills;
+			}
+			
+			// New players entering AOI
+			if (entering.length > 0) {
+				filteredData.newPlayers = entering.map(np => serializePlayer(np, p.num));
+			}
+			
+			// Players leaving AOI
+			if (leaving.length > 0) {
+				filteredData.leftPlayers = leaving;
+			}
+			
+			p.client.emit("notifyFrame", filteredData);
+		}
+		
+		// Gods see everything
+		const godData = {
+			frame: frame + 1,
+			moves: players.map(val => ({
 				num: val.num,
 				left: !!val.disconnected,
 				targetAngle: val.targetAngle
-			};
-		});
-		
-		update(economyDeltas, deltaSeconds);
-		
-		const data = {
-			frame: frame + 1,
-			moves
+			}))
 		};
-
-		// Add economy deltas if they exist
-		if (economyDeltas.coinSpawns.length > 0) data.coinSpawns = economyDeltas.coinSpawns;
-		if (economyDeltas.coinRemovals.length > 0) data.coinRemovals = economyDeltas.coinRemovals;
-		if (economyDeltas.xpUpdates.length > 0) data.xpUpdates = economyDeltas.xpUpdates;
-		if (economyDeltas.levelUps.length > 0) data.levelUps = economyDeltas.levelUps;
-		if (economyDeltas.hitscanEvents.length > 0) data.hitscanEvents = economyDeltas.hitscanEvents;
-		if (economyDeltas.captureEvents.length > 0) data.captureEvents = economyDeltas.captureEvents;
-		if (economyDeltas.droneUpdates.length > 0) data.droneUpdates = economyDeltas.droneUpdates;
-		if (economyDeltas.killEvents.length > 0) data.killEvents = economyDeltas.killEvents;
+		if (economyDeltas.coinSpawns.length > 0) godData.coinSpawns = economyDeltas.coinSpawns;
+		if (economyDeltas.coinRemovals.length > 0) godData.coinRemovals = economyDeltas.coinRemovals;
+		if (economyDeltas.xpUpdates.length > 0) godData.xpUpdates = economyDeltas.xpUpdates;
+		if (economyDeltas.levelUps.length > 0) godData.levelUps = economyDeltas.levelUps;
+		if (economyDeltas.hitscanEvents.length > 0) godData.hitscanEvents = economyDeltas.hitscanEvents;
+		if (economyDeltas.captureEvents.length > 0) godData.captureEvents = economyDeltas.captureEvents;
+		if (economyDeltas.droneUpdates.length > 0) godData.droneUpdates = economyDeltas.droneUpdates;
+		if (economyDeltas.killEvents.length > 0) godData.killEvents = economyDeltas.killEvents;
 		
-		if (snews.length > 0) {
-			data.newPlayers = snews;
-			newPlayers = [];
-		}
-		
-		for (const p of players) {
-			p.client.emit("notifyFrame", data);
-		}
 		for (const g of gods) {
-			g.client.emit("notifyFrame", data);
+			g.client.emit("notifyFrame", godData);
 		}
 		
 		frame++;
