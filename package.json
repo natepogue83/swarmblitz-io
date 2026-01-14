@@ -11,9 +11,12 @@
     "cleanup": "node cleanup.js",
     "prestart": "npm run cleanup",
     "start": "npm run build && node server.js",
+    "start:bw": "npm run build && cross-env BW_LOG=1 node server.js",
     "predev": "npm run cleanup",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "cross-env VITE=true nodemon --watch server.js --watch src/ --watch config.js server.js",
+    "dev:server:bw": "cross-env VITE=true BW_LOG=1 nodemon --watch server.js --watch src/ --watch config.js server.js",
+    "dev:bw": "concurrently \"npm run dev:server:bw\" \"npm run dev:client\"",
     "dev:client": "vite"
   },
   "repository": "stevenjoezhang/paper.io",
