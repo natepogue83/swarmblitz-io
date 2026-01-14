@@ -1,6 +1,11 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import { consts } from "../config.js";
 
+// Debug logging (keep off by default for performance)
+const DEBUG_LEVELING_LOGS = false;
+const DEBUG_HITSCAN_LOGS = false;
+const DEBUG_KILL_REWARD_LOGS = false;
+
 // ===== XP HELPER =====
 // Calculate XP needed to reach the next level from current level
 function getXpForLevel(level) {
@@ -75,6 +80,11 @@ function rebuildDronesArray(player, count) {
 	
 	player.drones = newDrones;
 	player.droneCount = count;
+
+	// IMPORTANT: newly created drones start at (0,0). If we send a frame before the next
+	// orbit update, clients will see a one-frame "blip" at the map origin. Initialize
+	// positions immediately so drones always spawn at the correct orbit location.
+	updateDronePositions(player, 0);
 }
 
 /**
@@ -470,7 +480,9 @@ function Game(id) {
 							droneCount: killer.drones.length
 						});
 						
-						console.log(`[KILL REWARD] ${killer.name} received ${killerXp} XP for killing ${p.name} (victim had ${totalXp} total XP)`);
+						if (DEBUG_KILL_REWARD_LOGS) {
+							console.log(`[KILL REWARD] ${killer.name} received ${killerXp} XP for killing ${p.name} (victim had ${totalXp} total XP)`);
+						}
 					}
 				}
 			}
@@ -566,7 +578,9 @@ function Game(id) {
 					target.hp -= damage;
 					if (target.hp < 0) target.hp = 0;
 					
-					console.log(`[HITSCAN] Drone ${drone.id} (owner: ${p.name}) hit ${target.name} for ${damage.toFixed(1)} dmg${targetInTerritory ? ' (in territory)' : ''}. HP: ${target.hp}/${target.maxHp}`);
+					if (DEBUG_HITSCAN_LOGS) {
+						console.log(`[HITSCAN] Drone ${drone.id} (owner: ${p.name}) hit ${target.name} for ${damage.toFixed(1)} dmg${targetInTerritory ? ' (in territory)' : ''}. HP: ${target.hp}/${target.maxHp}`);
+					}
 					
 					// Send hitscan event for visual feedback (laser line from drone to target)
 					economyDeltas.hitscanEvents.push({
@@ -758,7 +772,9 @@ function Game(id) {
 					y: p.y
 				});
 				
-				console.log(`[${new Date()}] ${p.name} reached level ${p.level}!`);
+				if (DEBUG_LEVELING_LOGS) {
+					console.log(`[${new Date()}] ${p.name} reached level ${p.level}!`);
+				}
 			}
 
 			if (changed || p._forceXpUpdate) {
@@ -807,49 +823,80 @@ function Game(id) {
 }
 
 function findEmptySpawn(players, mapSize) {
-	// Keep spawns away from the border a bit (same as previous behavior)
+	// Keep spawns away from the border a bit
 	const margin = consts.SPAWN_MARGIN ?? (consts.CELL_WIDTH * 3);
 	
-	// "Try" to keep some minimum distance from other players, but don't optimize for max distance.
-	// We'll relax this constraint if space is tight so spawns don't fail or become too predictable.
-	const baseMinDist = consts.SPAWN_MIN_DIST ?? (consts.CELL_WIDTH * 5);
-	const maxAttempts = consts.SPAWN_MAX_ATTEMPTS ?? 220;
+	// New player's initial territory radius (must match initPlayer in core/index.js)
+	const newTerritoryRadius = consts.CELL_WIDTH * 1.5;
+	
+	// Minimum distance from other players to avoid awkward immediate encounters
+	// Should be at least the sum of both territories + some buffer
+	const baseMinDist = consts.SPAWN_MIN_DIST ?? (newTerritoryRadius * 4);
+	const maxAttempts = consts.SPAWN_MAX_ATTEMPTS ?? 300;
 	
 	const alivePlayers = players.filter(p => p && !p.dead && !p.disconnected);
 	
 	const clampSpawn = (val) => Math.max(margin, Math.min(mapSize - margin, val));
 	
-	// Returns true if a player-sized circle around (x,y) overlaps any other player's territory polygon.
-	const overlapsAnyTerritory = (x, y) => {
+	// Check if the new player's territory would overlap with any existing territory.
+	// We sample points around the circumference of the new player's territory circle.
+	const newTerritoryOverlapsExisting = (x, y) => {
 		if (alivePlayers.length === 0) return false;
 		
-		// Check center + a few offsets so we don't place a player's body partially inside territory
-		const r = (PLAYER_RADIUS || 15) * 0.9;
-		const probes = [
-			{ x, y },
-			{ x: x + r, y },
-			{ x: x - r, y },
-			{ x, y: y + r },
-			{ x, y: y - r }
-		];
+		// Sample points around the new player's territory edge + center
+		const samples = [{ x, y }]; // Center
+		const numSamples = 12;
+		for (let i = 0; i < numSamples; i++) {
+			const angle = (i / numSamples) * Math.PI * 2;
+			samples.push({
+				x: x + Math.cos(angle) * newTerritoryRadius,
+				y: y + Math.sin(angle) * newTerritoryRadius
+			});
+		}
 		
 		for (const p of alivePlayers) {
 			const territory = p.territory;
 			if (!territory || territory.length < 3) continue;
 			
-			for (const probe of probes) {
-				if (pointInPolygon(probe, territory)) return true;
+			// Check if any sample point is inside existing territory
+			for (const sample of samples) {
+				if (pointInPolygon(sample, territory)) return true;
+			}
+			
+			// Also check if the spawn center is too close to the other player's territory boundary
+			// This prevents spawning right at the edge of someone's territory
+			for (const tp of territory) {
+				const dist = Math.hypot(tp.x - x, tp.y - y);
+				if (dist < newTerritoryRadius + PLAYER_RADIUS) return true;
 			}
 		}
 		
 		return false;
 	};
 	
+	// Check if spawn is too close to any player's current position
 	const tooCloseToAnyPlayer = (x, y, minDist) => {
 		if (!minDist || minDist <= 0) return false;
 		for (const p of alivePlayers) {
 			const dist = Math.hypot(p.x - x, p.y - y);
 			if (dist < minDist) return true;
+		}
+		return false;
+	};
+	
+	// Check if spawn would be on or near any player's trail (could cause immediate snip scenarios)
+	const nearAnyTrail = (x, y) => {
+		const trailBuffer = newTerritoryRadius + PLAYER_RADIUS * 2;
+		for (const p of alivePlayers) {
+			if (!p.trail || !p.trail.points || p.trail.points.length < 2) continue;
+			
+			// Check distance to each trail segment
+			for (let i = 0; i < p.trail.points.length - 1; i++) {
+				const t1 = p.trail.points[i];
+				const t2 = p.trail.points[i + 1];
+				const dist = pointToSegmentDistance(x, y, t1, t2);
+				if (dist < trailBuffer) return true;
+			}
 		}
 		return false;
 	};
@@ -860,20 +907,23 @@ function findEmptySpawn(players, mapSize) {
 		return { x, y };
 	};
 	
-	// Phase 1: enforce base min distance + territory safety
-	// Phase 2: relax min distance a bit (still territory-safe)
-	// Phase 3: ignore min distance entirely (still territory-safe)
+	// Phase 1: strict - enforce base min distance + territory safety + trail avoidance
+	// Phase 2: relaxed distance - still territory-safe and trail-safe
+	// Phase 3: minimal distance - just territory-safe (trail can be dealt with)
+	// Phase 4: emergency - any territory-safe spot
 	const phases = [
-		{ attempts: Math.floor(maxAttempts * 0.45), minDist: baseMinDist },
-		{ attempts: Math.floor(maxAttempts * 0.35), minDist: baseMinDist * 0.6 },
-		{ attempts: Math.max(1, maxAttempts - Math.floor(maxAttempts * 0.45) - Math.floor(maxAttempts * 0.35)), minDist: 0 }
+		{ attempts: Math.floor(maxAttempts * 0.4), minDist: baseMinDist, checkTrail: true },
+		{ attempts: Math.floor(maxAttempts * 0.3), minDist: baseMinDist * 0.5, checkTrail: true },
+		{ attempts: Math.floor(maxAttempts * 0.2), minDist: newTerritoryRadius * 2, checkTrail: false },
+		{ attempts: Math.floor(maxAttempts * 0.1), minDist: 0, checkTrail: false }
 	];
 	
 	for (const phase of phases) {
 		for (let attempts = 0; attempts < phase.attempts; attempts++) {
 			const { x, y } = pickRandom();
-			if (overlapsAnyTerritory(x, y)) continue;
+			if (newTerritoryOverlapsExisting(x, y)) continue;
 			if (tooCloseToAnyPlayer(x, y, phase.minDist)) continue;
+			if (phase.checkTrail && nearAnyTrail(x, y)) continue;
 			return { x, y };
 		}
 	}
@@ -883,16 +933,45 @@ function findEmptySpawn(players, mapSize) {
 	const step = consts.SPAWN_SCAN_STEP ?? consts.CELL_WIDTH;
 	const offX = Math.random() * step;
 	const offY = Math.random() * step;
-	for (let y = margin + offY; y <= mapSize - margin; y += step) {
-		for (let x = margin + offX; x <= mapSize - margin; x += step) {
-			const sx = clampSpawn(x);
-			const sy = clampSpawn(y);
-			if (!overlapsAnyTerritory(sx, sy)) return { x: sx, y: sy };
+	for (let sy = margin + offY; sy <= mapSize - margin; sy += step) {
+		for (let sx = margin + offX; sx <= mapSize - margin; sx += step) {
+			const cx = clampSpawn(sx);
+			const cy = clampSpawn(sy);
+			if (!newTerritoryOverlapsExisting(cx, cy)) return { x: cx, y: cy };
 		}
 	}
 	
 	// If the entire map is covered by territories (extremely unlikely), we can't satisfy "never inside territory".
 	return null;
+}
+
+// Helper: Calculate distance from point to line segment
+function pointToSegmentDistance(px, py, ax, ay, bx, by) {
+	// Handle object arguments
+	if (typeof ax === 'object') {
+		const a = ax;
+		const b = ay;
+		ax = a.x; ay = a.y;
+		bx = b.x; by = b.y;
+	}
+	
+	const dx = bx - ax;
+	const dy = by - ay;
+	const lengthSq = dx * dx + dy * dy;
+	
+	if (lengthSq === 0) {
+		// Segment is a point
+		return Math.hypot(px - ax, py - ay);
+	}
+	
+	// Project point onto line, clamped to segment
+	let t = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
+	t = Math.max(0, Math.min(1, t));
+	
+	const projX = ax + t * dx;
+	const projY = ay + t * dy;
+	
+	return Math.hypot(px - projX, py - projY);
 }
 
 export default Game;

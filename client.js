@@ -3,10 +3,27 @@ import io from "socket.io-client/dist/socket.io.js";
 import * as client from "./src/game-client";
 import godRenderer from "./src/mode/god";
 import * as playerRenderer from "./src/mode/player";
+import * as SoundManager from "./src/sound-manager.js";
 
 const $ = jquery;
 
+// Track if sound has been initialized (requires user interaction)
+let menuSoundInitialized = false;
+
+function initMenuSound() {
+	if (!menuSoundInitialized) {
+		SoundManager.init();
+		SoundManager.resume();
+		menuSoundInitialized = true;
+		// Start menu music after initialization
+		SoundManager.startMenuMusic();
+	}
+}
+
 function run(flag) {
+	// Stop menu music when starting the game
+	SoundManager.stopMenuMusic();
+	
 	client.setRenderer(flag ? godRenderer : playerRenderer);
 	client.connectGame(io, "//" + location.host, $("#name").val(), (success, msg) => {
 		if (success) {
@@ -15,6 +32,10 @@ function run(flag) {
 		}
 		else {
 			$("#error").text(msg);
+			// Restart menu music if game failed to start
+			if (menuSoundInitialized) {
+				SoundManager.startMenuMusic();
+			}
 		}
 	}, flag);
 }
@@ -26,6 +47,17 @@ $(() => {
 		return;
 	}
 	err.text("Loading... Please wait");
+	
+	// Initialize menu sound on first user interaction
+	const initOnInteraction = () => {
+		initMenuSound();
+		// Remove listeners after first interaction
+		document.removeEventListener("click", initOnInteraction);
+		document.removeEventListener("keydown", initOnInteraction);
+	};
+	document.addEventListener("click", initOnInteraction);
+	document.addEventListener("keydown", initOnInteraction);
+	
 	(() => {
 		const socket = io(`//${location.host}`, {
 			forceNew: true,
@@ -61,6 +93,10 @@ $(".menu").on("click", () => {
 	client.disconnect();
 	$("#main-ui, #wasted").fadeOut(1000);
 	$("#begin").fadeIn(1000);
+	// Restart menu music when returning to main menu
+	if (menuSoundInitialized) {
+		SoundManager.startMenuMusic();
+	}
 });
 
 $(".toggle").on("click", () => {

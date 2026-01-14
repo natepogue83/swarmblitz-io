@@ -380,7 +380,6 @@ function processFrame(data) {
 	
 	// Handle hitscan events (drone laser shots)
 	if (data.hitscanEvents) {
-		console.log(`[CLIENT] Received ${data.hitscanEvents.length} hitscan events`);
 		data.hitscanEvents.forEach(hit => {
 			const target = allPlayers[hit.targetNum];
 			if (target) {
@@ -394,7 +393,6 @@ function processFrame(data) {
 				// Track last hit time for HP bar visibility
 				target.lastHitTime = Date.now();
 			}
-			console.log(`[CLIENT] Hitscan from (${hit.fromX.toFixed(0)}, ${hit.fromY.toFixed(0)}) to (${hit.toX.toFixed(0)}, ${hit.toY.toFixed(0)})`);
 			// Notify renderer of hitscan for visual effect (laser line)
 			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage]);
 		});

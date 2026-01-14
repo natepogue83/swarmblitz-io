@@ -317,23 +317,28 @@ canvas {
 /* Title */
 .start-title {
 	position: absolute;
-	top: 15%;
+	top: 12%;
 	left: 50%;
 	transform: translateX(-50%);
 	text-align: center;
 	z-index: 10;
+	width: 90%;
+	max-width: 600px;
+	padding: 0 10px;
+	box-sizing: border-box;
 }
 
 .start-title h1 {
 	font-family: "Changa", sans-serif;
-	font-size: 4rem;
+	font-size: clamp(2rem, 8vw, 4rem);
 	font-weight: 700;
 	margin: 0;
 	color: #4CAF50;
 	text-shadow: 
 		0 0 40px rgba(76, 175, 80, 0.6),
 		0 4px 0 #2d7d32;
-	letter-spacing: 2px;
+	letter-spacing: clamp(1px, 0.3vw, 2px);
+	white-space: nowrap;
 }
 
 .start-title h1 span {
@@ -350,12 +355,13 @@ canvas {
 
 .start-title p {
 	font-family: "Changa", sans-serif;
-	font-size: 1.1rem;
+	font-size: clamp(0.65rem, 2.5vw, 1.1rem);
 	color: #7a8a7a;
-	margin: 15px 0 0;
-	letter-spacing: 10px;
+	margin: clamp(8px, 2vw, 15px) 0 0;
+	letter-spacing: clamp(3px, 1.5vw, 10px);
 	text-transform: uppercase;
 	text-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
+	white-space: nowrap;
 }
 
 /* Start Panel */
@@ -364,13 +370,134 @@ canvas {
 	top: 55%;
 	left: 50%;
 	transform: translate(-50%, -50%);
-	width: 380px;
+	width: min(380px, 90vw);
 	background: rgba(20, 24, 30, 0.9);
 	border: 2px solid rgba(76, 175, 80, 0.4);
-	padding: 30px;
+	padding: clamp(15px, 4vw, 30px);
 	box-sizing: border-box;
 	backdrop-filter: blur(10px);
 	z-index: 10;
+}
+
+/* Responsive adjustments for small screens */
+@media (max-width: 480px) {
+	.start-title {
+		top: 8%;
+	}
+	
+	.start-title h1 {
+		white-space: normal;
+		line-height: 1.1;
+	}
+	
+	.start-title p {
+		white-space: normal;
+	}
+	
+	.start-panel {
+		top: 58%;
+	}
+	
+	.start-btn {
+		padding: 12px 16px;
+		font-size: 1rem;
+	}
+	
+	.input-group input {
+		padding: 12px 14px;
+		font-size: 0.9rem;
+	}
+}
+
+@media (max-height: 500px) {
+	.start-title {
+		top: 2%;
+	}
+	
+	.start-title h1 {
+		font-size: clamp(1.5rem, 6vw, 2.5rem);
+	}
+	
+	.start-title p {
+		font-size: clamp(0.5rem, 2vw, 0.8rem);
+		margin-top: 5px;
+	}
+	
+	.start-panel {
+		top: 55%;
+		padding: 12px;
+	}
+	
+	.input-group {
+		margin-bottom: 10px;
+	}
+	
+	.start-btn {
+		padding: 10px 16px;
+		font-size: 0.9rem;
+	}
+	
+	.start-btn.primary {
+		margin-bottom: 8px;
+	}
+}
+
+@media (max-height: 450px) {
+	.start-title {
+		position: static;
+		transform: none;
+		padding: 8px 10px;
+		width: 100%;
+		max-width: 100%;
+		margin: 0 auto;
+	}
+	
+	.start-title h1 {
+		font-size: clamp(1.2rem, 5vw, 1.8rem);
+	}
+	
+	.start-title p {
+		font-size: clamp(0.45rem, 1.5vw, 0.65rem);
+		letter-spacing: clamp(2px, 1vw, 5px);
+		margin-top: 3px;
+	}
+	
+	#begin {
+		display: flex;
+		flex-direction: column;
+		justify-content: flex-start;
+		align-items: center;
+	}
+	
+	.start-panel {
+		position: static;
+		transform: none;
+		margin-top: 5px;
+		padding: 10px;
+	}
+	
+	.input-group {
+		margin-bottom: 8px;
+	}
+	
+	.input-group input {
+		padding: 8px 10px;
+		font-size: 0.85rem;
+	}
+	
+	.start-btn {
+		padding: 8px 14px;
+		font-size: 0.85rem;
+	}
+	
+	.start-btn.primary {
+		margin-bottom: 6px;
+	}
+	
+	.start-footer {
+		margin-top: 10px;
+		padding-top: 8px;
+	}
 }
 
 .input-group {
@@ -585,6 +712,10 @@ span {
 
 /* Death Panel - Flat game style */
 .death-panel {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
 	background: #3a3a3a;
 	border-bottom: 6px solid #252525;
 	width: 320px;

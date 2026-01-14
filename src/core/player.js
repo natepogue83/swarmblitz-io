@@ -827,10 +827,14 @@ export function subtractTerritory(subjectPoly, clipPoly, preferPoint) {
 	let candidates = cleanedCandidates;
 	if (hasPrefer) {
 		const containing = cleanedCandidates.filter(poly => pointInPolygon(preferPoint, poly));
-		// If the preferred point is not in any remaining piece, treat territory as consumed.
-		// (In-game this means their base got cut out; the caller can respawn a minimal base.)
-		if (containing.length === 0) return [];
-		candidates = containing;
+		// If spawn point is in a remaining piece, prefer those pieces
+		// If spawn was captured but there ARE remaining pieces, keep the largest piece
+		// (Don't throw away all territory just because spawn was captured)
+		if (containing.length > 0) {
+			candidates = containing;
+		}
+		// If no pieces contain spawn, candidates stays as cleanedCandidates
+		// and we'll pick the largest remaining piece below
 	}
 
 	let best = candidates[0];

@@ -1513,14 +1513,18 @@ function renderPlayerHpBar(ctx, player) {
 
 // ===== HITSCAN LASER EFFECTS =====
 
+// Cap active laser effects so big drone fights don't tank FPS.
+const MAX_HITSCAN_EFFECTS = 120;
+
 class HitscanEffect {
-	constructor(fromX, fromY, toX, toY, ownerId, damage) {
+	constructor(fromX, fromY, toX, toY, ownerId, damage, baseColor) {
 		this.fromX = fromX;
 		this.fromY = fromY;
 		this.toX = toX;
 		this.toY = toY;
 		this.ownerId = ownerId;
 		this.damage = damage;
+		this.baseColor = baseColor || null;
 		this.spawnTime = Date.now();
 		this.duration = 300; // ms - visible laser effect
 		this.life = 1;
@@ -1534,9 +1538,8 @@ class HitscanEffect {
 	
 	render(ctx) {
 		if (this.life <= 0) return;
-		
-		const ownerPlayer = client.getPlayers().find(p => p.num === this.ownerId);
-		const baseColor = ownerPlayer ? ownerPlayer.baseColor : null;
+
+		const baseColor = this.baseColor;
 		
 		ctx.save();
 		
@@ -1597,7 +1600,17 @@ class HitscanEffect {
 }
 
 function spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage) {
-	hitscanEffects.push(new HitscanEffect(fromX, fromY, toX, toY, ownerId, damage));
+	// Resolve owner color once (avoid O(players) search every render frame).
+	let baseColor = null;
+	const ownerPlayer = client.getPlayers().find(p => p.num === ownerId);
+	if (ownerPlayer && ownerPlayer.baseColor) baseColor = ownerPlayer.baseColor;
+
+	hitscanEffects.push(new HitscanEffect(fromX, fromY, toX, toY, ownerId, damage, baseColor));
+
+	// Hard cap (drop oldest) to prevent unbounded growth during large fights.
+	if (hitscanEffects.length > MAX_HITSCAN_EFFECTS) {
+		hitscanEffects.splice(0, hitscanEffects.length - MAX_HITSCAN_EFFECTS);
+	}
 }
 
 function updateHitscanEffects() {
@@ -2102,12 +2115,10 @@ export function playerKill(killerNum, victimNum, victimName, killType) {
 // Player was killed handler (called from game-client when local player is killed)
 export function playerWasKilled(killerName, killType) {
 	lastKillerName = killerName;
-	console.log(`You were killed by ${killerName} (${killType})`);
 }
 
 // Hitscan visual effect handler (called from game-client)
 export function hitscan(fromX, fromY, toX, toY, ownerId, damage) {
-	console.log(`[RENDERER] Spawning hitscan effect from (${fromX.toFixed(0)}, ${fromY.toFixed(0)}) to (${toX.toFixed(0)}, ${toY.toFixed(0)})`);
 	spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage);
 	
 	// Play laser sound
@@ -2144,12 +2155,13 @@ export function levelUp(x, y, newLevel, player) {
 	// Create a burst effect with golden particles
 	const color = player && player.baseColor ? player.baseColor.rgbString() : '#FFD700';
 	
-	// Add burst particles
-	for (let i = 0; i < 30; i++) {
+	// Add burst particles (keep it lighter for non-local players to avoid periodic stutter)
+	const burstCount = isLocalPlayer ? 30 : 8;
+	for (let i = 0; i < burstCount; i++) {
 		deathParticles.push(new DeathParticle(x, y, '#FFD700', 'burst'));
 	}
 	
-	// Add a ring effect
+	// Add a ring effect (always)
 	deathParticles.push(new DeathParticle(x, y, '#FFD700', 'ring'));
 	
 	// Screen shake for local player
@@ -2157,8 +2169,10 @@ export function levelUp(x, y, newLevel, player) {
 		screenShake.intensity = 10;
 	}
 	
-	// Add a special "LEVEL UP!" text effect via capture effect system
-	captureEffects.push(new LevelUpTextEffect(x, y, newLevel, player, isLocalPlayer));
+	// Add the "LEVEL UP!" text only for the local player (bots leveling can be frequent)
+	if (isLocalPlayer) {
+		captureEffects.push(new LevelUpTextEffect(x, y, newLevel, player, isLocalPlayer));
+	}
 	
 	// Play level up sound
 	if (soundInitialized && isLocalPlayer) {

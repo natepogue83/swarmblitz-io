@@ -58,6 +58,11 @@ let bgMusicPlaylist = [];      // All available tracks
 let bgMusicShuffled = [];      // Shuffled order to play
 let bgMusicCurrentIndex = 0;   // Current position in shuffled list
 
+// Menu music state
+let menuMusicAudio = null;
+let menuMusicPlaying = false;
+const MENU_MUSIC_PATH = '/music/playlist/menu/SwarmBlitz - Main Menu Theme.mp3';
+
 /**
  * Initialize the audio context (must be called after user interaction)
  */
@@ -98,6 +103,9 @@ export function setMasterVolume(vol) {
     if (bgMusicAudio) {
         bgMusicAudio.volume = settings.musicVolume * settings.masterVolume;
     }
+    if (menuMusicAudio) {
+        menuMusicAudio.volume = settings.musicVolume * settings.masterVolume;
+    }
 }
 
 /**
@@ -107,6 +115,9 @@ export function setMusicVolume(vol) {
     settings.musicVolume = Math.max(0, Math.min(1, vol));
     if (bgMusicAudio) {
         bgMusicAudio.volume = settings.musicVolume * settings.masterVolume;
+    }
+    if (menuMusicAudio) {
+        menuMusicAudio.volume = settings.musicVolume * settings.masterVolume;
     }
 }
 
@@ -1516,6 +1527,71 @@ export function isBackgroundMusicPlaying() {
     return bgMusicPlaying;
 }
 
+// ============================================
+// MENU MUSIC - Plays on main menu
+// ============================================
+
+/**
+ * Start menu music (plays when on main menu)
+ */
+export function startMenuMusic() {
+    if (!settings.enabled || menuMusicPlaying) return;
+    
+    // Stop any game music if playing
+    if (bgMusicPlaying) {
+        stopBackgroundMusic();
+    }
+    
+    menuMusicPlaying = true;
+    
+    // Create audio element for menu music
+    if (menuMusicAudio) {
+        menuMusicAudio.pause();
+    }
+    
+    menuMusicAudio = new Audio(MENU_MUSIC_PATH);
+    menuMusicAudio.volume = settings.musicVolume * settings.masterVolume;
+    menuMusicAudio.loop = true; // Menu music loops
+    
+    menuMusicAudio.play().catch(e => {
+        console.warn("[SoundManager] Could not play menu music:", e);
+        menuMusicPlaying = false;
+    });
+    
+    console.log("[SoundManager] Menu music started");
+}
+
+/**
+ * Stop menu music
+ */
+export function stopMenuMusic() {
+    if (!menuMusicPlaying) return;
+    
+    menuMusicPlaying = false;
+    
+    if (menuMusicAudio) {
+        // Fade out
+        const audio = menuMusicAudio;
+        const fadeOut = setInterval(() => {
+            if (audio.volume > 0.05) {
+                audio.volume = Math.max(0, audio.volume - 0.05);
+            } else {
+                clearInterval(fadeOut);
+                audio.pause();
+            }
+        }, 30);
+    }
+    
+    console.log("[SoundManager] Menu music stopped");
+}
+
+/**
+ * Check if menu music is playing
+ */
+export function isMenuMusicPlaying() {
+    return menuMusicPlaying;
+}
+
 /**
  * Update music volume (call when settings change)
  */
@@ -1564,5 +1640,8 @@ export default {
     stopBackgroundMusic,
     updateBackgroundMusicTempo,
     isBackgroundMusicPlaying,
-    updateMusicVolume
+    updateMusicVolume,
+    startMenuMusic,
+    stopMenuMusic,
+    isMenuMusicPlaying
 };

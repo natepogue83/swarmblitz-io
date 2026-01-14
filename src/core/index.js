@@ -93,8 +93,13 @@ export function updateFrame(players, dead, notifyKill) {
 		return !player.dead;
 	});
 	
+	// Set up collision tracking and kill notification (needed for territory resolution too)
+	const removing = new Array(alive.length).fill(false);
+	const kill = notifyKill || (() => {});
+	
 	// TERRITORY OVERLAP RESOLUTION
 	// When a player captures territory, subtract it from overlapping enemy territories
+	// Also check if players are trapped inside the captured territory
 	for (const capturer of capturedThisFrame) {
 		if (capturer.dead) continue;
 		
@@ -113,44 +118,56 @@ export function updateFrame(players, dead, notifyKill) {
 				// Only update if the result is valid
 				if (newTerritory && newTerritory.length >= 3) {
 					other.territory = newTerritory;
-				} else if (newTerritory && newTerritory.length === 0) {
-					// Other player's territory was completely consumed - they lose their base
-					// Give them a minimal territory at their spawn point
-					const minRadius = consts.CELL_WIDTH * 0.5;
-					other.territory = [];
-					for (let i = 0; i < 8; i++) {
-						const angle = (i / 8) * Math.PI * 2;
-						other.territory.push({
-							x: other.spawnX + Math.cos(angle) * minRadius,
-							y: other.spawnY + Math.sin(angle) * minRadius
-						});
+				} else {
+					// Territory completely consumed - kill the player
+					const otherAliveIdx = alive.indexOf(other);
+					const capturerPlayersIdx = players.indexOf(capturer);
+					const otherPlayersIdx = players.indexOf(other);
+					if (capturerPlayersIdx !== -1 && otherPlayersIdx !== -1) {
+						kill(capturerPlayersIdx, otherPlayersIdx);
 					}
+					if (otherAliveIdx !== -1) removing[otherAliveIdx] = true;
+					other.dead = true;
+				}
+			}
+			
+			// Check if the other player is trapped inside capturer's territory
+			// (player is inside enemy territory and NOT in their own territory)
+			if (!other.dead && pointInPolygon({ x: other.x, y: other.y }, capturer.territory)) {
+				// Player is inside the capturer's territory
+				// Check if they're NOT in their own territory (trapped)
+				if (!pointInPolygon({ x: other.x, y: other.y }, other.territory)) {
+					// Trapped! Kill the player
+					const otherAliveIdx = alive.indexOf(other);
+					const capturerPlayersIdx = players.indexOf(capturer);
+					const otherPlayersIdx = players.indexOf(other);
+					if (capturerPlayersIdx !== -1 && otherPlayersIdx !== -1) {
+						kill(capturerPlayersIdx, otherPlayersIdx);
+					}
+					if (otherAliveIdx !== -1) removing[otherAliveIdx] = true;
+					other.dead = true;
 				}
 			}
 		}
 	}
 
 	// Check collisions
-	const removing = new Array(players.length).fill(false);
-
-	const kill = notifyKill || (() => {});
-
-	for (let i = 0; i < players.length; i++) {
-		if (removing[i] || players[i].dead) continue;
+	for (let i = 0; i < alive.length; i++) {
+		if (removing[i] || alive[i].dead) continue;
 		
-		for (let j = 0; j < players.length; j++) {
-			if (i === j || removing[j] || players[j].dead) continue;
+		for (let j = 0; j < alive.length; j++) {
+			if (i === j || removing[j] || alive[j].dead) continue;
 
 			
 			// Check if player i hits player j's trail
 			// Snipped players cannot snip others
-			if (!players[i].isSnipped) {
-				const trailHit = players[j].trail.hitsTrail(players[i].x, players[i].y, 0);
+			if (!alive[i].isSnipped) {
+				const trailHit = alive[j].trail.hitsTrail(alive[i].x, alive[i].y, 0);
 				if (trailHit) {
 					// Instead of immediate death, start the snip fuse
-					if (!players[j].isSnipped) {
+					if (!alive[j].isSnipped) {
 						// Pass the snipper's player number for kill tracking
-						players[j].startSnip({ x: players[i].x, y: players[i].y }, trailHit, players[i].num);
+						alive[j].startSnip({ x: alive[i].x, y: alive[i].y }, trailHit, alive[i].num);
 					}
 					// MVP: ignore if victim already snipped.
 					break;
@@ -158,32 +175,36 @@ export function updateFrame(players, dead, notifyKill) {
 			}
 
 			// Check if players collide with each other
-			if (!removing[i] && !removing[j] && checkPlayerCollision(players[i], players[j])) {
+			if (!removing[i] && !removing[j] && checkPlayerCollision(alive[i], alive[j])) {
 				// Player in their own territory wins
-				const iInTerritory = players[i].isInOwnTerritory();
-				const jInTerritory = players[j].isInOwnTerritory();
+				const iInTerritory = alive[i].isInOwnTerritory();
+				const jInTerritory = alive[j].isInOwnTerritory();
+				
+				// Map alive indices to players indices for kill callback
+				const playersIdxI = players.indexOf(alive[i]);
+				const playersIdxJ = players.indexOf(alive[j]);
 				
 				if (iInTerritory && !jInTerritory) {
-					kill(i, j);
+					kill(playersIdxI, playersIdxJ);
 					removing[j] = true;
 				} else if (jInTerritory && !iInTerritory) {
-					kill(j, i);
+					kill(playersIdxJ, playersIdxI);
 					removing[i] = true;
 				} else {
 					// Both in or out of territory - both die or compare territory size
-					const areaI = polygonArea(players[i].territory);
-					const areaJ = polygonArea(players[j].territory);
+					const areaI = polygonArea(alive[i].territory);
+					const areaJ = polygonArea(alive[j].territory);
 
 					if (Math.abs(areaI - areaJ) < 100) {
 						// Similar size - both die
-						kill(i, j);
-						kill(j, i);
+						kill(playersIdxI, playersIdxJ);
+						kill(playersIdxJ, playersIdxI);
 						removing[i] = removing[j] = true;
 					} else if (areaI > areaJ) {
-						kill(i, j);
+						kill(playersIdxI, playersIdxJ);
 						removing[j] = true;
 					} else {
-						kill(j, i);
+						kill(playersIdxJ, playersIdxI);
 						removing[i] = true;
 					}
 				}
@@ -191,11 +212,11 @@ export function updateFrame(players, dead, notifyKill) {
 		}
 		
 		// Check if player i hits their own trail (suicide)
-		const selfHit = players[i].trail.hitsTrail(players[i].x, players[i].y, 10);
+		const selfHit = alive[i].trail.hitsTrail(alive[i].x, alive[i].y, 10);
 		if (!removing[i] && selfHit) {
-			if (!players[i].isSnipped) {
+			if (!alive[i].isSnipped) {
 				// Self-snip: pass null as snipper (no kill credit)
-				players[i].startSnip({ x: players[i].x, y: players[i].y }, selfHit, null);
+				alive[i].startSnip({ x: alive[i].x, y: alive[i].y }, selfHit, null);
 			}
 		}
 	}
