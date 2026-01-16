@@ -216,7 +216,7 @@ class InterpolatedEntity {
   
   /**
    * Smooth movement for other players (not local)
-   * Extrapolates movement based on angle, with correction towards server position
+   * Extrapolates movement based on angle, with gentle correction towards server position
    */
   interpolateOther(deltaMs, speed) {
     // Smoothly interpolate angle towards server angle
@@ -224,8 +224,8 @@ class InterpolatedEntity {
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
     while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
     
-    // Fast angle lerp (50% per frame at 60fps)
-    const angleLerp = Math.min(1, 0.5 * (deltaMs / 16.67));
+    // Gentle angle lerp (20% per frame at 60fps) - smoother turning
+    const angleLerp = Math.min(1, 0.2 * (deltaMs / 16.67));
     this.angle += angleDiff * angleLerp;
     
     // Normalize angle
@@ -237,19 +237,19 @@ class InterpolatedEntity {
     this.x += Math.cos(this.angle) * moveAmount;
     this.y += Math.sin(this.angle) * moveAmount;
     
-    // Correct towards server position to prevent drift
+    // Gently correct towards server position to prevent drift
     const errorX = this.serverX - this.x;
     const errorY = this.serverY - this.y;
     const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
     
-    if (errorDist > 150) {
+    if (errorDist > 200) {
       // Too far off (teleport/respawn), snap immediately
       this.x = this.serverX;
       this.y = this.serverY;
     } else {
-      // Correction: 15% base + more for larger errors
-      // This keeps us close to server position without stopping
-      const correctionRate = Math.min(0.5, 0.15 + errorDist * 0.005);
+      // Gentle correction: 5% base + gradual increase for larger errors
+      // This creates smooth movement without visible snapping
+      const correctionRate = Math.min(0.25, 0.05 + errorDist * 0.002);
       this.x += errorX * correctionRate;
       this.y += errorY * correctionRate;
     }
