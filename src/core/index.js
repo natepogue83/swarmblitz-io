@@ -65,10 +65,10 @@ export function updateStamina(player, deltaSeconds) {
 	}
 }
 
-export function updateFrame(players, dead, notifyKill) {
+export function updateFrame(players, dead, notifyKill, deltaSeconds = 1 / 60) {
 	const adead = dead instanceof Array ? dead : [];
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
-	const deltaSeconds = 1 / 60; // Game runs at 60 FPS
+	// deltaSeconds defaults to 1/60 for legacy callers
 
 	// Track which players captured territory this frame
 	const capturedThisFrame = [];

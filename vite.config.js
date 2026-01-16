@@ -7,11 +7,14 @@ export default defineConfig({
     // Fixes: "Blocked request. This host (...) is not allowed."
     allowedHosts: true,
     proxy: {
-      '/socket.io': {
-        target: 'http://127.0.0.1:8083',
+      '/ws': {
+        target: 'ws://127.0.0.1:8083',
         ws: true,
       },
       '/font': {
+        target: 'http://127.0.0.1:8083',
+      },
+      '/api': {
         target: 'http://127.0.0.1:8083',
       }
     },

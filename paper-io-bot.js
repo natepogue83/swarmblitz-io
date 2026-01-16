@@ -3,8 +3,9 @@ if (process.argv.length < 3) {
 	process.exit(1);
 }
 
-import io from "socket.io-client";
 import { consts } from "./config.js";
+import WebSocket from "ws";
+import { MSG, encodePacket, decodePacket } from "./src/net/packet.js";
 
 let socket;
 let startFrame = -1;
@@ -27,109 +28,105 @@ function connect() {
 	const names = consts.NAMES.split(" ");
 	const name = process.argv[3] || [prefixes[Math.floor(Math.random() * prefixes.length)], names[Math.floor(Math.random() * names.length)]].join(" ");
 	
-	socket = io(process.argv[2], {
-		forceNew: true,
-		upgrade: false,
-		transports: ["websocket"]
-	});
+	socket = new WebSocket(process.argv[2]);
+	socket.binaryType = "arraybuffer";
 	
-	socket.on("connect", () => {
+	socket.on("open", () => {
 		console.log("Bot connected to server");
+		socket.send(encodePacket(MSG.HELLO, {
+			name: "[BOT] " + name,
+			type: 0,
+			gameid: -1,
+			god: false
+		}));
 	});
 	
-	socket.on("game", (data) => {
-		frame = data.frame;
-		players = data.players || [];
+	socket.on("message", (raw) => {
+		const [type, data] = decodePacket(raw);
+		if (type === MSG.HELLO_ACK) {
+			if (!data?.ok) {
+				console.error("Failed to join:", data?.error);
+				setTimeout(connect, 1000);
+			}
+			return;
+		}
 		
-		if (data.num !== undefined) {
-			user = players.find(p => p.num === data.num);
+		if (type === MSG.INIT) {
+			frame = data.frame;
+			players = data.players || [];
+			
+			if (data.num !== undefined) {
+				user = players.find(p => p.num === data.num);
+				if (user) {
+					targetAngle = user.angle || Math.random() * Math.PI * 2;
+				}
+			}
+			
+			if (startFrame === -1) startFrame = frame;
+			return;
+		}
+		
+		if (type === MSG.FRAME) {
+			frame = data.frame;
+			endFrame = frame;
+			
+			if (data.moves) {
+				data.moves.forEach(move => {
+					const player = players.find(p => p.num === move.num);
+					if (player) {
+						player.targetAngle = move.targetAngle;
+						if (move.left) player.dead = true;
+					}
+				});
+			}
+			
+			if (data.xpUpdates) {
+				data.xpUpdates.forEach(update => {
+					if (user && update.num === user.num) {
+						user.level = update.level;
+						user.xp = update.xp;
+						user.sizeScale = update.sizeScale;
+						user.droneCount = update.droneCount;
+					}
+				});
+			}
+			
+			if (data.levelUps) {
+				data.levelUps.forEach(levelUp => {
+					if (user && levelUp.playerNum === user.num) {
+						console.log(`[${new Date()}] Bot leveled up to level ${levelUp.newLevel}!`);
+					}
+				});
+			}
+			
+			if (data.newPlayers) {
+				players.push(...data.newPlayers);
+			}
+			
 			if (user) {
-				targetAngle = user.angle || Math.random() * Math.PI * 2;
+				const updatedUser = players.find(p => p.num === user.num);
+				if (updatedUser) {
+					simulateMovement(updatedUser);
+					user = updatedUser;
+				}
 			}
+			
+			updateBot();
+			return;
 		}
 		
-		if (startFrame === -1) startFrame = frame;
+		if (type === MSG.DEAD) {
+			console.log(`[${new Date()}] I died... (survived for ${endFrame - startFrame} frames.)`);
+			socket.close();
+			process.exit(0);
+		}
 	});
 	
-	socket.on("notifyFrame", (data) => {
-		frame = data.frame;
-		endFrame = frame;
-		
-		// Update player data
-		if (data.moves) {
-			data.moves.forEach(move => {
-				const player = players.find(p => p.num === move.num);
-				if (player) {
-					player.targetAngle = move.targetAngle;
-					if (move.left) player.dead = true;
-				}
-			});
-		}
-		
-		// Handle XP/Level updates
-		if (data.xpUpdates) {
-			data.xpUpdates.forEach(update => {
-				if (user && update.num === user.num) {
-					user.level = update.level;
-					user.xp = update.xp;
-					user.sizeScale = update.sizeScale;
-					user.droneCount = update.droneCount;
-				}
-			});
-		}
-		
-		// Handle level-up events
-		if (data.levelUps) {
-			data.levelUps.forEach(levelUp => {
-				if (user && levelUp.playerNum === user.num) {
-					console.log(`[${new Date()}] Bot leveled up to level ${levelUp.newLevel}!`);
-				}
-			});
-		}
-		
-		if (data.newPlayers) {
-			players.push(...data.newPlayers);
-		}
-		
-		// Find our user in players
-		if (user) {
-			const updatedUser = players.find(p => p.num === user.num);
-			if (updatedUser) {
-				// Simulate movement
-				simulateMovement(updatedUser);
-				user = updatedUser;
-			}
-		}
-		
-		// Update bot AI
-		updateBot();
-	});
-	
-	socket.on("dead", () => {
-		console.log(`[${new Date()}] I died... (survived for ${endFrame - startFrame} frames.)`);
-		socket.disconnect();
-		// Exit instead of reconnecting to prevent spam
-		process.exit(0);
-	});
-	
-	socket.on("disconnect", () => {
+	socket.on("close", () => {
 		if (startFrame !== -1) {
 			console.log(`[${new Date()}] Disconnected (survived for ${endFrame - startFrame} frames.)`);
 		}
-		// Exit instead of reconnecting to prevent spam
 		process.exit(0);
-	});
-	
-	socket.emit("hello", {
-		name: "[BOT] " + name,
-		type: 0,
-		gameid: -1,
-		god: false
-	}, (success, msg) => {
-		if (!success) {
-			console.error("Failed to join:", msg);
-			setTimeout(connect, 1000);
-		}
 	});
 }
 
@@ -248,10 +245,10 @@ function updateBot() {
 	}
 	
 	// Send target angle to server
-	socket.emit("frame", {
+	socket.send(encodePacket(MSG.INPUT, {
 		frame: frame,
 		targetAngle: targetAngle
-	});
+	}));
 }
 
 function isInTerritory(x, y, territory) {

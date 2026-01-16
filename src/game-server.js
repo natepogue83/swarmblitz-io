@@ -1,5 +1,6 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import { consts } from "../config.js";
+import { MSG } from "./net/packet.js";
 
 // Debug logging (keep off by default for performance)
 const DEBUG_LEVELING_LOGS = false;
@@ -24,6 +25,30 @@ function calculateAOIRadius(viewport) {
 	// diagonal = sqrt(width² + height²) / 2 (half because player is centered)
 	const halfDiagonal = Math.sqrt(viewport.width * viewport.width + viewport.height * viewport.height) / 2;
 	return Math.max(AOI_MIN_RADIUS, halfDiagonal + AOI_BUFFER);
+}
+
+function createEconomyDeltas() {
+	return {
+		coinSpawns: [],
+		coinRemovals: [],
+		xpUpdates: [],
+		levelUps: [],
+		hitscanEvents: [],
+		captureEvents: [],
+		droneUpdates: [],
+		killEvents: []
+	};
+}
+
+function mergeEconomyDeltas(target, source) {
+	target.coinSpawns.push(...source.coinSpawns);
+	target.coinRemovals.push(...source.coinRemovals);
+	target.xpUpdates.push(...source.xpUpdates);
+	target.levelUps.push(...source.levelUps);
+	target.hitscanEvents.push(...source.hitscanEvents);
+	target.captureEvents.push(...source.captureEvents);
+	target.droneUpdates.push(...source.droneUpdates);
+	target.killEvents.push(...source.killEvents);
 }
 
 // ===== XP HELPER =====
@@ -238,12 +263,14 @@ function Game(id) {
 	let nextInd = 0;
 	const players = [];
 	const gods = [];
-	let newPlayers = [];
 	let frame = 0;
+	let simFrame = 0;
+	let pendingDeltas = createEconomyDeltas();
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 	
 	// Spatial grid for efficient nearby queries
 	const spatialGrid = new SpatialGrid(mapSize, GRID_CELL_SIZE);
+	const coinGrid = new SpatialGrid(mapSize, GRID_CELL_SIZE);
 	
 	// XP pickups (world pickups - renamed from coins)
 	let coins = [];  // Still called "coins" internally for pickup entities
@@ -253,10 +280,12 @@ function Game(id) {
 	this.id = id;
 	
 	this.addPlayer = (client, name, viewport) => {
-		if (players.length >= consts.MAX_PLAYERS) return false;
+		if (players.length >= consts.MAX_PLAYERS) {
+			return { ok: false, error: "There're too many players!" };
+		}
 		
 		const start = findEmptySpawn(players, mapSize);
-		if (!start) return false;
+		if (!start) return { ok: false, error: "Cannot find spawn location." };
 		
 		const params = {
 			x: start.x,
@@ -294,9 +323,9 @@ function Game(id) {
 		p.aoiRadius = calculateAOIRadius(p.viewport);
 		
 		players.push(p);
-		newPlayers.push(p);
 		nextInd++;
 		initPlayer(p);
+		p._territoryDirty = true;
 		
 		// Add to spatial grid
 		spatialGrid.insert(p);
@@ -305,76 +334,7 @@ function Game(id) {
 			console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) joined.`);
 		}
 		
-		client.on("requestFrame", () => {
-			if (p.frame === frame) return;
-			p.frame = frame;
-			
-			// On full refresh, only send nearby players (AOI based on viewport)
-			const aoiRadius = p.aoiRadius || calculateAOIRadius(p.viewport);
-			const nearbyPlayers = spatialGrid.getNearby(p.x, p.y, aoiRadius);
-			const nearbyCoins = coins.filter(c => 
-				Math.hypot(c.x - p.x, c.y - p.y) <= aoiRadius
-			);
-			
-			// Update known sets
-			p.knownPlayers.clear();
-			p.knownCoins.clear();
-			for (const np of nearbyPlayers) {
-				p.knownPlayers.add(np.num);
-			}
-			for (const c of nearbyCoins) {
-				p.knownCoins.add(c.id);
-			}
-			
-			const splayers = nearbyPlayers.map(val => serializePlayer(val, p.num));
-			client.emit("game", {
-				"num": p.num,
-				"gameid": id,
-				"frame": frame,
-				"players": splayers,
-				"coins": nearbyCoins
-			});
-		});
-		
-		// Handle viewport updates (when player resizes window)
-		client.on("viewport", (viewport) => {
-			if (viewport && typeof viewport.width === "number" && typeof viewport.height === "number") {
-				p.viewport = viewport;
-				p.aoiRadius = calculateAOIRadius(viewport);
-			}
-		});
-		
-		client.on("frame", (data, errorHan) => {
-			if (typeof data === "function") {
-				errorHan(false, "No data supplied.");
-				return;
-			}
-			if (typeof errorHan !== "function") errorHan = () => {};
-			
-			if (!data) {
-				errorHan(false, "No data supplied.");
-			} else if (data.targetAngle !== undefined) {
-				if (typeof data.targetAngle === "number" && !isNaN(data.targetAngle)) {
-					p.targetAngle = data.targetAngle;
-					errorHan(true);
-				} else {
-					errorHan(false, "Target angle must be a valid number.");
-				}
-			} else {
-				errorHan(true);
-			}
-		});
-		
-		client.on("disconnect", () => {
-			p.die();
-			p.disconnected = true;
-			spatialGrid.remove(p);
-			if (p.name.indexOf("[BOT]") == -1) {
-				console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) left.`);
-			}
-		});
-		
-		return true;
+		return { ok: true, player: p };
 	};
 	
 	// Serialize player with XP/level stats
@@ -410,46 +370,80 @@ function Game(id) {
 			isGod: true  // Gods see everything (for spectating)
 		};
 		gods.push(g);
+		return { ok: true, god: g };
+	};
+
+	this.updateViewport = (player, viewport) => {
+		if (viewport && typeof viewport.width === "number" && typeof viewport.height === "number") {
+			player.viewport = viewport;
+			player.aoiRadius = calculateAOIRadius(viewport);
+		}
+	};
+
+	this.handleInput = (player, data) => {
+		if (!data) return { ok: false, error: "No data supplied." };
+		if (data.targetAngle !== undefined) {
+			if (typeof data.targetAngle === "number" && !isNaN(data.targetAngle)) {
+				player.targetAngle = data.targetAngle;
+				return { ok: true };
+			}
+			return { ok: false, error: "Target angle must be a valid number." };
+		}
+		return { ok: true };
+	};
+
+	this.handleDisconnect = player => {
+		player.die();
+		player.disconnected = true;
+		spatialGrid.remove(player);
+		if (player.name.indexOf("[BOT]") == -1) {
+			console.log(`[${new Date()}] ${player.name || "Unnamed"} (${player.num}) left.`);
+		}
+	};
+
+	this.sendFullState = player => {
+		if (!player || !player.client) return;
+		player.frame = frame;
+		
+		const aoiRadius = player.aoiRadius || calculateAOIRadius(player.viewport);
+		const nearbyPlayers = spatialGrid.getNearby(player.x, player.y, aoiRadius);
+		const nearbyCoins = coinGrid.getNearby(player.x, player.y, aoiRadius);
+		
+		player.knownPlayers.clear();
+		player.knownCoins.clear();
+		for (const np of nearbyPlayers) {
+			player.knownPlayers.add(np.num);
+		}
+		for (const c of nearbyCoins) {
+			player.knownCoins.add(c.id);
+		}
+		
+		const splayers = nearbyPlayers.map(val => serializePlayer(val, player.num));
+		player.client.sendPacket(MSG.INIT, {
+			"num": player.num,
+			"gameid": id,
+			"frame": frame,
+			"players": splayers,
+			"coins": nearbyCoins
+		});
+	};
+
+	this.sendFullStateToGod = god => {
+		if (!god || !god.client) return;
+		god.frame = frame;
 		
 		const splayers = players.map(val => serializePlayer(val, -1));
-		client.emit("game", {
+		god.client.sendPacket(MSG.INIT, {
 			"gameid": id,
 			"frame": frame,
 			"players": splayers,
 			"coins": coins
 		});
-		
-		client.on("requestFrame", () => {
-			if (g.frame === frame) return;
-			g.frame = frame;
-			
-			const splayers = players.map(val => serializePlayer(val, -1));
-			g.client.emit("game", {
-				"gameid": id,
-				"frame": frame,
-				"players": splayers,
-				"coins": coins
-			});
-		});
-		
-		return true;
 	};
 
-	function tick() {
-		const deltaSeconds = 1 / 60;
+	function tickSim(deltaSeconds) {
+		const economyDeltas = createEconomyDeltas();
 		
-		// Global economy deltas (will be filtered per-player later)
-		const economyDeltas = {
-			coinSpawns: [],
-			coinRemovals: [],
-			xpUpdates: [], // XP/Level updates
-			levelUps: [],  // Level up events
-			hitscanEvents: [], // Drone hitscan laser shots
-			captureEvents: [], // Capture success events for visual feedback
-			droneUpdates: [], // Drone position updates
-			killEvents: [] // Kill events for kill counter
-		};
-
 		// Coin spawning
 		coinSpawnCooldown -= deltaSeconds;
 		if (coinSpawnCooldown <= 0 && coins.length < consts.MAX_COINS) {
@@ -462,43 +456,16 @@ function Game(id) {
 				value: consts.COIN_VALUE
 			};
 			coins.push(newCoin);
+			coinGrid.insert(newCoin);
 			economyDeltas.coinSpawns.push(newCoin);
 			coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC;
 		}
-
-		// Handle new players - send them initial game state (AOI-filtered)
-		for (const val of newPlayers) {
-			const aoiRadius = val.aoiRadius || calculateAOIRadius(val.viewport);
-			const nearbyPlayers = spatialGrid.getNearby(val.x, val.y, aoiRadius);
-			const nearbyCoins = coins.filter(c => 
-				Math.hypot(c.x - val.x, c.y - val.y) <= aoiRadius
-			);
-			
-			// Initialize known sets
-			val.knownPlayers = val.knownPlayers || new Set();
-			val.knownCoins = val.knownCoins || new Set();
-			val.knownPlayers.clear();
-			val.knownCoins.clear();
-			for (const np of nearbyPlayers) {
-				val.knownPlayers.add(np.num);
-			}
-			for (const c of nearbyCoins) {
-				val.knownCoins.add(c.id);
-			}
-			
-			const splayers = nearbyPlayers.map(p => serializePlayer(p, val.num));
-			val.client.emit("game", {
-				"num": val.num,
-				"gameid": id,
-				"frame": frame,
-				"players": splayers,
-				"coins": nearbyCoins
-			});
-		}
-		newPlayers = [];
+		
+		const droneUpdateEveryTicks = consts.DRONE_UPDATE_EVERY_TICKS ?? 5;
+		const shouldSendDroneUpdates = simFrame % droneUpdateEveryTicks === 0;
 		
 		// Run game simulation
-		update(economyDeltas, deltaSeconds);
+		update(economyDeltas, deltaSeconds, shouldSendDroneUpdates);
 		
 		// Update spatial grid for all alive players
 		for (const p of players) {
@@ -507,22 +474,22 @@ function Game(id) {
 			}
 		}
 		
+		mergeEconomyDeltas(pendingDeltas, economyDeltas);
+		simFrame++;
+	}
+	
+	function flushFrame() {
 		// Build per-player update packets with AOI filtering
 		for (const p of players) {
 			if (p.disconnected || p.dead) continue;
 			
-			// Ensure AOI tracking sets exist
 			if (!p.knownPlayers) p.knownPlayers = new Set();
 			if (!p.knownCoins) p.knownCoins = new Set();
-			
-			// Always know about self
 			p.knownPlayers.add(p.num);
 			
-			// Use player's viewport-based AOI radius
 			const aoiRadius = p.aoiRadius || calculateAOIRadius(p.viewport);
 			const { nearby, inBuffer } = spatialGrid.getNearbyWithBuffer(p.x, p.y, aoiRadius, AOI_HYSTERESIS);
 			
-			// Always include self in nearby
 			if (!nearby.includes(p)) {
 				nearby.push(p);
 			}
@@ -530,11 +497,9 @@ function Game(id) {
 			const nearbyNums = new Set(nearby.map(np => np.num));
 			const bufferNums = new Set(inBuffer.map(np => np.num));
 			
-			// Determine players entering and leaving AOI
 			const entering = [];
 			const leaving = [];
 			
-			// Check for new players entering AOI
 			for (const np of nearby) {
 				if (!p.knownPlayers.has(np.num)) {
 					entering.push(np);
@@ -542,7 +507,6 @@ function Game(id) {
 				}
 			}
 			
-			// Check for players leaving AOI (not in nearby or buffer)
 			for (const knownNum of p.knownPlayers) {
 				if (!nearbyNums.has(knownNum) && !bufferNums.has(knownNum)) {
 					leaving.push(knownNum);
@@ -552,35 +516,38 @@ function Game(id) {
 				p.knownPlayers.delete(leaveNum);
 			}
 			
-			// Build moves array for only known players
+			// Build moves array with position data for client interpolation
 			const moves = [];
 			for (const np of nearby) {
 				moves.push({
 					num: np.num,
 					left: !!np.disconnected || np.dead,
+					x: np.x,
+					y: np.y,
+					angle: np.angle,
 					targetAngle: np.targetAngle
 				});
 			}
-			// Include buffer players but mark them as "left" if they died
 			for (const bp of inBuffer) {
 				if (p.knownPlayers.has(bp.num)) {
 					moves.push({
 						num: bp.num,
 						left: !!bp.disconnected || bp.dead,
+						x: bp.x,
+						y: bp.y,
+						angle: bp.angle,
 						targetAngle: bp.targetAngle
 					});
 				}
 			}
 			
-			// Filter economy deltas by AOI
 			const filteredData = {
 				frame: frame + 1,
 				moves
 			};
 			
-			// Coin spawns within AOI
-			if (economyDeltas.coinSpawns.length > 0) {
-				const nearbyCoinSpawns = economyDeltas.coinSpawns.filter(c => 
+			if (pendingDeltas.coinSpawns.length > 0) {
+				const nearbyCoinSpawns = pendingDeltas.coinSpawns.filter(c => 
 					Math.hypot(c.x - p.x, c.y - p.y) <= aoiRadius
 				);
 				if (nearbyCoinSpawns.length > 0) {
@@ -591,9 +558,8 @@ function Game(id) {
 				}
 			}
 			
-			// Coin removals - only if player knew about the coin
-			if (economyDeltas.coinRemovals.length > 0) {
-				const knownRemovals = economyDeltas.coinRemovals.filter(id => 
+			if (pendingDeltas.coinRemovals.length > 0) {
+				const knownRemovals = pendingDeltas.coinRemovals.filter(id => 
 					p.knownCoins.has(id)
 				);
 				if (knownRemovals.length > 0) {
@@ -604,97 +570,110 @@ function Game(id) {
 				}
 			}
 			
-			// XP updates for known players only
-			if (economyDeltas.xpUpdates.length > 0) {
-				const nearbyXp = economyDeltas.xpUpdates.filter(u => 
+			if (pendingDeltas.xpUpdates.length > 0) {
+				const nearbyXp = pendingDeltas.xpUpdates.filter(u => 
 					p.knownPlayers.has(u.num) || u.num === p.num
 				);
 				if (nearbyXp.length > 0) filteredData.xpUpdates = nearbyXp;
 			}
 			
-			// Level ups for known players
-			if (economyDeltas.levelUps.length > 0) {
-				const nearbyLvl = economyDeltas.levelUps.filter(u => 
+			if (pendingDeltas.levelUps.length > 0) {
+				const nearbyLvl = pendingDeltas.levelUps.filter(u => 
 					p.knownPlayers.has(u.playerNum) || u.playerNum === p.num
 				);
 				if (nearbyLvl.length > 0) filteredData.levelUps = nearbyLvl;
 			}
 			
-			// Hitscan events within AOI
-			if (economyDeltas.hitscanEvents.length > 0) {
-				const nearbyHits = economyDeltas.hitscanEvents.filter(h => 
+			if (pendingDeltas.hitscanEvents.length > 0) {
+				const nearbyHits = pendingDeltas.hitscanEvents.filter(h => 
 					Math.hypot(h.fromX - p.x, h.fromY - p.y) <= aoiRadius ||
 					Math.hypot(h.toX - p.x, h.toY - p.y) <= aoiRadius
 				);
 				if (nearbyHits.length > 0) filteredData.hitscanEvents = nearbyHits;
 			}
 			
-			// Capture events for known players
-			if (economyDeltas.captureEvents.length > 0) {
-				const nearbyCap = economyDeltas.captureEvents.filter(e => 
+			if (pendingDeltas.captureEvents.length > 0) {
+				const nearbyCap = pendingDeltas.captureEvents.filter(e => 
 					p.knownPlayers.has(e.playerNum) || e.playerNum === p.num
 				);
 				if (nearbyCap.length > 0) filteredData.captureEvents = nearbyCap;
 			}
 			
-			// Drone updates for known players
-			if (economyDeltas.droneUpdates.length > 0) {
-				const nearbyDrones = economyDeltas.droneUpdates.filter(d => 
+			if (pendingDeltas.droneUpdates.length > 0) {
+				const nearbyDrones = pendingDeltas.droneUpdates.filter(d => 
 					p.knownPlayers.has(d.ownerNum) || d.ownerNum === p.num
 				);
 				if (nearbyDrones.length > 0) filteredData.droneUpdates = nearbyDrones;
 			}
 			
-			// Kill events - always send if local player is killer or victim
-			if (economyDeltas.killEvents.length > 0) {
-				const relevantKills = economyDeltas.killEvents.filter(k => 
+			if (pendingDeltas.killEvents.length > 0) {
+				const relevantKills = pendingDeltas.killEvents.filter(k => 
 					k.killerNum === p.num || k.victimNum === p.num ||
 					p.knownPlayers.has(k.killerNum) || p.knownPlayers.has(k.victimNum)
 				);
 				if (relevantKills.length > 0) filteredData.killEvents = relevantKills;
 			}
 			
-			// New players entering AOI
+			const territoryUpdates = [];
+			for (const np of nearby) {
+				if (np._territoryDirty) {
+					territoryUpdates.push({
+						num: np.num,
+						territory: np.territory
+					});
+				}
+			}
+			if (territoryUpdates.length > 0) {
+				filteredData.territoryUpdates = territoryUpdates;
+			}
+			
 			if (entering.length > 0) {
 				filteredData.newPlayers = entering.map(np => serializePlayer(np, p.num));
 			}
 			
-			// Players leaving AOI
 			if (leaving.length > 0) {
 				filteredData.leftPlayers = leaving;
 			}
 			
-			p.client.emit("notifyFrame", filteredData);
+			p.client.sendPacket(MSG.FRAME, filteredData);
 		}
 		
-		// Gods see everything
 		const godData = {
 			frame: frame + 1,
 			moves: players.map(val => ({
 				num: val.num,
 				left: !!val.disconnected,
+				x: val.x,
+				y: val.y,
+				angle: val.angle,
 				targetAngle: val.targetAngle
 			}))
 		};
-		if (economyDeltas.coinSpawns.length > 0) godData.coinSpawns = economyDeltas.coinSpawns;
-		if (economyDeltas.coinRemovals.length > 0) godData.coinRemovals = economyDeltas.coinRemovals;
-		if (economyDeltas.xpUpdates.length > 0) godData.xpUpdates = economyDeltas.xpUpdates;
-		if (economyDeltas.levelUps.length > 0) godData.levelUps = economyDeltas.levelUps;
-		if (economyDeltas.hitscanEvents.length > 0) godData.hitscanEvents = economyDeltas.hitscanEvents;
-		if (economyDeltas.captureEvents.length > 0) godData.captureEvents = economyDeltas.captureEvents;
-		if (economyDeltas.droneUpdates.length > 0) godData.droneUpdates = economyDeltas.droneUpdates;
-		if (economyDeltas.killEvents.length > 0) godData.killEvents = economyDeltas.killEvents;
+		if (pendingDeltas.coinSpawns.length > 0) godData.coinSpawns = pendingDeltas.coinSpawns;
+		if (pendingDeltas.coinRemovals.length > 0) godData.coinRemovals = pendingDeltas.coinRemovals;
+		if (pendingDeltas.xpUpdates.length > 0) godData.xpUpdates = pendingDeltas.xpUpdates;
+		if (pendingDeltas.levelUps.length > 0) godData.levelUps = pendingDeltas.levelUps;
+		if (pendingDeltas.hitscanEvents.length > 0) godData.hitscanEvents = pendingDeltas.hitscanEvents;
+		if (pendingDeltas.captureEvents.length > 0) godData.captureEvents = pendingDeltas.captureEvents;
+		if (pendingDeltas.droneUpdates.length > 0) godData.droneUpdates = pendingDeltas.droneUpdates;
+		if (pendingDeltas.killEvents.length > 0) godData.killEvents = pendingDeltas.killEvents;
 		
 		for (const g of gods) {
-			g.client.emit("notifyFrame", godData);
+			g.client.sendPacket(MSG.FRAME, godData);
 		}
 		
+		for (const p of players) {
+			p._territoryDirty = false;
+		}
+		
+		pendingDeltas = createEconomyDeltas();
 		frame++;
 	}
 	
-	this.tickFrame = tick;
+	this.tickSim = tickSim;
+	this.flushFrame = flushFrame;
 
-	function update(economyDeltas, deltaSeconds) {
+	function update(economyDeltas, deltaSeconds, shouldSendDroneUpdates) {
 		const dead = [];
 		
 		// Callback for collision kills (from updateFrame)
@@ -711,7 +690,7 @@ function Game(id) {
 			}
 		};
 		
-		updateFrame(players, dead, notifyKill);
+		updateFrame(players, dead, notifyKill, deltaSeconds);
 		
 		// Check for snip deaths (players who died while snipped)
 		for (const p of dead) {
@@ -767,6 +746,7 @@ function Game(id) {
 					newCoin.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.x));
 					newCoin.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.y));
 					coins.push(newCoin);
+					coinGrid.insert(newCoin);
 					economyDeltas.coinSpawns.push(newCoin);
 				}
 				
@@ -831,8 +811,8 @@ function Game(id) {
 			if (p.name.indexOf("[BOT]") == -1) {
 				console.log(`${p.name || "Unnamed"} (${p.num}) died.`);
 			}
-			p.client.emit("dead");
-			p.client.disconnect(true);
+			p.client.sendPacket(MSG.DEAD);
+			if (p.client.close) p.client.close();
 		}
 
 		// ===== DRONE SYSTEM UPDATE =====
@@ -985,6 +965,7 @@ function Game(id) {
 				newCoin.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.x));
 				newCoin.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.y));
 				coins.push(newCoin);
+				coinGrid.insert(newCoin);
 				economyDeltas.coinSpawns.push(newCoin);
 			}
 			
@@ -1045,8 +1026,8 @@ function Game(id) {
 			if (p.name.indexOf("[BOT]") == -1) {
 				console.log(`${p.name || "Unnamed"} (${p.num}) died from combat damage.`);
 			}
-			p.client.emit("dead");
-			p.client.disconnect(true);
+			p.client.sendPacket(MSG.DEAD);
+			if (p.client.close) p.client.close();
 		}
 		
 		// Process alive players economy (XP/Leveling)
@@ -1063,6 +1044,7 @@ function Game(id) {
 				if (dist < scaledRadius + consts.COIN_RADIUS) {
 					p.xp += coin.value;
 					economyDeltas.coinRemovals.push(coin.id);
+					coinGrid.remove(coin);
 					coins.splice(i, 1);
 					changed = true;
 				}
@@ -1076,6 +1058,7 @@ function Game(id) {
 					p.xp += xpGained;
 					p._territoryCoinCarry -= xpGained;
 					changed = true;
+					p._territoryDirty = true;
 					
 					// Emit capture event for visual feedback
 					economyDeltas.captureEvents.push({
@@ -1126,8 +1109,8 @@ function Game(id) {
 				p._forceXpUpdate = false;
 			}
 			
-			// Always send drone updates (positions change every frame)
-			if (p.drones && p.drones.length > 0) {
+			// Throttle drone updates to reduce bandwidth
+			if (shouldSendDroneUpdates && p.drones && p.drones.length > 0) {
 				economyDeltas.droneUpdates.push({
 					ownerNum: p.num,
 					drones: p.drones.map(d => ({

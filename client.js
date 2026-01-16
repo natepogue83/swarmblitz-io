@@ -1,9 +1,9 @@
 import jquery from "jquery";
-import io from "socket.io-client/dist/socket.io.js";
 import * as client from "./src/game-client";
 import godRenderer from "./src/mode/god";
 import * as playerRenderer from "./src/mode/player";
 import * as SoundManager from "./src/sound-manager.js";
+import { MSG, encodePacket, decodePacket } from "./src/net/packet.js";
 
 const $ = jquery;
 
@@ -25,7 +25,8 @@ function run(flag) {
 	SoundManager.stopMenuMusic();
 	
 	client.setRenderer(flag ? godRenderer : playerRenderer);
-	client.connectGame(io, "//" + location.host, $("#name").val(), (success, msg) => {
+	const wsUrl = getWsUrl();
+	client.connectGame(wsUrl, $("#name").val(), (success, msg) => {
 		if (success) {
 			$("#main-ui").fadeIn(1000);
 			$("#begin, #wasted").fadeOut(1000);
@@ -38,6 +39,11 @@ function run(flag) {
 			}
 		}
 	}, flag);
+}
+
+function getWsUrl() {
+	const protocol = location.protocol === "https:" ? "wss" : "ws";
+	return `${protocol}://${location.host}/ws`;
 }
 
 $(() => {
@@ -59,28 +65,32 @@ $(() => {
 	document.addEventListener("keydown", initOnInteraction);
 	
 	(() => {
-		const socket = io(`//${location.host}`, {
-			forceNew: true,
-			upgrade: false,
-			transports: ["websocket"]
+		const wsUrl = getWsUrl();
+		const socket = new WebSocket(wsUrl);
+		socket.binaryType = "arraybuffer";
+		
+		socket.addEventListener("open", () => {
+			socket.send(encodePacket(MSG.PING));
 		});
-		socket.on("connect", () => {
-			socket.emit("pings");
+		
+		socket.addEventListener("message", (event) => {
+			const [type] = decodePacket(event.data);
+			if (type === MSG.PONG) {
+				socket.close();
+				err.text("All done, have fun!");
+				$("#name").on("keypress", evt => {
+					if (evt.key === "Enter") run();
+				});
+				$(".start").removeAttr("disabled").on("click", evt => {
+					run();
+				});
+				$(".spectate").removeAttr("disabled").click(evt => {
+					run(true);
+				});
+			}
 		});
-		socket.on("pongs", () => {
-			socket.disconnect();
-			err.text("All done, have fun!");
-			$("#name").on("keypress", evt => {
-				if (evt.key === "Enter") run();
-			});
-			$(".start").removeAttr("disabled").on("click", evt => {
-				run();
-			});
-			$(".spectate").removeAttr("disabled").click(evt => {
-				run(true);
-			});
-		});
-		socket.on("connect_error", () => {
+		
+		socket.addEventListener("error", () => {
 			err.text("Cannot connect with server. This probably is due to misconfigured proxy server. (Try using a different browser)");
 		});
 	})();

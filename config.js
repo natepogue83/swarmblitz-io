@@ -1,8 +1,12 @@
 export const config = {
 	"dev": true,
 	"port": 8083,
+	"wsPath": "/ws",
 	"bots": 30,
-	"fps": 60
+	"fps": 60,
+	"serverTickRate": 60,
+	"netTickRate": 60,
+	"prod": false
 };
 
 export const consts = {
@@ -68,12 +72,13 @@ export const consts = {
 	"DRONE_DAMAGE_DECAY_FACTOR": 0.75,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
 	"DRONE_RANGE": 158,               // Targeting range (reduced 30% from 225)
 	"DRONE_COOLDOWN": .1,             // Seconds between shots
+	"DRONE_UPDATE_EVERY_TICKS": 1,    // Send drone updates every tick for smooth visuals
 	
 	// ===== AREA OF INTEREST (AOI) OPTIMIZATION =====
 	// Reduces bandwidth from O(N²) to O(N×K) where K = avg nearby players
 	// AOI radius is now DYNAMIC based on each player's viewport size
 	"AOI_MIN_RADIUS": 400,           // Minimum AOI radius (for very small windows)
-	"AOI_BUFFER": 150,               // Extra buffer beyond viewport edge (ensures off-screen spawn)
-	"AOI_HYSTERESIS": 100,           // Extra buffer before removing from AOI (prevents flicker)
+	"AOI_BUFFER": 300,               // Extra buffer beyond viewport edge (ensures off-screen spawn)
+	"AOI_HYSTERESIS": 200,           // Extra buffer before removing from AOI (prevents flicker)
 	"AOI_GRID_SIZE": 200             // Spatial grid cell size for efficient queries
 };

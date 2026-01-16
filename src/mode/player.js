@@ -95,6 +95,13 @@ $(() => {
 	window.addEventListener("keydown", handleKeyDown);
 	window.addEventListener("keyup", handleKeyUp);
 	canvas.addEventListener("click", handleClick);
+
+	// Unlock audio on any first interaction (menu buttons, canvas, etc.)
+	const unlockAudio = () => {
+		initSoundOnInteraction();
+	};
+	document.addEventListener("pointerdown", unlockAudio, { once: true });
+	document.addEventListener("touchstart", unlockAudio, { once: true, passive: true });
 	
 	// Send target angle on every frame
 	setInterval(() => {
@@ -2078,6 +2085,13 @@ export function removePlayer(player) {
 		}
 	}
 	
+	delete playerPortion[player.num];
+	delete portionsRolling[player.num];
+	delete barProportionRolling[player.num];
+};
+
+// Silent removal for players leaving AOI (not dead, just out of view)
+export function removePlayerSilent(player) {
 	delete playerPortion[player.num];
 	delete portionsRolling[player.num];
 	delete barProportionRolling[player.num];

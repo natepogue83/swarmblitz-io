@@ -230,6 +230,11 @@ export default {
 		delete portionsRolling[player.num];
 		delete barProportionRolling[player.num];
 	},
+	removePlayerSilent: function(player) {
+		delete playerPortion[player.num];
+		delete portionsRolling[player.num];
+		delete barProportionRolling[player.num];
+	},
 	setUser: function(player) {
 		user = player;
 	},

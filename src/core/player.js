@@ -292,9 +292,10 @@ export default function Player(sdata) {
 
 Player.prototype.move = function(deltaSeconds) {
 	deltaSeconds = deltaSeconds || 1/60;
+	const frameScale = deltaSeconds / (1 / 60);
 	
 	if (this.waitLag < consts.NEW_PLAYER_LAG) {
-		this.waitLag++;
+		this.waitLag += frameScale;
 		return;
 	}
 	
@@ -309,7 +310,7 @@ Player.prototype.move = function(deltaSeconds) {
 	while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
 	while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
 	
-	const turnSpeed = 0.15;
+	const turnSpeed = 0.15 * frameScale;
 	if (Math.abs(angleDiff) < turnSpeed) {
 		this.angle = this.targetAngle;
 	} else {
@@ -344,8 +345,8 @@ Player.prototype.move = function(deltaSeconds) {
 	const speedMultiplier = this.currentSpeedBuff;
 
 	// Move in current direction
-	this.x += Math.cos(this.angle) * this.speed * speedMultiplier;
-	this.y += Math.sin(this.angle) * this.speed * speedMultiplier;
+	this.x += Math.cos(this.angle) * this.speed * speedMultiplier * frameScale;
+	this.y += Math.sin(this.angle) * this.speed * speedMultiplier * frameScale;
 	
 	// Clamp to map bounds (sliding against walls)
 	this.x = Math.max(PLAYER_RADIUS, Math.min(this.mapSize - PLAYER_RADIUS, this.x));

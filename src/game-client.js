@@ -1,5 +1,6 @@
 import { Player, initPlayer, updateFrame, polygonArea } from "./core/index.js";
-import { consts } from "../config.js";
+import { consts, config } from "../config.js";
+import { MSG, encodePacket, decodePacket } from "./net/packet.js";
 
 // Helper to calculate XP needed for a level
 function getXpForLevel(level) {
@@ -26,6 +27,7 @@ let lastScreenX = 0, lastScreenY = 0;
 let lastZoom = 1;
 let mouseSet = false;
 let viewOffset = { x: 0, y: 0 };
+const clientTickRate = config.netTickRate || config.serverTickRate || config.fps || 60;
 
 // WASD keyboard control state
 let wasdKeys = { w: false, a: false, s: false, d: false };
@@ -51,14 +53,14 @@ function getViewportDimensions() {
 
 // Send viewport update to server
 function sendViewportUpdate() {
-	if (socket && socket.connected) {
+	if (socket && socket.readyState === WebSocket.OPEN) {
 		const viewport = getViewportDimensions();
-		socket.emit("viewport", viewport);
+		socket.send(encodePacket(MSG.VIEWPORT, viewport));
 	}
 }
 
 // Public API
-function connectGame(io, url, name, callback, flag) {
+function connectGame(wsUrl, name, callback, flag) {
 	if (running) return;
 	running = true;
 	user = null;
@@ -68,23 +70,70 @@ function connectGame(io, url, name, callback, flag) {
 	const names = consts.NAMES.split(" ");
 	name = name || [prefixes[Math.floor(Math.random() * prefixes.length)], names[Math.floor(Math.random() * names.length)]].join(" ");
 	
-	io.j = [];
-	io.sockets = [];
-	socket = io(url, {
-		"forceNew": true,
-		upgrade: false,
-		transports: ["websocket"]
-	});
+	socket = new WebSocket(wsUrl);
+	socket.binaryType = "arraybuffer";
 	
-	socket.on("connect", () => {
+	socket.addEventListener("open", () => {
 		console.info("Connected to server.");
+		const viewport = getViewportDimensions();
+		socket.send(encodePacket(MSG.HELLO, {
+			name: name,
+			type: 0,
+			gameid: -1,
+			god: flag,
+			viewport
+		}));
 	});
 	
 	// Listen for window resize to update AOI on server
 	window.addEventListener("resize", sendViewportUpdate);
 	
-	socket.on("game", data => {
-		if (timeout != undefined) clearTimeout(timeout);
+	socket.addEventListener("message", (event) => {
+		const [type, data] = decodePacket(event.data);
+		if (type === MSG.HELLO_ACK) {
+			if (data?.ok) {
+				console.info("Connected to game!");
+			} else {
+				const msg = data?.error || "Unable to connect to game.";
+				console.error("Unable to connect to game: " + msg);
+				running = false;
+				socket.close();
+			}
+			if (callback) callback(!!data?.ok, data?.error);
+			return;
+		}
+		if (type === MSG.INIT) {
+			handleInitState(data);
+			return;
+		}
+		if (type === MSG.FRAME) {
+			processFrame(data);
+			return;
+		}
+		if (type === MSG.DEAD) {
+			socket.close();
+			return;
+		}
+	});
+	
+	socket.addEventListener("close", () => {
+		console.info("Server has disconnected. Creating new game.");
+		window.removeEventListener("resize", sendViewportUpdate);
+		if (!user) return;
+		user.die();
+		dirty = true;
+		paintLoop();
+		running = false;
+		invokeRenderer("disconnect", []);
+	});
+	
+	socket.addEventListener("error", () => {
+		console.error("WebSocket error");
+	});
+}
+
+function handleInitState(data) {
+	if (timeout != undefined) clearTimeout(timeout);
 		
 		frame = data.frame;
 		reset();
@@ -139,40 +188,6 @@ function connectGame(io, url, name, callback, flag) {
 			}
 			frameCache = [];
 		}
-	});
-	
-	socket.on("notifyFrame", processFrame);
-	
-	socket.on("dead", () => {
-		socket.disconnect();
-	});
-	
-	socket.on("disconnect", () => {
-		console.info("Server has disconnected. Creating new game.");
-		socket.disconnect();
-		if (!user) return;
-		user.die();
-		dirty = true;
-		paintLoop();
-		running = false;
-		invokeRenderer("disconnect", []);
-	});
-	
-	const viewport = getViewportDimensions();
-	socket.emit("hello", {
-		name: name,
-		type: 0,
-		gameid: -1,
-		god: flag,
-		viewport: viewport  // Send initial viewport dimensions
-	}, (success, msg) => {
-		if (success) console.info("Connected to game!");
-		else {
-			console.error("Unable to connect to game: " + msg);
-			running = false;
-		}
-		if (callback) callback(success, msg);
-	});
 }
 
 function updateMousePosition(clientX, clientY, canvasRect, canvasWidth, canvasHeight, zoom) {
@@ -261,12 +276,12 @@ function sendTargetAngle() {
 		wasdCurrentAngle = targetAngle;
 	}
 	
-	socket.emit("frame", {
-		frame: frame,
-		targetAngle: targetAngle
-	}, (success, msg) => {
-		if (!success) console.error(msg);
-	});
+	if (socket.readyState === WebSocket.OPEN) {
+		socket.send(encodePacket(MSG.INPUT, {
+			frame: frame,
+			targetAngle: targetAngle
+		}));
+	}
 }
 
 function getUser() {
@@ -295,7 +310,7 @@ function getDrones() {
 
 function disconnect() {
 	window.removeEventListener("resize", sendViewportUpdate);
-	socket.disconnect();
+	if (socket) socket.close();
 	running = false;
 }
 
@@ -323,7 +338,9 @@ function processFrame(data) {
 	
 	if (data.frame - 1 !== frame) {
 		console.error("Frames don't match up!");
-		socket.emit("requestFrame");
+		if (socket && socket.readyState === WebSocket.OPEN) {
+			socket.send(encodePacket(MSG.REQUEST));
+		}
 		requesting = data.frame;
 		frameCache.push(data);
 		return;
@@ -429,6 +446,16 @@ function processFrame(data) {
 		});
 	}
 	
+	// Handle territory updates (when server sends changed territories)
+	if (data.territoryUpdates) {
+		data.territoryUpdates.forEach(update => {
+			const player = allPlayers[update.num];
+			if (player && update.territory) {
+				player.territory = update.territory;
+			}
+		});
+	}
+	
 	// Handle kill events (for kill sound and counter)
 	if (data.killEvents) {
 		data.killEvents.forEach(evt => {
@@ -472,6 +499,7 @@ function processFrame(data) {
 	}
 	
 	// Handle players leaving AOI (server stopped sending them)
+	// Note: This is NOT a death - just out of view. Don't trigger death effects.
 	if (data.leftPlayers) {
 		data.leftPlayers.forEach(num => {
 			const p = allPlayers[num];
@@ -488,7 +516,8 @@ function processFrame(data) {
 					players.splice(idx, 1);
 				}
 				delete allPlayers[num];
-				invokeRenderer("removePlayer", [p]);
+				// Use silent removal - no death animation
+				invokeRenderer("removePlayerSilent", [p]);
 			}
 		});
 	}
@@ -518,7 +547,7 @@ function processFrame(data) {
 	
 	timeout = setTimeout(() => {
 		console.warn("Server has timed-out. Disconnecting.");
-		socket.disconnect();
+		if (socket) socket.close();
 	}, 3000);
 }
 
@@ -539,13 +568,14 @@ function paintLoop() {
 			deadFrames = 0;
 			return;
 		}
-		socket.disconnect();
+		if (socket) socket.close();
 		deadFrames++;
 		dirty = true;
 		update();
 		requestAnimationFrame(paintLoop);
 	}
 }
+
 
 function reset() {
 	user = null;
@@ -564,7 +594,7 @@ function setUser(player) {
 
 function update() {
 	const dead = [];
-	updateFrame(players, dead);
+	updateFrame(players, dead, undefined, 1 / clientTickRate);
 	
 	dead.forEach(val => {
 		console.log((val.name || "Unnamed") + " is dead");

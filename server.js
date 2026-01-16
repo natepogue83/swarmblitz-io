@@ -1,12 +1,13 @@
-// https://github.com/socketio/socket.io/blob/master/examples/chat/index.js
-import MiServer from "mimi-server";
-import { Server } from "socket.io";
-import express from "express";
+import http from "http";
 import path from "path";
 import fs from "fs";
 import { exec, fork } from "child_process";
-import { config } from "./config.js";
 import { fileURLToPath } from "url";
+import { performance } from "perf_hooks";
+import { WebSocketServer } from "ws";
+import { config } from "./config.js";
+import Game from "./src/game-server.js";
+import { MSG, encodePacket, decodePacket } from "./src/net/packet.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -15,206 +16,272 @@ if (!process.env.VITE) {
 }
 
 const port = process.env.PORT || config.port;
+const wsPath = config.wsPath || "/ws";
+const isProd = config.prod || process.env.NODE_ENV === "production";
+const simRate = config.serverTickRate || config.fps || 60;
+const netRate = config.netTickRate || simRate;
+const enableMetrics = !!process.env.BW_LOG;
 
-const { app, server } = new MiServer({
-	port,
-	static: path.join(__dirname, "public")
-});
+const staticRoot = path.join(__dirname, "public");
+const fontRoot = path.join(__dirname, "node_modules/@fortawesome/fontawesome-free");
+const playlistDir = path.join(__dirname, "public", "music", "playlist");
 
-const io = new Server(server);
-
-// ===============================
-// Bandwidth logger (server-side)
-// ===============================
-// This does NOT add bandwidth. It uses existing per-socket byte counters from the underlying TCP socket.
-// It should add negligible CPU overhead (a small aggregation once per interval).
-const ENABLE_BW_LOG = ["1", "true", "yes", "on"].includes(String(process.env.BW_LOG || "").toLowerCase());
-const BW_LOG_INTERVAL_MS = Math.max(250, Number(process.env.BW_LOG_INTERVAL_MS || 1000));
-const BW_LOG_TOP_N = Math.max(0, Number(process.env.BW_LOG_TOP_N || 0));
-
-// ANSI color helpers for logs (safe: does not affect bandwidth).
-// Disable with NO_COLOR=1 (https://no-color.org/) or BW_LOG_COLOR=off
-const BW_LOG_USE_COLOR =
-	!["1", "true", "yes", "on"].includes(String(process.env.NO_COLOR || "").toLowerCase()) &&
-	!["0", "false", "no", "off"].includes(String(process.env.BW_LOG_COLOR || "").toLowerCase());
-const BW_LOG_COLOR = String(process.env.BW_LOG_COLOR || "cyan").toLowerCase();
-
-const ANSI = {
-	reset: "\x1b[0m",
-	dim: "\x1b[2m",
-	cyan: "\x1b[36m",
-	green: "\x1b[32m",
-	yellow: "\x1b[33m",
-	magenta: "\x1b[35m",
-	blue: "\x1b[34m"
+const mimeTypes = {
+	".html": "text/html",
+	".js": "application/javascript",
+	".css": "text/css",
+	".png": "image/png",
+	".svg": "image/svg+xml",
+	".woff2": "font/woff2",
+	".ico": "image/x-icon",
+	".mp3": "audio/mpeg",
+	".ogg": "audio/ogg",
+	".wav": "audio/wav",
+	".json": "application/json"
 };
 
-function bwColorize(s) {
-	if (!BW_LOG_USE_COLOR) return s;
-	const c =
-		BW_LOG_COLOR === "green" ? ANSI.green :
-		BW_LOG_COLOR === "yellow" ? ANSI.yellow :
-		BW_LOG_COLOR === "magenta" ? ANSI.magenta :
-		BW_LOG_COLOR === "blue" ? ANSI.blue :
-		ANSI.cyan;
-	return `${c}${s}${ANSI.reset}`;
+function getMimeType(filePath) {
+	const ext = path.extname(filePath).toLowerCase();
+	return mimeTypes[ext] || "application/octet-stream";
 }
 
-function fmtBps(bytesPerSec) {
-	if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / 1024 / 1024).toFixed(2)} MiB/s`;
-	if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(1)} KiB/s`;
-	return `${Math.round(bytesPerSec)} B/s`;
-}
-
-function attachBwCounters(socket) {
-	// Tries to find the underlying net.Socket when using WebSocket transport (ws).
-	// For ws in Node, the TCP socket is usually at `transport.socket._socket`.
-	const getNetSocket = () => {
-		const conn = socket.conn;
-		const transport = conn && conn.transport;
-		const ws = transport && transport.socket;
-		const net = ws && ws._socket;
-		return net || null;
-	};
-
-	socket.data = socket.data || {};
-	socket.data._bw = {
-		getNetSocket,
-		inPrev: 0,
-		outPrev: 0,
-		inBps: 0,
-		outBps: 0
-	};
-
-	// Initialize baseline counters if possible.
-	const net = getNetSocket();
-	if (net) {
-		socket.data._bw.inPrev = net.bytesRead || 0;
-		socket.data._bw.outPrev = net.bytesWritten || 0;
+function safeJoin(base, target) {
+	const targetPath = path.normalize(path.join(base, target));
+	if (!targetPath.startsWith(base)) {
+		return null;
 	}
+	return targetPath;
 }
 
-if (ENABLE_BW_LOG) {
-	setInterval(() => {
-		const sockets = Array.from(io.of("/").sockets.values());
-		let totalInBps = 0;
-		let totalOutBps = 0;
-
-		for (const s of sockets) {
-			if (!s.data || !s.data._bw) continue;
-			const net = s.data._bw.getNetSocket();
-			if (!net) continue;
-
-			const inNow = net.bytesRead || 0;
-			const outNow = net.bytesWritten || 0;
-			const inDelta = Math.max(0, inNow - (s.data._bw.inPrev || 0));
-			const outDelta = Math.max(0, outNow - (s.data._bw.outPrev || 0));
-
-			s.data._bw.inPrev = inNow;
-			s.data._bw.outPrev = outNow;
-
-			// Convert interval deltas to bytes/sec
-			s.data._bw.inBps = (inDelta * 1000) / BW_LOG_INTERVAL_MS;
-			s.data._bw.outBps = (outDelta * 1000) / BW_LOG_INTERVAL_MS;
-
-			totalInBps += s.data._bw.inBps;
-			totalOutBps += s.data._bw.outBps;
-		}
-
-		const count = sockets.length || 1;
-		const avgInBps = totalInBps / count;
-		const avgOutBps = totalOutBps / count;
-		const players = sockets.length;
-		const perPlayerOutBps = players > 0 ? (totalOutBps / players) : 0;
-		const perPlayerInBps = players > 0 ? (totalInBps / players) : 0;
-
-		console.log(bwColorize(
-			`[BW] players=${players} total_out=${fmtBps(totalOutBps)} total_in=${fmtBps(totalInBps)} per_player_out=${fmtBps(perPlayerOutBps)} per_player_in=${fmtBps(perPlayerInBps)} avg_out=${fmtBps(avgOutBps)} avg_in=${fmtBps(avgInBps)} interval=${BW_LOG_INTERVAL_MS}ms`
-		));
-
-		if (BW_LOG_TOP_N > 0 && sockets.length > 0) {
-			const top = sockets
-				.filter(s => s.data && s.data._bw)
-				.sort((a, b) => ((b.data._bw.outBps + b.data._bw.inBps) - (a.data._bw.outBps + a.data._bw.inBps)))
-				.slice(0, BW_LOG_TOP_N);
-
-			for (const s of top) {
-				const addr =
-					(s.handshake && s.handshake.address) ||
-					(s.conn && s.conn.remoteAddress) ||
-					s.id;
-				console.log(bwColorize(`  [BW] ${addr} out=${fmtBps(s.data._bw.outBps)} in=${fmtBps(s.data._bw.inBps)}`));
-			}
-		}
-	}, BW_LOG_INTERVAL_MS);
-}
-
-// Routing
-app.use("/font", express.static(path.join(__dirname, "node_modules/@fortawesome/fontawesome-free")));
-
-// API endpoint to list music playlist files
-app.get("/api/playlist", (req, res) => {
-	const playlistDir = path.join(__dirname, "public", "music", "playlist");
-	
-	fs.readdir(playlistDir, (err, files) => {
+function serveFile(res, filePath) {
+	fs.readFile(filePath, (err, data) => {
 		if (err) {
-			console.error("Error reading playlist directory:", err);
-			return res.json({ tracks: [] });
-		}
-		
-		// Filter for MP3 files only
-		const mp3Files = files.filter(file => 
-			file.toLowerCase().endsWith('.mp3') || 
-			file.toLowerCase().endsWith('.ogg') ||
-			file.toLowerCase().endsWith('.wav')
-		);
-		
-		res.json({ tracks: mp3Files });
-	});
-});
-
-import Game from "./src/game-server.js";
-const game = new Game();
-
-io.on("connection", socket => {
-	if (ENABLE_BW_LOG) attachBwCounters(socket);
-	socket.on("hello", (data, fn) => {
-		//TODO: error checking.
-		if (data.god && game.addGod(socket)) {
-			fn(true);
+			res.writeHead(404);
+			res.end("Not found");
 			return;
 		}
-		if (data.name && data.name.length > 32) fn(false, "Your name is too long!");
-		else if (!game.addPlayer(socket, data.name, data.viewport)) fn(false, "There're too many platers!");
-		else fn(true);
+		res.writeHead(200, { "Content-Type": getMimeType(filePath) });
+		res.end(data);
 	});
-	socket.on("pings", (fn) => {
-		socket.emit("pongs");
-		socket.disconnect();
+}
+
+function serveStatic(res, baseDir, urlPath) {
+	const sanitized = urlPath === "/" ? "/index.html" : urlPath;
+	const filePath = safeJoin(baseDir, decodeURIComponent(sanitized));
+	if (!filePath) {
+		res.writeHead(400);
+		res.end("Bad path");
+		return;
+	}
+	fs.stat(filePath, (err, stats) => {
+		if (err || !stats.isFile()) {
+			res.writeHead(404);
+			res.end("Not found");
+			return;
+		}
+		serveFile(res, filePath);
+	});
+}
+
+const game = new Game();
+
+const metrics = {
+	bytesIn: 0,
+	bytesOut: 0,
+	simMs: 0,
+	netMs: 0,
+	connected: 0
+};
+
+function sendPacket(ws, type, payload) {
+	const data = encodePacket(type, payload);
+	metrics.bytesOut += data.length || data.byteLength || 0;
+	ws.send(data);
+}
+
+function makeClient(ws) {
+	return {
+		sendPacket: (type, payload) => sendPacket(ws, type, payload),
+		close: () => ws.close()
+	};
+}
+
+const server = http.createServer((req, res) => {
+	const url = new URL(req.url, `http://${req.headers.host}`);
+	const pathname = url.pathname;
+	
+	if (pathname === "/api/playlist") {
+		fs.readdir(playlistDir, (err, files) => {
+			if (err) {
+				console.error("Error reading playlist directory:", err);
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ tracks: [] }));
+				return;
+			}
+			
+			const tracks = files.filter(file =>
+				file.toLowerCase().endsWith(".mp3") ||
+				file.toLowerCase().endsWith(".ogg") ||
+				file.toLowerCase().endsWith(".wav")
+			);
+			
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ tracks }));
+		});
+		return;
+	}
+	
+	if (pathname.startsWith("/font/")) {
+		const urlPath = pathname.replace("/font", "");
+		serveStatic(res, fontRoot, urlPath);
+		return;
+	}
+	
+	serveStatic(res, staticRoot, pathname);
+});
+
+const wss = new WebSocketServer({
+	noServer: true,
+	perMessageDeflate: true,
+	maxPayload: 16 * 1024 * 1024
+});
+
+server.on("upgrade", (req, socket, head) => {
+	const url = new URL(req.url, `http://${req.headers.host}`);
+	if (url.pathname !== wsPath) {
+		socket.destroy();
+		return;
+	}
+	wss.handleUpgrade(req, socket, head, (ws) => {
+		wss.emit("connection", ws, req);
 	});
 });
 
+wss.on("connection", (ws) => {
+	ws.client = makeClient(ws);
+	metrics.connected += 1;
+	
+	ws.on("message", (message) => {
+		metrics.bytesIn += message.byteLength || 0;
+		let decoded;
+		try {
+			decoded = decodePacket(message);
+		} catch (err) {
+			console.warn("Failed to decode packet:", err);
+			return;
+		}
+		const [type, payload] = decoded;
+		
+		if (type === MSG.PING) {
+			sendPacket(ws, MSG.PONG);
+			return;
+		}
+		
+		if (type === MSG.HELLO) {
+			const name = payload?.name;
+			const viewport = payload?.viewport;
+			const isGod = !!payload?.god;
+			
+			if (isGod) {
+				const result = game.addGod(ws.client);
+				if (result.ok) {
+					ws.god = result.god;
+					sendPacket(ws, MSG.HELLO_ACK, { ok: true });
+					game.sendFullStateToGod(ws.god);
+				} else {
+					sendPacket(ws, MSG.HELLO_ACK, { ok: false, error: "Unable to join as god." });
+				}
+				return;
+			}
+			
+			if (name && name.length > 32) {
+				sendPacket(ws, MSG.HELLO_ACK, { ok: false, error: "Your name is too long!" });
+				return;
+			}
+			
+			const result = game.addPlayer(ws.client, name, viewport);
+			if (!result.ok) {
+				sendPacket(ws, MSG.HELLO_ACK, { ok: false, error: result.error || "Unable to join." });
+				return;
+			}
+			
+			ws.player = result.player;
+			sendPacket(ws, MSG.HELLO_ACK, { ok: true });
+			game.sendFullState(ws.player);
+			return;
+		}
+		
+		if (type === MSG.VIEWPORT && ws.player) {
+			game.updateViewport(ws.player, payload);
+			return;
+		}
+		
+		if (type === MSG.INPUT && ws.player) {
+			game.handleInput(ws.player, payload);
+			return;
+		}
+		
+		if (type === MSG.REQUEST) {
+			if (ws.player) game.sendFullState(ws.player);
+			if (ws.god) game.sendFullStateToGod(ws.god);
+		}
+	});
+	
+	ws.on("close", () => {
+		if (ws.player) {
+			game.handleDisconnect(ws.player);
+		}
+		metrics.connected = Math.max(0, metrics.connected - 1);
+	});
+});
+
+server.listen(port, () => {
+	console.log(`Server listening on ${port}`);
+});
+
+const simIntervalMs = 1000 / simRate;
+const netIntervalMs = 1000 / netRate;
+const simDeltaSeconds = 1 / simRate;
+
 setInterval(() => {
-	game.tickFrame();
-}, 1000 / 60);
+	const start = performance.now();
+	game.tickSim(simDeltaSeconds);
+	metrics.simMs += performance.now() - start;
+}, simIntervalMs);
+
+setInterval(() => {
+	const start = performance.now();
+	game.flushFrame();
+	metrics.netMs += performance.now() - start;
+}, netIntervalMs);
+
+if (enableMetrics) {
+	setInterval(() => {
+		const bytesOutPerSec = (metrics.bytesOut / 5).toFixed(1);
+		const bytesInPerSec = (metrics.bytesIn / 5).toFixed(1);
+		console.log(`[METRICS] players=${metrics.connected} simMs/5s=${metrics.simMs.toFixed(1)} netMs/5s=${metrics.netMs.toFixed(1)} outB/s=${bytesOutPerSec} inB/s=${bytesInPerSec}`);
+		metrics.bytesOut = 0;
+		metrics.bytesIn = 0;
+		metrics.simMs = 0;
+		metrics.netMs = 0;
+	}, 5000);
+}
 
 const botProcesses = [];
+const botTarget = isProd ? 0 : parseInt(config.bots || 0);
 
 function spawnBot() {
-	const botProcess = fork(path.join(__dirname, "paper-io-bot.js"), [`http://localhost:${port}`], {
+	const botProcess = fork(path.join(__dirname, "paper-io-bot.js"), [`ws://localhost:${port}${wsPath}`], {
 		stdio: "inherit"
 	});
 	
-	botProcess.on("exit", (code, signal) => {
-		// Remove from array
+	botProcess.on("exit", () => {
 		const index = botProcesses.indexOf(botProcess);
 		if (index > -1) {
 			botProcesses.splice(index, 1);
 		}
-		
-		// Respawn bot after a short delay
 		setTimeout(() => {
-			if (botProcesses.length < parseInt(config.bots)) {
+			if (botProcesses.length < botTarget) {
 				spawnBot();
 			}
 		}, 2000);
@@ -223,7 +290,6 @@ function spawnBot() {
 	botProcesses.push(botProcess);
 }
 
-// Spawn initial bots
-for (let i = 0; i < parseInt(config.bots); i++) {
-	setTimeout(() => spawnBot(), i * 500); // Stagger bot spawns
+for (let i = 0; i < botTarget; i++) {
+	setTimeout(() => spawnBot(), i * 500);
 }
