@@ -38,7 +38,7 @@ export const consts = {
 	"KILLER_XP_PERCENT": 0.15,         // Percentage of XP transferred directly to killer
 	"COIN_DROP_MIN": 10,               // Minimum XP dropped on death (even if broke)
 	"KILLER_XP_MIN": 20,               // Minimum XP given to killer
-	"COINS_PER_AREA_UNIT": 0.00025,
+	"COINS_PER_AREA_UNIT": 0.005,      // XP per area unit captured (increased for better feedback)
 	
 	// ===== TRAIL SPEED BUFF =====
 	// When players leave their territory, they gain speed over time (risk/reward)

@@ -147,6 +147,26 @@ function init() {
     if (e.key === 'Enter' && !playButton.disabled) startGame();
   });
   
+  // Spectate buttons
+  console.log('[INIT] spectateButton:', spectateButton);
+  console.log('[INIT] spectateDeathButton:', spectateDeathButton);
+  if (spectateButton) {
+    spectateButton.addEventListener('click', () => {
+      console.log('[CLICK] Spectate button clicked!');
+      startSpectate();
+    });
+  } else {
+    console.error('[INIT] spectateButton not found!');
+  }
+  if (spectateDeathButton) {
+    spectateDeathButton.addEventListener('click', () => {
+      console.log('[CLICK] Spectate death button clicked!');
+      startSpectate();
+    });
+  } else {
+    console.error('[INIT] spectateDeathButton not found!');
+  }
+  
   // Death screen buttons
   playAgainButton.addEventListener('click', startGame);
   menuButton.addEventListener('click', showMainMenu);
@@ -338,10 +358,13 @@ function startGame() {
  * Start spectate mode (zoomed out view of entire map)
  */
 function startSpectate() {
+  console.log('[SPECTATE] startSpectate() called');
+  
   // Ensure WebAudio is unlocked
   initAudioOnFirstInteraction();
   
   // Hide screens
+  console.log('[SPECTATE] Hiding screens...');
   beginScreen.style.display = 'none';
   wastedScreen.style.display = 'none';
   settingsPanel.style.display = 'none';
@@ -360,8 +383,10 @@ function startSpectate() {
     wsUrl = `wss://swarmblitz.dev-1dd.workers.dev/room/default`;
     console.log('%c👁 SPECTATING PRODUCTION SERVER', 'background: #9c27b0; color: white; font-size: 16px; padding: 4px 8px;');
   }
+  console.log('[SPECTATE] wsUrl:', wsUrl);
   
   // Create game client in spectate mode
+  console.log('[SPECTATE] Creating GameClient...');
   gameClient = new GameClient(canvas, {
     wsUrl,
     spectateMode: true,
@@ -369,9 +394,12 @@ function startSpectate() {
     onKill: handleKill,
     onLevelUp: handleLevelUp,
   });
+  console.log('[SPECTATE] GameClient created:', gameClient);
   
   // Connect as spectator
+  console.log('[SPECTATE] Calling connectSpectate()...');
   gameClient.connectSpectate();
+  console.log('[SPECTATE] connectSpectate() called');
 }
 
 /**

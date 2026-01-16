@@ -1445,20 +1445,22 @@ export default class World {
         }
       }
       
-      // Check territory XP
+      // Check territory XP and fire capture event
       if (player._pendingAreaGained > 0) {
         const xpGained = Math.floor(player._pendingAreaGained * (consts.COINS_PER_AREA_UNIT || 0.00025));
         if (xpGained > 0) {
           player.addXp(xpGained, this.pendingEvents);
-          
-          this.pendingEvents.push({
-            type: EventType.CAPTURE,
-            playerNum: player.id,
-            x: player.x,
-            y: player.y,
-            xpGained,
-          });
         }
+        
+        // Always fire capture event for visual feedback (even if xpGained is 0)
+        this.pendingEvents.push({
+          type: EventType.CAPTURE,
+          playerNum: player.id,
+          x: player.x,
+          y: player.y,
+          xpGained: Math.max(1, xpGained), // Minimum 1 XP for visual feedback
+        });
+        
         player._pendingAreaGained = 0;
       }
       
@@ -1467,9 +1469,16 @@ export default class World {
       }
     }
     
+    // Second pass: collect any players killed by drones (their dead flag was set during another player's drone update)
+    for (const player of this.players.values()) {
+      if (player.dead && !dead.includes(player)) {
+        dead.push(player);
+      }
+    }
+    
     // TERRITORY OVERLAP RESOLUTION
     // When a player captures territory, subtract it from overlapping enemy territories
-    // Also check if players are trapped inside the captured territory
+    // NOTE: Capturing territory does NOT kill players - only trail collisions do
     const alivePlayers = Array.from(this.players.values()).filter(p => !p.dead);
     
     for (const capturer of alivePlayers) {
@@ -1493,35 +1502,9 @@ export default class World {
             other.territory = newTerritory;
             other._territoryDirty = true;
             other._dirty |= DeltaFlags.TERRITORY;
-          } else {
-            // Territory completely consumed - kill the player
-            other.die();
-            dead.push(other);
-            this.pendingEvents.push({
-              type: EventType.PLAYER_KILL,
-              killerNum: capturer.id,
-              victimNum: other.id,
-              killType: 3, // territory consumed
-            });
           }
-        }
-        
-        // Check if the other player is trapped inside capturer's territory
-        // (player is inside enemy territory and NOT in their own territory)
-        if (!other.dead && pointInPolygon({ x: other.x, y: other.y }, capturer.territory)) {
-          // Player is inside the capturer's territory
-          // Check if they're NOT in their own territory (trapped)
-          if (!pointInPolygon({ x: other.x, y: other.y }, other.territory)) {
-            // Trapped! Kill the player
-            other.die();
-            dead.push(other);
-            this.pendingEvents.push({
-              type: EventType.PLAYER_KILL,
-              killerNum: capturer.id,
-              victimNum: other.id,
-              killType: 4, // trapped
-            });
-          }
+          // If territory is completely consumed, just leave them with their current territory
+          // They can still play and recapture - capturing doesn't kill!
         }
       }
     }

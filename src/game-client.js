@@ -124,8 +124,9 @@ class InterpolatedEntity {
     if (data.isSnipped !== undefined) this.isSnipped = data.isSnipped;
     
     // Update territory/trail
-    if (data.territory) this.territory = data.territory;
-    if (data.trail) this.trail = data.trail;
+    // Always update if the field is present (even if empty/null)
+    if (data.territory !== undefined) this.territory = data.territory || [];
+    if (data.trail !== undefined) this.trail = data.trail || [];
     
     // Note: We ignore server drone data - drones are simulated client-side
   }
@@ -273,6 +274,164 @@ class Coin {
 }
 
 /**
+ * Death particle effect (burst, spark, ring, shard)
+ * Ported from deprecated/mode/player.js
+ */
+class DeathParticle {
+  constructor(x, y, color, type = 'burst') {
+    this.x = x;
+    this.y = y;
+    this.color = color;
+    this.type = type;
+    
+    if (type === 'burst') {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 3 + Math.random() * 8;
+      this.vx = Math.cos(angle) * speed;
+      this.vy = Math.sin(angle) * speed;
+      this.size = 4 + Math.random() * 8;
+      this.life = 1;
+      this.decay = 0.015 + Math.random() * 0.02;
+      this.rotation = Math.random() * Math.PI * 2;
+      this.rotationSpeed = (Math.random() - 0.5) * 0.3;
+      this.gravity = 0.15;
+    } else if (type === 'spark') {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 8 + Math.random() * 12;
+      this.vx = Math.cos(angle) * speed;
+      this.vy = Math.sin(angle) * speed;
+      this.size = 2 + Math.random() * 3;
+      this.life = 1;
+      this.decay = 0.04 + Math.random() * 0.03;
+      this.trail = [];
+    } else if (type === 'ring') {
+      this.radius = 5;
+      this.maxRadius = 80 + Math.random() * 40;
+      this.expandSpeed = 4 + Math.random() * 2;
+      this.life = 1;
+      this.decay = 0.025;
+      this.lineWidth = 8;
+    } else if (type === 'shard') {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 5;
+      this.vx = Math.cos(angle) * speed;
+      this.vy = Math.sin(angle) * speed;
+      this.points = this.generateShardShape();
+      this.life = 1;
+      this.decay = 0.012 + Math.random() * 0.01;
+      this.rotation = Math.random() * Math.PI * 2;
+      this.rotationSpeed = (Math.random() - 0.5) * 0.15;
+      this.gravity = 0.08;
+    }
+  }
+  
+  generateShardShape() {
+    const points = [];
+    const numPoints = 3 + Math.floor(Math.random() * 3);
+    const baseSize = 10 + Math.random() * 20;
+    for (let i = 0; i < numPoints; i++) {
+      const angle = (i / numPoints) * Math.PI * 2;
+      const dist = baseSize * (0.5 + Math.random() * 0.5);
+      points.push({
+        x: Math.cos(angle) * dist,
+        y: Math.sin(angle) * dist
+      });
+    }
+    return points;
+  }
+  
+  update() {
+    if (this.type === 'burst') {
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vy += this.gravity;
+      this.vx *= 0.98;
+      this.rotation += this.rotationSpeed;
+      this.life -= this.decay;
+    } else if (this.type === 'spark') {
+      this.trail.push({ x: this.x, y: this.y, life: this.life });
+      if (this.trail.length > 8) this.trail.shift();
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vx *= 0.92;
+      this.vy *= 0.92;
+      this.life -= this.decay;
+    } else if (this.type === 'ring') {
+      this.radius += this.expandSpeed;
+      this.lineWidth *= 0.96;
+      this.life -= this.decay;
+    } else if (this.type === 'shard') {
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vy += this.gravity;
+      this.rotation += this.rotationSpeed;
+      this.life -= this.decay;
+    }
+    return this.life > 0;
+  }
+  
+  render(ctx) {
+    const alpha = Math.max(0, this.life);
+    
+    if (this.type === 'burst') {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = this.color;
+      ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur = 10 * alpha;
+      ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    } else if (this.type === 'spark') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      for (let i = this.trail.length - 1; i >= 0; i--) {
+        const t = this.trail[i];
+        ctx.lineTo(t.x, t.y);
+      }
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = this.size * alpha;
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.stroke();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (this.type === 'ring') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = Math.max(1, this.lineWidth * alpha);
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.stroke();
+      ctx.restore();
+    } else if (this.type === 'shard') {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+      ctx.globalAlpha = alpha * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(this.points[0].x, this.points[0].y);
+      for (let i = 1; i < this.points.length; i++) {
+        ctx.lineTo(this.points[i].x, this.points[i].y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/**
  * Hitscan effect (laser beam)
  */
 class HitscanEffect {
@@ -293,6 +452,140 @@ class HitscanEffect {
   getAlpha() {
     const elapsed = performance.now() - this.startTime;
     return Math.max(0, 1 - elapsed / this.duration);
+  }
+}
+
+/**
+ * Capture feedback effect (pulse ring, particles, +XP text)
+ * Ported from deprecated/mode/player.js
+ */
+const CAPTURE_FLASH_TIME_SEC = 1.0;
+const CAPTURE_PARTICLE_COUNT = 40;
+const PULSE_RADIUS_START = 10;
+const PULSE_RADIUS_END = 120;
+const PULSE_TIME = 0.8;
+
+class CaptureEffect {
+  constructor(x, y, xpGained, player, isLocalPlayer) {
+    this.x = x;
+    this.y = y;
+    this.xpGained = xpGained;
+    this.player = player;
+    this.isLocalPlayer = isLocalPlayer;
+    this.spawnTime = performance.now();
+    this.color = player ? player.base : null;
+    
+    // Pulse ring
+    this.pulseRadius = PULSE_RADIUS_START;
+    this.pulseLife = 1;
+    
+    // Particles
+    this.particles = [];
+    const particleCount = isLocalPlayer ? CAPTURE_PARTICLE_COUNT : Math.floor(CAPTURE_PARTICLE_COUNT * 0.6);
+    for (let i = 0; i < particleCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 6;
+      this.particles.push({
+        x: x,
+        y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size: 3 + Math.random() * 5,
+        life: 1,
+        decay: 0.015 + Math.random() * 0.02
+      });
+    }
+    
+    // Coins text
+    this.textY = y - 20;
+    this.textAlpha = 1;
+  }
+  
+  easeOutQuad(t) {
+    return t * (2 - t);
+  }
+  
+  update() {
+    const elapsed = (performance.now() - this.spawnTime) / 1000;
+    const flashProgress = Math.min(1, elapsed / CAPTURE_FLASH_TIME_SEC);
+    const pulseProgress = Math.min(1, elapsed / PULSE_TIME);
+    
+    // Update pulse ring
+    this.pulseRadius = PULSE_RADIUS_START + (PULSE_RADIUS_END - PULSE_RADIUS_START) * this.easeOutQuad(pulseProgress);
+    this.pulseLife = 1 - pulseProgress;
+    
+    // Update particles
+    for (const p of this.particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      p.vy += 0.1; // gravity
+      p.life -= p.decay;
+    }
+    
+    // Update text (float up and fade)
+    this.textY -= 0.8;
+    this.textAlpha = Math.max(0, 1 - flashProgress);
+    
+    // Effect is done when flash time expires
+    return flashProgress < 1;
+  }
+  
+  render(ctx) {
+    const colorStr = this.color ? this.color.rgbString() : '#FFD700';
+    const lightColorStr = this.color ? this.color.lighter(0.3).rgbString() : '#FFEC8B';
+    
+    // Render pulse ring
+    if (this.pulseLife > 0) {
+      ctx.save();
+      ctx.strokeStyle = this.color ? this.color.deriveAlpha(this.pulseLife * 0.8).rgbString() : `rgba(255, 215, 0, ${this.pulseLife * 0.8})`;
+      ctx.lineWidth = 4 * this.pulseLife;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.pulseRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      // Inner glow
+      ctx.strokeStyle = this.color ? this.color.deriveAlpha(this.pulseLife * 0.4).rgbString() : `rgba(255, 255, 200, ${this.pulseLife * 0.4})`;
+      ctx.lineWidth = 8 * this.pulseLife;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.pulseRadius * 0.8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    
+    // Render particles
+    for (const p of this.particles) {
+      if (p.life <= 0) continue;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = lightColorStr;
+      ctx.shadowColor = colorStr;
+      ctx.shadowBlur = 8 * p.life;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    
+    // Render XP earned text
+    if (this.textAlpha > 0 && this.xpGained > 0) {
+      ctx.save();
+      ctx.globalAlpha = this.textAlpha;
+      ctx.fillStyle = '#9370DB';  // Purple for XP
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.lineWidth = 3;
+      ctx.font = 'bold 18px Changa';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      
+      const text = `+${this.xpGained} XP`;
+      ctx.strokeText(text, this.x, this.textY);
+      ctx.fillText(text, this.x, this.textY);
+      ctx.restore();
+    }
+    
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -362,6 +655,38 @@ export default class GameClient {
     this.snipFuses = new Map();
     this._localSnippedPrev = false;
     
+    // Speed buff visual effect state
+    // Tracks when each player left their territory for speed buff calculation
+    this.speedBuffState = new Map(); // playerId -> { trailStartTime, lastSpeedBuff, speedRushActive }
+    this.speedSpikeState = {
+      active: false,
+      playerX: 0,
+      playerY: 0,
+      playerAngle: 0,
+      speedRatio: 0,
+      baseColor: null,
+      pulsePhase: 0,
+    };
+    
+    // Death VFX state
+    this.deathParticles = [];
+    this.dyingPlayers = []; // { player, deathTime, dissolveProgress }
+    this.screenShake = { x: 0, y: 0, intensity: 0, decay: 0.92 };
+    
+    // Capture feedback effects (pulse ring, particles, +XP text)
+    this.captureEffects = [];
+    
+    // Local player outline thickening state (on capture)
+    this.localOutlineThicken = {
+      active: false,
+      startTime: 0,
+      duration: 500, // ms
+    };
+    
+    // Periodic cleanup timer (to catch orphaned trails/state)
+    this.lastCleanupTime = 0;
+    this.cleanupIntervalMs = 2000; // Run cleanup every 2 seconds
+    
     // Bind methods
     this.handleMouseMove = this.handleMouseMove.bind(this);
     this.handleTouchMove = this.handleTouchMove.bind(this);
@@ -375,29 +700,44 @@ export default class GameClient {
 
   /**
    * Start a client-side snip fuse for a player.
-   * For self-snips: find the furthest segment (highest index) that the player is touching.
-   * For enemy snips: find the closest point on victim's trail to the snipper.
+   * Always finds the furthest segment (highest index) that was hit - mirrors server logic.
    */
   startSnipFuse(playerNum, snipperNum) {
     const victim = this.players.get(playerNum);
-    if (!victim || !victim.trail || victim.trail.length < 2) return;
-
-    let hit;
+    if (!victim) return;
+    
+    // For enemy snips, trail might not be synced yet - check isSnipped flag
+    // If trail is too short, start from trail[0] or player position as fallback
+    const trail = victim.trail || [];
+    
     const isSelfSnip = snipperNum === 65535;
+    const isLocalVictim = playerNum === this.playerId;
     
-    if (isSelfSnip) {
-      // Self-snip: find furthest segment the player is touching (mirrors server logic)
-      hit = this._furthestHitOnTrail(victim, victim.trail);
-    } else {
-      // Enemy snip: find closest point to snipper position
+    let startPoint;
+    let segmentIndex = 0;
+    
+    if (trail.length >= 2) {
+      // Normal case: use hit detection
       let refPos = { x: victim.x, y: victim.y };
-      const snipper = this.players.get(snipperNum);
-      if (snipper) refPos = { x: snipper.x, y: snipper.y };
-      hit = this._closestPointOnTrail(refPos, victim.trail);
+      if (!isSelfSnip) {
+        const snipper = this.players.get(snipperNum);
+        if (snipper) refPos = { x: snipper.x, y: snipper.y };
+      }
+      
+      // Find furthest segment (highest index) that was hit - mirrors server hitsTrail logic
+      const hit = this._furthestHitOnTrailByPos(refPos, trail, isSelfSnip ? 3 : 0);
+      
+      startPoint = hit.point || { x: trail[0].x, y: trail[0].y };
+      segmentIndex = hit.index >= 0 ? hit.index : 0;
+    } else if (trail.length === 1) {
+      // Trail has single point
+      startPoint = { x: trail[0].x, y: trail[0].y };
+      segmentIndex = 0;
+    } else {
+      // No trail yet - use player position (fuse will start at player and go nowhere, but won't crash)
+      startPoint = { x: victim.x, y: victim.y };
+      segmentIndex = 0;
     }
-    
-    const startPoint = hit.point || { x: victim.trail[0].x, y: victim.trail[0].y };
-    const segmentIndex = hit.index ?? 0;
 
     this.snipFuses.set(playerNum, {
       playerNum,
@@ -409,6 +749,8 @@ export default class GameClient {
       fusePos: { x: startPoint.x, y: startPoint.y },
       ratio: 0,
       remainingPoints: null,
+      isLocalVictim,
+      sawSnipped: false, // Tracks if we've ever seen player.isSnipped = true
     });
   }
 
@@ -427,23 +769,25 @@ export default class GameClient {
   }
 
   /**
-   * Find the furthest segment (highest index) that the player is touching.
-   * Mirrors server's hitsTrail logic for self-snips.
+   * Find the furthest segment (highest index) that a position is touching.
+   * Mirrors server's hitsTrail logic - returns highest index hit within radius.
+   * @param {Object} pos - The position to check {x, y}
+   * @param {Array} trail - The trail points
+   * @param {number} skipCount - How many segments to skip at end (3 for self-snip, 0 for enemy)
    */
-  _furthestHitOnTrail(player, trail) {
+  _furthestHitOnTrailByPos(pos, trail, skipCount = 0) {
     const hitRadius = (consts.CELL_WIDTH || 25) / 2;
     let best = { dist2: Infinity, point: null, index: -1 };
     
-    // Skip last few segments (near player's current position)
-    const skipCount = 3;
+    // Skip last few segments if needed
     const maxIdx = Math.max(0, trail.length - 1 - skipCount);
     
     for (let i = 0; i < maxIdx; i++) {
       const a = trail[i];
       const b = trail[i + 1];
-      const q = this._closestPointOnSegment({ x: player.x, y: player.y }, a, b);
-      const dx = player.x - q.x;
-      const dy = player.y - q.y;
+      const q = this._closestPointOnSegment(pos, a, b);
+      const dx = pos.x - q.x;
+      const dy = pos.y - q.y;
       const d2 = dx * dx + dy * dy;
       
       // If within hit radius and higher index than current best, take it
@@ -454,7 +798,7 @@ export default class GameClient {
     
     // Fallback to closest point if no hit found within radius
     if (best.point === null) {
-      return this._closestPointOnTrail({ x: player.x, y: player.y }, trail);
+      return this._closestPointOnTrail(pos, trail);
     }
     return best;
   }
@@ -523,8 +867,36 @@ export default class GameClient {
     // Cleanup + update fuse positions
     for (const [playerNum, state] of Array.from(this.snipFuses.entries())) {
       const player = this.players.get(playerNum);
-      if (!player || !player.isSnipped || !player.trail || player.trail.length < 2) {
+      
+      // Only delete fuse if:
+      // 1. Player no longer exists (left/died)
+      // 2. OR player.isSnipped became false AFTER we've seen it true (snip ended)
+      // 3. OR fuse has been running too long (safety cleanup - 10 seconds max)
+      if (!player) {
         this.snipFuses.delete(playerNum);
+        continue;
+      }
+      
+      // Track if we've ever seen isSnipped=true for this fuse
+      if (player.isSnipped) {
+        state.sawSnipped = true;
+      }
+      
+      // If we've seen snipped=true and now it's false, the snip ended (player died or returned)
+      if (state.sawSnipped && !player.isSnipped) {
+        this.snipFuses.delete(playerNum);
+        continue;
+      }
+      
+      // Safety cleanup: if fuse has been alive for 10+ seconds, something is wrong
+      if (state.elapsed > 10) {
+        this.snipFuses.delete(playerNum);
+        continue;
+      }
+      
+      // If trail is too short, skip updating but don't delete (might sync later)
+      if (!player.trail || player.trail.length < 2) {
+        state.elapsed += deltaSeconds; // Still track time
         continue;
       }
 
@@ -585,6 +957,48 @@ export default class GameClient {
     if (nowSnipped) {
       const fuse = this.snipFuses.get(this.playerId);
       if (fuse) SoundManager.updateFuseVolume(fuse.ratio);
+    }
+    
+    // Enemy fuse SFX - play for any non-local player who is snipped
+    // Calculate distance to nearest enemy fuse for volume attenuation
+    if (local) {
+      let nearestEnemyFuse = null;
+      let nearestDist = Infinity;
+      
+      for (const [playerNum, state] of this.snipFuses) {
+        if (playerNum === this.playerId) continue; // Skip local player
+        
+        const player = this.players.get(playerNum);
+        if (!player) continue;
+        
+        // Fuse is active if snipped OR if we haven't confirmed snip ended yet
+        const fuseActive = player.isSnipped || !state.sawSnipped;
+        if (!fuseActive) continue;
+        
+        // Distance from local player to the fuse position
+        const dx = state.fusePos.x - local.x;
+        const dy = state.fusePos.y - local.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearestEnemyFuse = state;
+        }
+      }
+      
+      // Start/stop/update enemy fuse sound based on nearest enemy fuse
+      const hasNearbyEnemyFuse = nearestEnemyFuse !== null && nearestDist < 800;
+      
+      if (hasNearbyEnemyFuse && !SoundManager.isEnemyFuseSoundPlaying()) {
+        SoundManager.startEnemyFuseSound();
+      } else if (!hasNearbyEnemyFuse && SoundManager.isEnemyFuseSoundPlaying()) {
+        SoundManager.stopEnemyFuseSound();
+      }
+      
+      if (hasNearbyEnemyFuse) {
+        // Pass distance directly - sound manager handles volume calculation
+        SoundManager.updateEnemyFuseVolume(nearestDist, 800);
+      }
     }
   }
   
@@ -823,20 +1237,24 @@ export default class GameClient {
       }
     }
     
-    // Remove players
-    for (const id of data.removedPlayerIds) {
-      this.players.delete(id);
-    }
-    
     // Update coins (replace with visible set)
     this.coins.clear();
     for (const c of data.coins) {
       this.coins.set(c.id, new Coin(c));
     }
     
-    // Process events
+    // Process events BEFORE removing players (so death VFX can access player data)
     for (const event of data.events) {
       this.handleEvent(event);
+    }
+    
+    // Remove players AFTER processing events
+    for (const id of data.removedPlayerIds) {
+      this.players.delete(id);
+      // Also clean up any fuse state for this player
+      this.snipFuses.delete(id);
+      // Clean up speed buff state
+      this.speedBuffState.delete(id);
     }
   }
   
@@ -849,13 +1267,22 @@ export default class GameClient {
         this.addHitscanEffect(event);
         break;
         
-      case EventType.PLAYER_KILL:
-        if (event.victimNum === this.playerId) {
+      case EventType.PLAYER_KILL: {
+        const victim = this.players.get(event.victimNum);
+        const isLocalPlayer = event.victimNum === this.playerId;
+        
+        // Spawn death VFX before player is removed
+        if (victim) {
+          this.spawnDeathEffect(victim, isLocalPlayer);
+        }
+        
+        if (isLocalPlayer) {
           this.onDeath(event);
         } else if (event.killerNum === this.playerId) {
           this.onKill(event);
         }
         break;
+      }
         
       case EventType.LEVEL_UP:
         if (event.playerNum === this.playerId) {
@@ -890,9 +1317,25 @@ export default class GameClient {
         this.startSnipFuse(event.playerNum, event.snipperNum);
         break;
         
-      case 'dead':
+      case EventType.CAPTURE: {
+        const player = this.players.get(event.playerNum);
+        const isLocalPlayer = event.playerNum === this.playerId;
+        console.log('[CAPTURE] Event received:', event, 'isLocal:', isLocalPlayer, 'player:', player);
+        if (player) {
+          this.spawnCaptureEffect(event.x, event.y, event.xpGained, player, isLocalPlayer);
+        }
+        break;
+      }
+        
+      case 'dead': {
+        // Local player died - spawn death VFX
+        const deadPlayer = this.players.get(this.playerId);
+        if (deadPlayer) {
+          this.spawnDeathEffect(deadPlayer, true);
+        }
         this.onDeath(event);
         break;
+      }
     }
   }
   
@@ -1033,9 +1476,488 @@ export default class GameClient {
     
     // Snip fuse (client-side visual + local SFX)
     this.updateSnipFuses(deltaMs);
+    
+    // Speed buff visual effect (spikes behind player when speed buff >= 10%)
+    this.updateSpeedBuffEffects(deltaMs);
+    
+    // Death effects (particles, screen shake, dissolve)
+    this.updateDeathEffects();
+    
+    // Capture feedback effects (pulse ring, particles, +XP text)
+    this.updateCaptureEffects();
 
     // Clean up expired effects
     this.effects = this.effects.filter(e => !e.isExpired());
+    
+    // Periodic cleanup for orphaned trails/state (runs every 2 seconds)
+    const now = performance.now();
+    if (now - this.lastCleanupTime > this.cleanupIntervalMs) {
+      this.lastCleanupTime = now;
+      this.cleanupOrphanedState();
+    }
+  }
+  
+  /**
+   * Periodic cleanup to catch orphaned trails, fuses, and other stale state
+   * This catches edge cases where normal cleanup didn't run
+   */
+  cleanupOrphanedState() {
+    // Clean up snipFuses for players that no longer exist
+    for (const [playerNum, state] of Array.from(this.snipFuses.entries())) {
+      const player = this.players.get(playerNum);
+      if (!player) {
+        this.snipFuses.delete(playerNum);
+        continue;
+      }
+      // If fuse has been alive too long without sawSnipped, it's orphaned
+      if (state.elapsed > 5 && !state.sawSnipped) {
+        this.snipFuses.delete(playerNum);
+      }
+    }
+    
+    // Clean up speedBuffState for players that no longer exist
+    for (const [playerId] of Array.from(this.speedBuffState.entries())) {
+      if (!this.players.has(playerId)) {
+        this.speedBuffState.delete(playerId);
+      }
+    }
+    
+    // Clear trails and territories for players that shouldn't have them
+    for (const [, player] of this.players) {
+      // If player is dead, clear their trail and territory
+      if (player.dead) {
+        player.trail = [];
+        player.territory = [];
+        continue;
+      }
+      
+      // If player has trail but isn't snipped and trail is very old (stale), clear it
+      if (player.trail && player.trail.length > 0 && !player.isSnipped) {
+        // Check if trail start is very far from player (indicates stale data)
+        const trailStart = player.trail[0];
+        const dx = trailStart.x - player.x;
+        const dy = trailStart.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        // If trail start is more than 500 units from player, it's likely stale
+        if (dist > 500) {
+          player.trail = [];
+        }
+      }
+      
+      // If player has territory, check if it's stale (player very far from territory centroid)
+      if (player.territory && player.territory.length > 3) {
+        // Calculate territory centroid
+        let cx = 0, cy = 0;
+        for (const pt of player.territory) {
+          cx += pt.x;
+          cy += pt.y;
+        }
+        cx /= player.territory.length;
+        cy /= player.territory.length;
+        
+        // If player is very far from their territory centroid, it might be stale
+        const dx = player.x - cx;
+        const dy = player.y - cy;
+        const distFromTerritory = Math.sqrt(dx * dx + dy * dy);
+        
+        // If player is more than 1000 units from territory centroid, clear it
+        // (This is a large threshold to account for large territories, but catches major glitches)
+        if (distFromTerritory > 1000) {
+          player.territory = [];
+        }
+      }
+    }
+    
+    // Clean up dying players that somehow got stuck
+    const cutoff = performance.now() - 5000; // 5 seconds max
+    this.dyingPlayers = this.dyingPlayers.filter(dp => dp.deathTime > cutoff);
+  }
+  
+  /**
+   * Calculate speed buff based on time outside territory
+   * Uses config values: TRAIL_SPEED_BUFF_MAX, TRAIL_SPEED_BUFF_RAMP_TIME, TRAIL_SPEED_BUFF_EASE
+   */
+  calculateSpeedBuff(timeOutsideSec) {
+    const maxBuff = consts.TRAIL_SPEED_BUFF_MAX || 1.4;
+    const rampTime = consts.TRAIL_SPEED_BUFF_RAMP_TIME || 5;
+    const ease = consts.TRAIL_SPEED_BUFF_EASE || 2;
+    
+    // Progress from 0 to 1 over ramp time
+    const progress = Math.min(1, timeOutsideSec / rampTime);
+    
+    // Apply easing (higher ease = slower start)
+    const easedProgress = Math.pow(progress, ease);
+    
+    // Calculate buff: 1.0 to maxBuff
+    return 1.0 + (maxBuff - 1.0) * easedProgress;
+  }
+  
+  /**
+   * Check if a point is inside a polygon (ray casting)
+   */
+  pointInPolygon(x, y, polygon) {
+    if (!polygon || polygon.length < 3) return false;
+    
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+  
+  /**
+   * Update speed buff effects for all players
+   */
+  updateSpeedBuffEffects(deltaMs) {
+    const SPEED_TRAIL_THRESHOLD = 1.1; // 10% speed buff to show trail/spikes
+    const now = performance.now();
+    
+    // Update for all players (visual spikes for everyone)
+    for (const [id, player] of this.players) {
+      if (player.dead) continue;
+      
+      // Get or create speed buff state for this player
+      let state = this.speedBuffState.get(id);
+      if (!state) {
+        state = { trailStartTime: null, lastSpeedBuff: 1.0, speedRushActive: false };
+        this.speedBuffState.set(id, state);
+      }
+      
+      // Check if player has a trail (outside territory)
+      const hasTrail = player.trail && player.trail.length > 0;
+      const isSnipped = player.isSnipped;
+      
+      // If snipped, lose speed buff
+      if (isSnipped) {
+        state.trailStartTime = null;
+        state.lastSpeedBuff = 1.0;
+        
+        // Stop sound for local player
+        if (id === this.playerId && state.speedRushActive) {
+          SoundManager.stopSpeedRushSound();
+          state.speedRushActive = false;
+        }
+        continue;
+      }
+      
+      if (hasTrail) {
+        // Player is outside territory - track time
+        if (state.trailStartTime === null) {
+          state.trailStartTime = now;
+        }
+        
+        const timeOutsideSec = (now - state.trailStartTime) / 1000;
+        const speedBuff = this.calculateSpeedBuff(timeOutsideSec);
+        state.lastSpeedBuff = speedBuff;
+        
+        // Store speed ratio for rendering (0 at 1.1x, 1 at max buff)
+        const maxBuff = consts.TRAIL_SPEED_BUFF_MAX || 1.4;
+        player._speedRatio = Math.min(1.0, Math.max(0, (speedBuff - SPEED_TRAIL_THRESHOLD) / (maxBuff - SPEED_TRAIL_THRESHOLD)));
+        player._hasSpeedBuff = speedBuff >= SPEED_TRAIL_THRESHOLD;
+        
+        // Sound effects only for local player
+        if (id === this.playerId) {
+          if (speedBuff >= SPEED_TRAIL_THRESHOLD) {
+            if (!state.speedRushActive) {
+              SoundManager.startSpeedRushSound();
+              state.speedRushActive = true;
+            }
+            SoundManager.updateSpeedRushSound(speedBuff);
+          } else if (state.speedRushActive) {
+            SoundManager.stopSpeedRushSound();
+            state.speedRushActive = false;
+          }
+        }
+      } else {
+        // Player is in territory - reset
+        state.trailStartTime = null;
+        state.lastSpeedBuff = 1.0;
+        player._speedRatio = 0;
+        player._hasSpeedBuff = false;
+        
+        // Stop sound for local player
+        if (id === this.playerId && state.speedRushActive) {
+          SoundManager.stopSpeedRushSound();
+          state.speedRushActive = false;
+        }
+      }
+    }
+    
+    // Update spike pulse phase for animation
+    const localPlayer = this.players.get(this.playerId);
+    if (localPlayer && localPlayer._hasSpeedBuff) {
+      // Pulse speed: 6-14 radians per second based on speed ratio
+      const pulseSpeed = 6 + (localPlayer._speedRatio || 0) * 8;
+      this.speedSpikeState.pulsePhase += pulseSpeed * (deltaMs / 1000);
+      this.speedSpikeState.active = true;
+    } else {
+      this.speedSpikeState.active = false;
+    }
+  }
+
+  /**
+   * Spawn death VFX for a player
+   * Creates burst particles, sparks, expanding rings, and territory shards
+   */
+  spawnDeathEffect(player, isLocalPlayer = false) {
+    const x = player.x;
+    const y = player.y;
+    const color = player.base ? player.base.rgbString() : '#ff4444';
+    const lightColor = player.base ? player.base.lighter(0.3).rgbString() : '#ff8888';
+    
+    // Burst particles (square confetti)
+    const burstCount = isLocalPlayer ? 40 : 25;
+    for (let i = 0; i < burstCount; i++) {
+      this.deathParticles.push(new DeathParticle(x, y, color, 'burst'));
+    }
+    
+    // Spark particles (with trails)
+    const sparkCount = isLocalPlayer ? 20 : 12;
+    for (let i = 0; i < sparkCount; i++) {
+      this.deathParticles.push(new DeathParticle(x, y, lightColor, 'spark'));
+    }
+    
+    // Expanding ring(s)
+    this.deathParticles.push(new DeathParticle(x, y, color, 'ring'));
+    if (isLocalPlayer) {
+      // Delayed second ring for local player death
+      setTimeout(() => {
+        this.deathParticles.push(new DeathParticle(x, y, lightColor, 'ring'));
+      }, 100);
+    }
+    
+    // Territory shards (pieces breaking off from territory)
+    if (player.territory && player.territory.length > 3) {
+      const shardCount = isLocalPlayer ? 15 : 8;
+      for (let i = 0; i < shardCount; i++) {
+        const idx = Math.floor(Math.random() * player.territory.length);
+        const pt = player.territory[idx];
+        this.deathParticles.push(new DeathParticle(pt.x, pt.y, color, 'shard'));
+      }
+    }
+    
+    // Screen shake for local player
+    if (isLocalPlayer) {
+      this.screenShake.intensity = 25;
+    }
+    
+    // Track dying player for dissolve effect (save all visual data since player will be removed)
+    this.dyingPlayers.push({
+      num: player.num,
+      x: player.x,
+      y: player.y,
+      angle: player.angle,
+      color: player.base,
+      sizeScale: player.sizeScale || 1.0,
+      territory: player.territory ? [...player.territory] : [],
+      trail: player.trail ? [...player.trail] : [],
+      deathTime: performance.now(),
+      dissolveProgress: 0
+    });
+    
+    // Play death sound
+    if (isLocalPlayer) {
+      SoundManager.playDeathSound(true);
+    } else {
+      const localPlayer = this.players.get(this.playerId);
+      if (localPlayer) {
+        const dx = player.x - localPlayer.x;
+        const dy = player.y - localPlayer.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        SoundManager.playDeathSound(false, distance);
+      }
+    }
+  }
+
+  /**
+   * Update death effects (particles, screen shake, dissolve)
+   */
+  updateDeathEffects() {
+    // Update particles
+    for (let i = this.deathParticles.length - 1; i >= 0; i--) {
+      if (!this.deathParticles[i].update()) {
+        this.deathParticles.splice(i, 1);
+      }
+    }
+    
+    // Update screen shake
+    if (this.screenShake.intensity > 0.5) {
+      this.screenShake.x = (Math.random() - 0.5) * this.screenShake.intensity * 2;
+      this.screenShake.y = (Math.random() - 0.5) * this.screenShake.intensity * 2;
+      this.screenShake.intensity *= this.screenShake.decay;
+    } else {
+      this.screenShake.x = 0;
+      this.screenShake.y = 0;
+      this.screenShake.intensity = 0;
+    }
+    
+    // Update dissolve progress for dying players
+    const now = performance.now();
+    for (let i = this.dyingPlayers.length - 1; i >= 0; i--) {
+      const dp = this.dyingPlayers[i];
+      dp.dissolveProgress = Math.min(1, (now - dp.deathTime) / 1500); // 1.5s dissolve
+      if (dp.dissolveProgress >= 1) {
+        this.dyingPlayers.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * Render death particles
+   */
+  renderDeathParticles(ctx) {
+    for (const particle of this.deathParticles) {
+      particle.render(ctx);
+    }
+  }
+  
+  /**
+   * Spawn capture feedback effect
+   */
+  spawnCaptureEffect(x, y, xpGained, player, isLocalPlayer) {
+    this.captureEffects.push(new CaptureEffect(x, y, xpGained, player, isLocalPlayer));
+    
+    // Trigger outline thickening for local player
+    if (isLocalPlayer) {
+      this.localOutlineThicken.active = true;
+      this.localOutlineThicken.startTime = performance.now();
+    }
+    
+    // Play capture sound for local player
+    if (isLocalPlayer) {
+      SoundManager.playCaptureSound();
+    }
+  }
+  
+  /**
+   * Update capture effects
+   */
+  updateCaptureEffects() {
+    // Update effects and remove expired ones
+    for (let i = this.captureEffects.length - 1; i >= 0; i--) {
+      if (!this.captureEffects[i].update()) {
+        this.captureEffects.splice(i, 1);
+      }
+    }
+    
+    // Update local outline thickening
+    if (this.localOutlineThicken.active) {
+      const elapsed = performance.now() - this.localOutlineThicken.startTime;
+      if (elapsed >= this.localOutlineThicken.duration) {
+        this.localOutlineThicken.active = false;
+      }
+    }
+  }
+  
+  /**
+   * Render capture effects
+   */
+  renderCaptureEffects(ctx) {
+    for (const effect of this.captureEffects) {
+      effect.render(ctx);
+    }
+  }
+  
+  /**
+   * Get outline thickness multiplier for a player (for capture feedback)
+   */
+  getOutlineThickness(playerNum) {
+    if (playerNum === this.playerId && this.localOutlineThicken.active) {
+      const elapsed = performance.now() - this.localOutlineThicken.startTime;
+      const progress = Math.min(1, elapsed / this.localOutlineThicken.duration);
+      // Ease out: starts thick, returns to normal
+      const thickenFactor = 1 + 2 * (1 - progress);
+      return thickenFactor;
+    }
+    return 1;
+  }
+
+  /**
+   * Get dissolve progress for a player (0 = alive, 1 = fully dissolved)
+   */
+  getDissolveProgress(playerNum) {
+    const dp = this.dyingPlayers.find(d => d.num === playerNum);
+    return dp ? dp.dissolveProgress : 0;
+  }
+
+  /**
+   * Render dying player ghosts (territory, trail, body fading out)
+   */
+  renderDyingPlayers(ctx) {
+    for (const dp of this.dyingPlayers) {
+      if (dp.dissolveProgress >= 1) continue;
+      
+      const alpha = Math.max(0, 1 - dp.dissolveProgress);
+      const color = dp.color;
+      if (!color) continue;
+      
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      
+      // Draw fading territory
+      if (dp.territory && dp.territory.length >= 3) {
+        ctx.fillStyle = color.deriveAlpha(0.4 * alpha).rgbString();
+        ctx.beginPath();
+        ctx.moveTo(dp.territory[0].x, dp.territory[0].y);
+        for (let i = 1; i < dp.territory.length; i++) {
+          ctx.lineTo(dp.territory[i].x, dp.territory[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.strokeStyle = color.deriveAlpha(0.9 * alpha).rgbString();
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+      
+      // Draw fading trail
+      if (dp.trail && dp.trail.length >= 2) {
+        const tailColor = color.lighter(0.2);
+        ctx.strokeStyle = tailColor.deriveAlpha(alpha).rgbString();
+        ctx.lineWidth = PLAYER_RADIUS;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        ctx.beginPath();
+        ctx.moveTo(dp.trail[0].x, dp.trail[0].y);
+        for (let i = 1; i < dp.trail.length; i++) {
+          ctx.lineTo(dp.trail[i].x, dp.trail[i].y);
+        }
+        ctx.lineTo(dp.x, dp.y);
+        ctx.stroke();
+      }
+      
+      // Draw fading player body
+      const scaledRadius = PLAYER_RADIUS * dp.sizeScale;
+      
+      // Shadow
+      ctx.fillStyle = color.darker(0.3).deriveAlpha(alpha).rgbString();
+      ctx.beginPath();
+      ctx.arc(dp.x + 2, dp.y + 4, scaledRadius, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Body
+      ctx.fillStyle = color.deriveAlpha(alpha).rgbString();
+      ctx.beginPath();
+      ctx.arc(dp.x, dp.y, scaledRadius, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Direction indicator
+      const indicatorX = dp.x + Math.cos(dp.angle) * scaledRadius * 0.6;
+      const indicatorY = dp.y + Math.sin(dp.angle) * scaledRadius * 0.6;
+      ctx.fillStyle = color.lighter(0.1).deriveAlpha(alpha).rgbString();
+      ctx.beginPath();
+      ctx.arc(indicatorX, indicatorY, scaledRadius * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.restore();
+    }
   }
 
   computeInputAngle(player, deltaMs) {
@@ -1110,8 +2032,8 @@ export default class GameClient {
     ctx.rect(0, 0, width, gameHeight);
     ctx.clip();
     
-    // Apply camera transform
-    ctx.translate(width / 2, gameHeight / 2);
+    // Apply camera transform with screen shake
+    ctx.translate(width / 2 + this.screenShake.x, gameHeight / 2 + this.screenShake.y);
     ctx.scale(this.cameraScale, this.cameraScale);
     ctx.translate(-this.cameraX, -this.cameraY);
     
@@ -1134,6 +2056,13 @@ export default class GameClient {
       this.drawTrail(ctx, player);
     }
     
+    // Draw speed spikes (above trails, below players)
+    for (const player of sortedPlayers) {
+      if (!player.dead && player._hasSpeedBuff) {
+        this.drawSpeedSpikes(ctx, player);
+      }
+    }
+    
     // Draw players
     for (const player of sortedPlayers) {
       if (!player.dead) {
@@ -1141,10 +2070,19 @@ export default class GameClient {
       }
     }
     
-    // Draw effects
+    // Draw dying player ghosts (dissolve effect)
+    this.renderDyingPlayers(ctx);
+    
+    // Draw effects (hitscan lasers)
     for (const effect of this.effects) {
       this.drawHitscan(ctx, effect);
     }
+    
+    // Draw capture effects (pulse ring, particles, +XP text)
+    this.renderCaptureEffects(ctx);
+    
+    // Draw death particles (above everything else in game world)
+    this.renderDeathParticles(ctx);
     
     // Restore context
     ctx.restore();
@@ -1301,9 +2239,10 @@ export default class GameClient {
     ctx.closePath();
     ctx.fill();
     
-    // Territory outline
+    // Territory outline (with capture feedback thickening)
+    const outlineThickness = this.getOutlineThickness(player.num);
     ctx.strokeStyle = color.deriveAlpha(0.9 * snipAlpha).rgbString();
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2.5 * outlineThickness;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.stroke();
@@ -1327,9 +2266,13 @@ export default class GameClient {
     const playerY = player.y;
 
     // Snip fuse: render only the unburned trail portion (fuse -> player) + spark
-    if (player.isSnipped) {
-      const fuse = this.snipFuses.get(player.num);
-      if (fuse && fuse.remainingPoints && fuse.remainingPoints.length >= 2 && fuse.fusePos) {
+    // Check both isSnipped flag AND our fuse state (fuse state may exist before isSnipped syncs)
+    const fuse = this.snipFuses.get(player.num);
+    const hasActiveFuse = fuse && (player.isSnipped || !fuse.sawSnipped); // Active if snipped OR if we haven't confirmed snip ended
+    
+    if (hasActiveFuse) {
+      // Try to render with fuse state
+      if (fuse.remainingPoints && fuse.remainingPoints.length >= 2 && fuse.fusePos) {
         ctx.beginPath();
         ctx.moveTo(fuse.remainingPoints[0].x, fuse.remainingPoints[0].y);
         for (let i = 1; i < fuse.remainingPoints.length; i++) {
@@ -1338,47 +2281,56 @@ export default class GameClient {
         ctx.stroke();
 
         // Burning fuse spark (ported vibe from deprecated/core/player.js)
-        const t = performance.now();
-        const flicker = 0.75 + 0.25 * Math.sin(t * 0.02 + player.num);
-        const sparkR = PLAYER_RADIUS * 0.6 * flicker;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-
-        const grad = ctx.createRadialGradient(
-          fuse.fusePos.x,
-          fuse.fusePos.y,
-          0,
-          fuse.fusePos.x,
-          fuse.fusePos.y,
-          sparkR * 2.0
-        );
-        grad.addColorStop(0, 'rgba(255,255,200,0.95)');
-        grad.addColorStop(0.35, 'rgba(255,180,60,0.65)');
-        grad.addColorStop(1, 'rgba(255,40,0,0)');
-
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(fuse.fusePos.x, fuse.fusePos.y, sparkR * 2.0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Little sparks shooting forward
-        const dir = this._sparkDirection(fuse.remainingPoints);
-        for (let i = 0; i < 6; i++) {
-          const jitter = (i * 0.9 + t * 0.03 + player.num) % (Math.PI * 2);
-          const angle = dir + (Math.sin(jitter) * 0.7);
-          const len = (sparkR * 2.2) * (0.4 + 0.6 * ((Math.sin(jitter * 1.7) + 1) * 0.5));
-          const x2 = fuse.fusePos.x + Math.cos(angle) * len;
-          const y2 = fuse.fusePos.y + Math.sin(angle) * len;
-          ctx.strokeStyle = 'rgba(255,200,80,0.9)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(fuse.fusePos.x, fuse.fusePos.y);
-          ctx.lineTo(x2, y2);
-          ctx.stroke();
+        this._drawFuseSpark(ctx, fuse.fusePos, fuse.remainingPoints, player.num);
+        return;
+      }
+      
+      // Fallback for snipped enemies without proper fuse state:
+      // Render a simple fuse effect starting from trail[0] toward player
+      if (player.trail && player.trail.length >= 1) {
+        // Calculate approximate fuse position along trail based on elapsed time
+        const baseSpeed = consts.SPEED || 4;
+        const fuseMult = consts.SNIP_FUSE_SPEED_MULT || 1.5;
+        const v0 = baseSpeed * fuseMult * 60;
+        const approxDist = v0 * fuse.elapsed;
+        
+        // Build simple path from trail[0] to player
+        const fullPoints = [...player.trail, { x: player.x, y: player.y }];
+        const totalLen = this._sumLength(fullPoints);
+        const clampedDist = Math.min(approxDist, totalLen);
+        
+        const fuseResult = this._pointAtDistanceWithIndex(fullPoints, clampedDist);
+        if (fuseResult.point) {
+          // Draw remaining trail from fuse to player
+          const pointsAfterFuse = fullPoints.slice(fuseResult.index + 1);
+          const remainingPoints = [fuseResult.point, ...pointsAfterFuse];
+          
+          if (remainingPoints.length >= 2) {
+            ctx.beginPath();
+            ctx.moveTo(remainingPoints[0].x, remainingPoints[0].y);
+            for (let i = 1; i < remainingPoints.length; i++) {
+              ctx.lineTo(remainingPoints[i].x, remainingPoints[i].y);
+            }
+            ctx.stroke();
+            
+            this._drawFuseSpark(ctx, fuseResult.point, remainingPoints, player.num);
+            return;
+          }
         }
-
-        ctx.restore();
+      }
+      
+      // Ultimate fallback: just draw spark at trail start with full trail
+      if (player.trail && player.trail.length >= 1) {
+        const sparkPos = { x: player.trail[0].x, y: player.trail[0].y };
+        ctx.beginPath();
+        ctx.moveTo(player.trail[0].x, player.trail[0].y);
+        for (let i = 1; i < player.trail.length; i++) {
+          ctx.lineTo(player.trail[i].x, player.trail[i].y);
+        }
+        ctx.lineTo(playerX, playerY);
+        ctx.stroke();
+        
+        this._drawFuseSpark(ctx, sparkPos, player.trail, player.num);
         return;
       }
     }
@@ -1418,6 +2370,148 @@ export default class GameClient {
     const a = remainingPoints[0];
     const b = remainingPoints[1];
     return Math.atan2(b.y - a.y, b.x - a.x);
+  }
+
+  /**
+   * Draw the burning fuse spark effect at a position
+   */
+  _drawFuseSpark(ctx, fusePos, remainingPoints, playerNum) {
+    const t = performance.now();
+    const flicker = 0.75 + 0.25 * Math.sin(t * 0.02 + playerNum);
+    const sparkR = PLAYER_RADIUS * 0.6 * flicker;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    const grad = ctx.createRadialGradient(
+      fusePos.x,
+      fusePos.y,
+      0,
+      fusePos.x,
+      fusePos.y,
+      sparkR * 2.0
+    );
+    grad.addColorStop(0, 'rgba(255,255,200,0.95)');
+    grad.addColorStop(0.35, 'rgba(255,180,60,0.65)');
+    grad.addColorStop(1, 'rgba(255,40,0,0)');
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(fusePos.x, fusePos.y, sparkR * 2.0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Little sparks shooting forward
+    const dir = this._sparkDirection(remainingPoints);
+    for (let i = 0; i < 6; i++) {
+      const jitter = (i * 0.9 + t * 0.03 + playerNum) % (Math.PI * 2);
+      const angle = dir + (Math.sin(jitter) * 0.7);
+      const len = (sparkR * 2.2) * (0.4 + 0.6 * ((Math.sin(jitter * 1.7) + 1) * 0.5));
+      const x2 = fusePos.x + Math.cos(angle) * len;
+      const y2 = fusePos.y + Math.sin(angle) * len;
+      ctx.strokeStyle = 'rgba(255,200,80,0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(fusePos.x, fusePos.y);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+  
+  /**
+   * Draw speed spikes behind player (visual effect when speed buff >= 10%)
+   * Copied from deprecated/mode/player.js renderSpeedTrailParticles
+   */
+  drawSpeedSpikes(ctx, player) {
+    const speedRatio = player._speedRatio || 0;
+    if (speedRatio <= 0) return;
+    
+    const playerX = player.x;
+    const playerY = player.y;
+    const playerAngle = player.angle;
+    const baseColor = player.base;
+    
+    // Use global pulse phase for animation
+    const pulsePhase = this.speedSpikeState.pulsePhase;
+    
+    // Number of spikes: 3 at low speed, 5 at max speed
+    const spikeCount = 3 + Math.floor(speedRatio * 2);
+    
+    // Spread angle for spikes (wider at higher speeds)
+    const totalSpread = 0.8 + speedRatio * 0.6; // ~45 to ~80 degrees total
+    
+    // Base spike length and width (scales with speed)
+    const baseLength = 18 + speedRatio * 25;
+    const baseWidth = 8 + speedRatio * 6;
+    
+    // Distance from player center where spikes start
+    const startOffset = 12;
+    
+    // Get colors from player's base color
+    const brightColor = baseColor.lighter(0.3).rgbString();
+    const mainColor = baseColor.rgbString();
+    
+    ctx.save();
+    
+    for (let i = 0; i < spikeCount; i++) {
+      // Calculate angle for this spike (spread behind player)
+      const spreadPos = spikeCount > 1 ? (i / (spikeCount - 1)) - 0.5 : 0; // -0.5 to 0.5
+      const spikeAngle = playerAngle + Math.PI + spreadPos * totalSpread;
+      
+      // Each spike has its own phase offset for wave effect
+      const phaseOffset = (i / spikeCount) * Math.PI * 2;
+      const pulse = Math.sin(pulsePhase + phaseOffset);
+      
+      // Pulsing size: oscillates between 40% and 100%
+      const sizeMult = 0.4 + (pulse * 0.5 + 0.5) * 0.6;
+      
+      const length = baseLength * sizeMult;
+      const width = baseWidth * sizeMult;
+      
+      if (length < 3) continue;
+      
+      // Calculate spike start (behind player) and tip
+      const startX = playerX + Math.cos(spikeAngle) * startOffset;
+      const startY = playerY + Math.sin(spikeAngle) * startOffset;
+      const tipX = startX + Math.cos(spikeAngle) * length;
+      const tipY = startY + Math.sin(spikeAngle) * length;
+      
+      // Perpendicular for width
+      const perpAngle = spikeAngle + Math.PI / 2;
+      const halfWidth = width / 2;
+      
+      // Alpha based on speed and pulse
+      const alpha = (0.6 + speedRatio * 0.3) * (0.6 + sizeMult * 0.4);
+      ctx.globalAlpha = alpha;
+      
+      // Create gradient along spike
+      const gradient = ctx.createLinearGradient(startX, startY, tipX, tipY);
+      gradient.addColorStop(0, brightColor);
+      gradient.addColorStop(0.4, mainColor);
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      
+      // Draw spike as triangle
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.moveTo(startX + Math.cos(perpAngle) * halfWidth, startY + Math.sin(perpAngle) * halfWidth);
+      ctx.lineTo(startX - Math.cos(perpAngle) * halfWidth, startY - Math.sin(perpAngle) * halfWidth);
+      ctx.lineTo(tipX, tipY);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Bright core line down the middle
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = brightColor;
+      ctx.lineWidth = Math.max(1, width * 0.25);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(tipX, tipY);
+      ctx.stroke();
+    }
+    
+    ctx.restore();
   }
   
   /**
