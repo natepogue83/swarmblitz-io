@@ -3,21 +3,20 @@
 This list is derived from `deprecated/` and compares against the current `src/` and `workers/` code. Items below exist in the deprecated codebase but are not implemented (or not fully wired) in the current runtime.
 
 ## Core Gameplay Systems
-- Stamina system (drain outside territory, regen inside, exhaustion speed penalty) from `deprecated/core/index.js`.
-- Territory overlap resolution when capturing land (subtract captured territory from other players and kill trapped players) from `deprecated/core/index.js`.
-- Spawn safety logic that avoids existing territories/trails and uses multi‑phase fallback searches from `deprecated/game-server.js`.
+-[done] Territory overlap resolution when capturing land (subtract captured territory from other players and kill trapped players) from `deprecated/core/index.js`.
+-[done] Spawn safety logic that avoids existing territories/trails and uses multi‑phase fallback searches from `deprecated/game-server.js`.
 - Killer XP reward transfer on kills (percent + minimum) from `deprecated/game-server.js` and `config.js`.
 
 ## Modes, Spectating, and Bots
 - Spectator/God mode with full‑map zoomed view from `deprecated/mode/god.js` and `deprecated/server.js`.
-- Bot support (AI clients + server bot spawner) from `deprecated/bot.js`, `deprecated/paper-io-bot.js`, and `deprecated/server.js`.
+-[done] Bot support (AI clients + server bot spawner) from `deprecated/bot.js`, `deprecated/paper-io-bot.js`, and `deprecated/server.js`.
 
 ## Input & Controls
-- WASD movement with smooth turning (alongside mouse control) from `deprecated/game-client.js` and `deprecated/mode/player.js`.
+-[done] WASD movement with smooth turning (alongside mouse control) from `deprecated/game-client.js` and `deprecated/mode/player.js`.
 
 ## Combat, Speed, and Territory Feedback
-- Snip fuse visual along the trail (burning fuse spark) from `deprecated/core/player.js`.
-- Snip fuse audio (player + enemy) from `deprecated/sound-manager.js`.
+-[wip] Snip fuse visual along the trail (burning fuse spark) from `deprecated/core/player.js`.
+-[wip] Snip fuse audio (player + enemy) from `deprecated/sound-manager.js`.
 - In‑territory safety glow aura around the player from `deprecated/core/player.js`.
 - Trail speed‑buff visual spikes + speed‑rush audio from `deprecated/mode/player.js` and `deprecated/sound-manager.js`.
 - Capture feedback effects (pulse ring, particles, +XP text, outline thickening) from `deprecated/mode/player.js`.
@@ -38,7 +37,3 @@ This list is derived from `deprecated/` and compares against the current `src/` 
 - Full SoundManager system (SFX + background/music playlist + menu music) from `deprecated/sound-manager.js`.
 - Settings panel wiring for audio volume sliders from `deprecated/mode/player.js`.
 - `/api/playlist` endpoint for music playback from `deprecated/server.js`.
-
-## Networking / Visibility (Affects Gameplay Perception)
-- Dynamic AOI radius based on client viewport with hysteresis/buffer and viewport updates from `deprecated/game-server.js` and `deprecated/game-client.js`.
-

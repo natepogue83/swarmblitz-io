@@ -48,9 +48,10 @@ const AOI_RADIUS = 800;
  * Client connection state
  */
 class Client {
-  constructor(ws, playerId) {
+  constructor(ws, playerId, isSpectator = false) {
     this.ws = ws;
     this.playerId = playerId;
+    this.isSpectator = isSpectator;
     this.lastSeenEntities = new Set();
     this.lastSentFrame = 0;
     this.lastPing = Date.now();
@@ -322,6 +323,10 @@ export class Room {
         case 'ping':
           this.handlePing(ws, msg);
           break;
+          
+        case 'reset':
+          this.handleReset(ws);
+          break;
       }
     } catch (err) {
       console.error('Message error:', err);
@@ -347,9 +352,15 @@ export class Room {
   }
   
   /**
-   * Handle hello (join game)
+   * Handle hello (join game or spectate)
    */
   handleHello(ws, msg) {
+    // Check if spectator
+    if (msg.spectate) {
+      this.handleSpectateHello(ws);
+      return;
+    }
+    
     const name = (msg.name || 'Player').slice(0, 16);
     
     // Add player to world
@@ -385,6 +396,28 @@ export class Room {
       type: EventType.PLAYER_JOIN,
       player: player.serialize(),
     }, player.id);
+  }
+  
+  /**
+   * Handle spectator hello (join as spectator, no player)
+   */
+  handleSpectateHello(ws) {
+    // Create spectator client (no player ID)
+    const client = new Client(ws, null, true);
+    this.clients.set(ws, client);
+    
+    // Send init with all players/coins but no playerId
+    const initData = {
+      type: 'init',
+      playerId: null, // Spectator has no player
+      mapSize: this.world.mapSize,
+      player: null,
+      players: this.world.getAllPlayers().map(p => p.serialize()),
+      coins: this.world.getAllCoins().map(c => ({ id: c.id, x: c.x, y: c.y, value: c.value })),
+    };
+    
+    ws.send(JSON.stringify(initData));
+    console.log('[ROOM] Spectator joined');
   }
   
   /**
@@ -424,11 +457,54 @@ export class Room {
   }
   
   /**
+   * Handle reset command (debug) - resets the entire room
+   */
+  handleReset(ws) {
+    console.log('[DEBUG] Room reset requested');
+    
+    // Create fresh world
+    this.world = new World();
+    
+    // Reset bot manager
+    this.botManager = new BotManager();
+    this.pendingBotRespawns = [];
+    this.botsInitialized = false;
+    
+    // Reset timing
+    this.lastSimTick = Date.now();
+    this.lastNetTick = Date.now();
+    this.simAccumulator = 0;
+    
+    // Notify all clients to reconnect
+    for (const [clientWs, client] of this.clients) {
+      try {
+        clientWs.send(JSON.stringify({ type: 'reset' }));
+        clientWs.close(1000, 'Room reset');
+      } catch (e) {
+        // Ignore errors on close
+      }
+    }
+    
+    // Clear all clients
+    this.clients.clear();
+    this.playerToClient.clear();
+    
+    console.log('[DEBUG] Room reset complete');
+  }
+  
+  /**
    * Handle disconnect
    */
   handleDisconnect(ws) {
     const client = this.clients.get(ws);
     if (!client) return;
+    
+    // Spectators don't have a player
+    if (client.isSpectator) {
+      this.clients.delete(ws);
+      console.log('[ROOM] Spectator disconnected');
+      return;
+    }
     
     // Remove from world
     this.world.removePlayer(client.playerId);
@@ -456,6 +532,19 @@ export class Room {
     
     for (const [ws, client] of this.clients) {
       try {
+        // Spectators see everything
+        if (client.isSpectator) {
+          const allPlayers = this.world.getAllPlayers();
+          const allCoins = this.world.getAllCoins();
+          const packet = this.buildSpectatorFramePacket(client, allPlayers, allCoins, events, frame);
+          
+          if (packet.byteLength > 1) {
+            ws.send(packet);
+          }
+          client.lastSentFrame = frame;
+          continue;
+        }
+        
         const player = this.world.getPlayer(client.playerId);
         if (!player) continue;
         
@@ -553,6 +642,85 @@ export class Room {
     writer.writeU8(Math.min(relevantEvents.length, 255));
     for (let i = 0; i < Math.min(relevantEvents.length, 255); i++) {
       this.writeEvent(writer, relevantEvents[i], mapSize);
+    }
+    
+    return writer.toArrayBuffer();
+  }
+  
+  /**
+   * Build binary frame packet for a spectator (sees all entities)
+   */
+  buildSpectatorFramePacket(client, allPlayers, allCoins, events, frame) {
+    const writer = new BinaryWriter(2048); // Larger buffer for full state
+    const mapSize = this.world.mapSize;
+    
+    // Header
+    writer.writeU8(PacketType.FRAME);
+    writer.writeU32(frame);
+    
+    // No self player for spectator
+    writer.writeU8(0); // has self = false
+    
+    // Track entities for delta updates
+    const currentEntities = new Set();
+    const newEntities = [];
+    const updatedEntities = [];
+    const removedEntities = [];
+    
+    for (const p of allPlayers) {
+      currentEntities.add(p.id);
+      
+      if (!client.lastSeenEntities.has(p.id)) {
+        newEntities.push(p);
+      } else {
+        const dirty = p._dirty;
+        if (dirty !== 0) {
+          updatedEntities.push({ player: p, dirty });
+        }
+      }
+    }
+    
+    // Find removed entities
+    for (const id of client.lastSeenEntities) {
+      if (!currentEntities.has(id)) {
+        removedEntities.push(id);
+      }
+    }
+    
+    client.lastSeenEntities = currentEntities;
+    
+    // Write new entities (full)
+    writer.writeU8(Math.min(newEntities.length, 255));
+    for (let i = 0; i < Math.min(newEntities.length, 255); i++) {
+      this.writePlayerFull(writer, newEntities[i], mapSize);
+    }
+    
+    // Write updated entities (delta)
+    writer.writeU8(Math.min(updatedEntities.length, 255));
+    for (let i = 0; i < Math.min(updatedEntities.length, 255); i++) {
+      const { player, dirty } = updatedEntities[i];
+      this.writePlayerDelta(writer, player, dirty, mapSize);
+    }
+    
+    // Write removed entities
+    writer.writeU8(Math.min(removedEntities.length, 255));
+    for (let i = 0; i < Math.min(removedEntities.length, 255); i++) {
+      writer.writeU16(removedEntities[i]);
+    }
+    
+    // Write all coins (spectator sees everything)
+    writer.writeU8(Math.min(allCoins.length, 255));
+    for (let i = 0; i < Math.min(allCoins.length, 255); i++) {
+      const coin = allCoins[i];
+      writer.writeU16(coin.id);
+      writer.writeU16(Math.round(coin.x));
+      writer.writeU16(Math.round(coin.y));
+    }
+    
+    // Write all events (spectator sees everything)
+    writer.writeU8(Math.min(events.length, 255));
+    for (let i = 0; i < Math.min(events.length, 255); i++) {
+      this.writeEvent(writer, events[i], mapSize);
     }
     
     return writer.toArrayBuffer();

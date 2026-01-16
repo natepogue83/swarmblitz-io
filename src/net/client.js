@@ -63,6 +63,7 @@ export default class NetClient {
     this.onFrame = options.onFrame || (() => {});
     this.onEvent = options.onEvent || (() => {});
     this.onError = options.onError || (() => {});
+    this.onReset = options.onReset || (() => {});
   }
   
   /**
@@ -74,6 +75,7 @@ export default class NetClient {
     }
     
     this.playerName = playerName;
+    this.isSpectator = false;
     this.setState(ConnectionState.CONNECTING);
     
     try {
@@ -81,6 +83,32 @@ export default class NetClient {
       this.ws.binaryType = 'arraybuffer';
       
       this.ws.onopen = () => this.handleOpen();
+      this.ws.onmessage = (e) => this.handleMessage(e);
+      this.ws.onclose = (e) => this.handleClose(e);
+      this.ws.onerror = (e) => this.handleError(e);
+    } catch (err) {
+      this.onError(err);
+      this.scheduleReconnect();
+    }
+  }
+  
+  /**
+   * Connect as spectator (no player, just watching)
+   */
+  connectSpectate() {
+    if (this.state !== ConnectionState.DISCONNECTED) {
+      return;
+    }
+    
+    this.playerName = null;
+    this.isSpectator = true;
+    this.setState(ConnectionState.CONNECTING);
+    
+    try {
+      this.ws = new WebSocket(this.url);
+      this.ws.binaryType = 'arraybuffer';
+      
+      this.ws.onopen = () => this.handleOpenSpectate();
       this.ws.onmessage = (e) => this.handleMessage(e);
       this.ws.onclose = (e) => this.handleClose(e);
       this.ws.onerror = (e) => this.handleError(e);
@@ -169,6 +197,15 @@ export default class NetClient {
   }
   
   /**
+   * Send reset command (debug)
+   */
+  sendReset() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    
+    this.ws.send(JSON.stringify({ type: 'reset' }));
+  }
+  
+  /**
    * Handle WebSocket open
    */
   handleOpen() {
@@ -178,6 +215,22 @@ export default class NetClient {
     this.ws.send(JSON.stringify({
       type: 'hello',
       name: this.playerName,
+    }));
+    
+    // Start ping interval
+    this.pingInterval = setInterval(() => this.sendPing(), 2000);
+  }
+  
+  /**
+   * Handle WebSocket open for spectator
+   */
+  handleOpenSpectate() {
+    this.reconnectAttempts = 0;
+    
+    // Send spectate hello
+    this.ws.send(JSON.stringify({
+      type: 'hello',
+      spectate: true,
     }));
     
     // Start ping interval
@@ -237,6 +290,12 @@ export default class NetClient {
       case 'pong':
         // Legacy text pong
         this.rtt = Date.now() - msg.t;
+        break;
+        
+      case 'reset':
+        // Room was reset - reconnect
+        console.log('%c🔄 Room reset, reconnecting...', 'color: orange; font-weight: bold;');
+        this.onReset();
         break;
         
       default:

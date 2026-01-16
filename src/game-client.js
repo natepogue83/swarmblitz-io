@@ -12,6 +12,7 @@ import NetClient, { ConnectionState } from './net/client.js';
 import Color from './core/color.js';
 import { consts } from '../config.js';
 import { EventType } from './net/protocol.js';
+import * as SoundManager from './sound-manager.js';
 
 // UI Constants (matching old renderer)
 const BAR_HEIGHT = 45;
@@ -331,6 +332,13 @@ export default class GameClient {
     this.mouseX = 0;
     this.mouseY = 0;
     this.targetAngle = 0;
+    this.mouseSet = false;
+
+    // WASD keyboard control state (directional movement via targetAngle)
+    // Note: movement is always "forward" in the direction you're facing, so WASD maps to desired heading.
+    this.wasdKeys = { w: false, a: false, s: false, d: false };
+    this.useWasd = false;
+    this.wasdCurrentAngle = 0;
     
     // Timing
     this.lastFrameTime = performance.now();
@@ -348,14 +356,236 @@ export default class GameClient {
     this.debugMode = false;
     this.lastNetworkUpdate = 0;
     this.networkGaps = []; // Track last N gaps for averaging
+
+    // Snip fuse (client-side visual + local SFX)
+    // Map: playerNum -> fuseState
+    this.snipFuses = new Map();
+    this._localSnippedPrev = false;
     
     // Bind methods
     this.handleMouseMove = this.handleMouseMove.bind(this);
     this.handleTouchMove = this.handleTouchMove.bind(this);
+    this.handleKeyDown = this.handleKeyDown.bind(this);
+    this.handleKeyUp = this.handleKeyUp.bind(this);
     this.gameLoop = this.gameLoop.bind(this);
     
     // Setup input handlers
     this.setupInput();
+  }
+
+  /**
+   * Start a client-side snip fuse for a player.
+   * For self-snips: find the furthest segment (highest index) that the player is touching.
+   * For enemy snips: find the closest point on victim's trail to the snipper.
+   */
+  startSnipFuse(playerNum, snipperNum) {
+    const victim = this.players.get(playerNum);
+    if (!victim || !victim.trail || victim.trail.length < 2) return;
+
+    let hit;
+    const isSelfSnip = snipperNum === 65535;
+    
+    if (isSelfSnip) {
+      // Self-snip: find furthest segment the player is touching (mirrors server logic)
+      hit = this._furthestHitOnTrail(victim, victim.trail);
+    } else {
+      // Enemy snip: find closest point to snipper position
+      let refPos = { x: victim.x, y: victim.y };
+      const snipper = this.players.get(snipperNum);
+      if (snipper) refPos = { x: snipper.x, y: snipper.y };
+      hit = this._closestPointOnTrail(refPos, victim.trail);
+    }
+    
+    const startPoint = hit.point || { x: victim.trail[0].x, y: victim.trail[0].y };
+    const segmentIndex = hit.index ?? 0;
+
+    this.snipFuses.set(playerNum, {
+      playerNum,
+      snipperNum,
+      startPoint,
+      segmentIndex,
+      elapsed: 0,
+      progressDist: 0,
+      fusePos: { x: startPoint.x, y: startPoint.y },
+      ratio: 0,
+      remainingPoints: null,
+    });
+  }
+
+  _closestPointOnTrail(p, trail) {
+    let best = { dist2: Infinity, point: null, index: 0 };
+    for (let i = 0; i < trail.length - 1; i++) {
+      const a = trail[i];
+      const b = trail[i + 1];
+      const q = this._closestPointOnSegment(p, a, b);
+      const dx = p.x - q.x;
+      const dy = p.y - q.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < best.dist2) best = { dist2: d2, point: q, index: i };
+    }
+    return best;
+  }
+
+  /**
+   * Find the furthest segment (highest index) that the player is touching.
+   * Mirrors server's hitsTrail logic for self-snips.
+   */
+  _furthestHitOnTrail(player, trail) {
+    const hitRadius = (consts.CELL_WIDTH || 25) / 2;
+    let best = { dist2: Infinity, point: null, index: -1 };
+    
+    // Skip last few segments (near player's current position)
+    const skipCount = 3;
+    const maxIdx = Math.max(0, trail.length - 1 - skipCount);
+    
+    for (let i = 0; i < maxIdx; i++) {
+      const a = trail[i];
+      const b = trail[i + 1];
+      const q = this._closestPointOnSegment({ x: player.x, y: player.y }, a, b);
+      const dx = player.x - q.x;
+      const dy = player.y - q.y;
+      const d2 = dx * dx + dy * dy;
+      
+      // If within hit radius and higher index than current best, take it
+      if (d2 < hitRadius * hitRadius && i > best.index) {
+        best = { dist2: d2, point: q, index: i };
+      }
+    }
+    
+    // Fallback to closest point if no hit found within radius
+    if (best.point === null) {
+      return this._closestPointOnTrail({ x: player.x, y: player.y }, trail);
+    }
+    return best;
+  }
+
+  _closestPointOnSegment(p, a, b) {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const apx = p.x - a.x;
+    const apy = p.y - a.y;
+    const abLen2 = abx * abx + aby * aby;
+    if (abLen2 === 0) return { x: a.x, y: a.y };
+    let t = (apx * abx + apy * aby) / abLen2;
+    t = Math.max(0, Math.min(1, t));
+    return { x: a.x + abx * t, y: a.y + aby * t };
+  }
+
+  _pointAtDistance(points, dist) {
+    if (points.length === 0) return null;
+    if (points.length === 1) return { x: points[0].x, y: points[0].y };
+
+    let remaining = dist;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+      if (segLen <= 0.0001) continue;
+      if (remaining <= segLen) {
+        const t = remaining / segLen;
+        return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      }
+      remaining -= segLen;
+    }
+    return { x: points[points.length - 1].x, y: points[points.length - 1].y };
+  }
+
+  _pointAtDistanceWithIndex(points, dist) {
+    if (points.length === 0) return { point: null, index: 0 };
+    if (points.length === 1) return { point: { x: points[0].x, y: points[0].y }, index: 0 };
+
+    let remaining = dist;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+      if (segLen <= 0.0001) continue;
+      if (remaining <= segLen) {
+        const t = remaining / segLen;
+        return { point: { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, index: i };
+      }
+      remaining -= segLen;
+    }
+    return { point: { x: points[points.length - 1].x, y: points[points.length - 1].y }, index: points.length - 2 };
+  }
+
+  _sumLength(points) {
+    let total = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+      total += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+    }
+    return total;
+  }
+
+  updateSnipFuses(deltaMs) {
+    const deltaSeconds = deltaMs / 1000;
+
+    // Cleanup + update fuse positions
+    for (const [playerNum, state] of Array.from(this.snipFuses.entries())) {
+      const player = this.players.get(playerNum);
+      if (!player || !player.isSnipped || !player.trail || player.trail.length < 2) {
+        this.snipFuses.delete(playerNum);
+        continue;
+      }
+
+      state.elapsed += deltaSeconds;
+
+      // Mirror server fuse speed curve (client-side approximation)
+      const baseSpeed = consts.SPEED || 4;
+      const fuseMult = consts.SNIP_FUSE_SPEED_MULT || 1.5;
+      const k = consts.SNIP_EXP_ACCEL_PER_SEC || 0.6375;
+      const gracePeriod = consts.SNIP_GRACE_PERIOD || 0.25;
+
+      const effectiveElapsed = Math.max(0, state.elapsed - gracePeriod);
+      const v0 = baseSpeed * fuseMult * 60;
+      const accelFactor = k > 0 ? Math.exp(k * effectiveElapsed) : 1;
+      let fuseSpeed = v0 * accelFactor;
+
+      // Cap (matches config intent; server may differ slightly depending on tuning)
+      const maxMult = consts.SNIP_FUSE_MAX_SPEED_MULT || 6.0;
+      fuseSpeed = Math.min(fuseSpeed, baseSpeed * maxMult * 60);
+
+      if (state.elapsed > gracePeriod) {
+        state.progressDist += fuseSpeed * deltaSeconds;
+      }
+
+      // Build the full fuse polyline from collision point -> trail end -> player
+      const segIndex = Math.max(0, Math.min(player.trail.length - 2, state.segmentIndex));
+      const fullPoints = [
+        state.startPoint,
+        ...player.trail.slice(segIndex + 1),
+        { x: player.x, y: player.y },
+      ];
+      const totalLen = this._sumLength(fullPoints);
+      const clampedTotal = Math.max(1, totalLen);
+
+      state.ratio = Math.max(0, Math.min(1, state.progressDist / clampedTotal));
+
+      // Find current fuse position and which segment it's on
+      const fuseResult = this._pointAtDistanceWithIndex(fullPoints, Math.min(state.progressDist, clampedTotal));
+      state.fusePos = fuseResult.point;
+
+      // Only include trail points AFTER the current fuse position
+      // fuseResult.index tells us which segment (0-indexed) the fuse is currently on
+      const pointsAfterFuse = fullPoints.slice(fuseResult.index + 1);
+      state.remainingPoints = [state.fusePos, ...pointsAfterFuse];
+    }
+
+    // Local fuse SFX (kept purely client-side)
+    const local = this.players.get(this.playerId);
+    const nowSnipped = !!(local && local.isSnipped);
+    if (nowSnipped && !this._localSnippedPrev) {
+      SoundManager.startFuseSound();
+    }
+    if (!nowSnipped && this._localSnippedPrev) {
+      SoundManager.stopFuseSound();
+    }
+    this._localSnippedPrev = nowSnipped;
+
+    if (nowSnipped) {
+      const fuse = this.snipFuses.get(this.playerId);
+      if (fuse) SoundManager.updateFuseVolume(fuse.ratio);
+    }
   }
   
   /**
@@ -366,13 +596,61 @@ export default class GameClient {
     this.canvas.addEventListener('touchmove', this.handleTouchMove, { passive: false });
     this.canvas.addEventListener('touchstart', this.handleTouchMove, { passive: false });
     
-    // Debug toggle (press D)
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'd' || e.key === 'D') {
-        this.debugMode = !this.debugMode;
-        console.log('Debug mode:', this.debugMode ? 'ON' : 'OFF');
-      }
-    });
+    // Keyboard
+    window.addEventListener('keydown', this.handleKeyDown);
+    window.addEventListener('keyup', this.handleKeyUp);
+  }
+
+  cleanupInput() {
+    this.canvas.removeEventListener('mousemove', this.handleMouseMove);
+    this.canvas.removeEventListener('touchmove', this.handleTouchMove);
+    this.canvas.removeEventListener('touchstart', this.handleTouchMove);
+    window.removeEventListener('keydown', this.handleKeyDown);
+    window.removeEventListener('keyup', this.handleKeyUp);
+  }
+
+  handleKeyDown(e) {
+    // Avoid interfering with typing in inputs (e.g., menus/settings)
+    const el = document.activeElement;
+    const tag = el && el.tagName ? el.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+    // Ignore repeats so we don't spam state changes
+    if (e.repeat) return;
+
+    const key = (e.key || '').toLowerCase();
+
+    // F3 toggles debug mode (D is reserved for movement)
+    if (e.key === 'F3') {
+      this.debugMode = !this.debugMode;
+      console.log('Debug mode:', this.debugMode ? 'ON' : 'OFF');
+      return;
+    }
+
+    // R = Reset room (debug)
+    if (key === 'r') {
+      console.log('%c🔄 RESETTING ROOM...', 'color: orange; font-weight: bold;');
+      this.net.sendReset();
+      return;
+    }
+
+    if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+      this.setKeyState(key, true);
+    }
+  }
+
+  handleKeyUp(e) {
+    const key = (e.key || '').toLowerCase();
+    if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+      this.setKeyState(key, false);
+    }
+  }
+
+  setKeyState(key, pressed) {
+    const k = (key || '').toLowerCase();
+    if (!(k in this.wasdKeys)) return;
+    this.wasdKeys[k] = !!pressed;
+    this.useWasd = !!(this.wasdKeys.w || this.wasdKeys.a || this.wasdKeys.s || this.wasdKeys.d);
   }
   
   /**
@@ -382,6 +660,7 @@ export default class GameClient {
     const rect = this.canvas.getBoundingClientRect();
     this.mouseX = e.clientX - rect.left;
     this.mouseY = e.clientY - rect.top;
+    this.mouseSet = true;
     this.updateTargetAngle();
   }
   
@@ -394,6 +673,7 @@ export default class GameClient {
       const rect = this.canvas.getBoundingClientRect();
       this.mouseX = e.touches[0].clientX - rect.left;
       this.mouseY = e.touches[0].clientY - rect.top;
+      this.mouseSet = true;
       this.updateTargetAngle();
     }
   }
@@ -411,16 +691,27 @@ export default class GameClient {
     
     // Calculate angle
     this.targetAngle = Math.atan2(worldY - player.y, worldX - player.x);
-    
-    // Send to server
-    this.net.sendInput(this.targetAngle);
+
+    // Keep WASD smoothed angle aligned with mouse when not using WASD (smooth handoff)
+    if (!this.useWasd) {
+      this.wasdCurrentAngle = this.targetAngle;
+    }
   }
   
   /**
    * Connect to server
    */
   connect(playerName) {
+    this.playerName = playerName;
     this.net.connect(playerName);
+  }
+  
+  /**
+   * Connect as spectator (no player, just watching)
+   */
+  connectSpectate() {
+    this.spectateMode = true;
+    this.net.connectSpectate();
   }
   
   /**
@@ -429,6 +720,7 @@ export default class GameClient {
   disconnect() {
     this.net.disconnect();
     this.stopGameLoop();
+    this.cleanupInput();
   }
   
   /**
@@ -460,13 +752,28 @@ export default class GameClient {
       this.coins.set(c.id, new Coin(c));
     }
     
-    // Center camera on player (instant snap on join, then smooth follow)
-    const player = this.players.get(this.playerId);
-    if (player) {
-      this.cameraX = player.x;
-      this.cameraY = player.y;
-      this.cameraTargetX = player.x;
-      this.cameraTargetY = player.y;
+    // Setup camera based on mode
+    if (this.spectateMode) {
+      // Spectate mode: center on map, zoom to fit entire map
+      this.cameraX = this.mapSize / 2;
+      this.cameraY = this.mapSize / 2;
+      this.cameraTargetX = this.mapSize / 2;
+      this.cameraTargetY = this.mapSize / 2;
+      // Calculate zoom to fit map with some padding
+      const padding = 50;
+      this.cameraScale = Math.min(
+        this.canvas.width / (this.mapSize + padding * 2),
+        this.canvas.height / (this.mapSize + padding * 2)
+      );
+    } else {
+      // Normal mode: center camera on player
+      const player = this.players.get(this.playerId);
+      if (player) {
+        this.cameraX = player.x;
+        this.cameraY = player.y;
+        this.cameraTargetX = player.x;
+        this.cameraTargetY = player.y;
+      }
     }
     
     // Start game loop
@@ -572,6 +879,15 @@ export default class GameClient {
         
       case EventType.COIN_PICKUP:
         this.coins.delete(event.id);
+        // SFX: only play for the local player's pickups
+        if (event.playerNum === this.playerId) {
+          SoundManager.playCoinPickup();
+        }
+        break;
+
+      case EventType.SNIP_START:
+        // Client-side fuse visual + local fuse SFX is driven off this + isSnipped flag
+        this.startSnipFuse(event.playerNum, event.snipperNum);
         break;
         
       case 'dead':
@@ -608,6 +924,17 @@ export default class GameClient {
       target.y,
       color
     ));
+
+    // SFX: laser shot (own vs enemy, distance-based for enemy)
+    const local = this.players.get(this.playerId);
+    if (local) {
+      if (event.ownerNum === this.playerId) {
+        SoundManager.playPlayerLaser();
+      } else {
+        const dist = Math.hypot(fromX - local.x, fromY - local.y);
+        SoundManager.playEnemyLaser(dist);
+      }
+    }
   }
   
   /**
@@ -660,33 +987,103 @@ export default class GameClient {
    */
   update(deltaMs) {
     const localPlayer = this.players.get(this.playerId);
+
+    // In spectate mode, we don't control a player
+    if (!this.spectateMode) {
+      // Update local input angle (WASD or mouse) and send to server at the net client's throttle rate.
+      if (localPlayer && !localPlayer.dead) {
+        const nextAngle = this.computeInputAngle(localPlayer, deltaMs);
+        if (typeof nextAngle === 'number' && Number.isFinite(nextAngle)) {
+          this.targetAngle = nextAngle;
+          this.net.sendInput(this.targetAngle);
+        }
+      }
+    }
     
     for (const [id, player] of this.players) {
-      if (id === this.playerId && localPlayer && !localPlayer.dead) {
+      if (!this.spectateMode && id === this.playerId && localPlayer && !localPlayer.dead) {
         // Local player: use client-side prediction
         player.predict(deltaMs, consts.SPEED, this.mapSize, this.targetAngle);
       } else {
-        // Other players: extrapolate movement + gentle correction
+        // Other players (or all players in spectate mode): extrapolate movement + gentle correction
         player.interpolateOther(deltaMs, consts.SPEED);
       }
     }
     
-    // Camera smoothly follows local player
-    // This prevents jarring camera movement when server corrections happen
-    if (localPlayer) {
+    // Camera handling
+    if (this.spectateMode) {
+      // Spectate mode: keep camera centered on map, update zoom to fit
+      this.cameraX = this.mapSize / 2;
+      this.cameraY = this.mapSize / 2;
+      const padding = 50;
+      this.cameraScale = Math.min(
+        this.canvas.width / (this.mapSize + padding * 2),
+        this.canvas.height / (this.mapSize + padding * 2)
+      );
+    } else if (localPlayer) {
+      // Normal mode: camera smoothly follows local player
       this.cameraTargetX = localPlayer.x;
       this.cameraTargetY = localPlayer.y;
       
       // Smooth camera movement - lerp towards target
-      // Higher value = more responsive, lower = smoother
-      // At 60fps, 0.15 means camera reaches ~90% of target in ~15 frames (~250ms)
       const cameraLerp = 0.15;
       this.cameraX += (this.cameraTargetX - this.cameraX) * cameraLerp;
       this.cameraY += (this.cameraTargetY - this.cameraY) * cameraLerp;
     }
     
+    // Snip fuse (client-side visual + local SFX)
+    this.updateSnipFuses(deltaMs);
+
     // Clean up expired effects
     this.effects = this.effects.filter(e => !e.isExpired());
+  }
+
+  computeInputAngle(player, deltaMs) {
+    // WASD overrides mouse while any key is pressed.
+    if (this.useWasd) {
+      let dx = 0;
+      let dy = 0;
+      if (this.wasdKeys.w) dy -= 1;
+      if (this.wasdKeys.s) dy += 1;
+      if (this.wasdKeys.a) dx -= 1;
+      if (this.wasdKeys.d) dx += 1;
+
+      if (dx === 0 && dy === 0) return null;
+
+      const target = Math.atan2(dy, dx);
+
+      // Smoothly rotate toward target at a frame-rate independent max step.
+      let diff = target - this.wasdCurrentAngle;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+
+      const maxStep = 0.15 * (deltaMs / 16.67); // matches server tuning at 60fps
+      if (Math.abs(diff) <= maxStep) {
+        this.wasdCurrentAngle = target;
+      } else {
+        this.wasdCurrentAngle += Math.sign(diff) * maxStep;
+      }
+
+      while (this.wasdCurrentAngle > Math.PI) this.wasdCurrentAngle -= Math.PI * 2;
+      while (this.wasdCurrentAngle < -Math.PI) this.wasdCurrentAngle += Math.PI * 2;
+
+      return this.wasdCurrentAngle;
+    }
+
+    // Mouse aim / movement (recomputed every frame so it stays correct as the camera follows you).
+    if (!this.mouseSet) return null;
+
+    const worldX = this.cameraX + (this.mouseX - this.canvas.width / 2) / this.cameraScale;
+    const worldY = this.cameraY + (this.mouseY - this.canvas.height / 2) / this.cameraScale;
+    const dx = worldX - player.x;
+    const dy = worldY - player.y;
+
+    // Deadzone: if the cursor is very close to the player center, don't jitter.
+    if (dx * dx + dy * dy < 100) return null;
+
+    const angle = Math.atan2(dy, dx);
+    this.wasdCurrentAngle = angle; // smooth handoff back to WASD
+    return angle;
   }
   
   /**
@@ -928,6 +1325,63 @@ export default class GameClient {
     
     const playerX = player.x;
     const playerY = player.y;
+
+    // Snip fuse: render only the unburned trail portion (fuse -> player) + spark
+    if (player.isSnipped) {
+      const fuse = this.snipFuses.get(player.num);
+      if (fuse && fuse.remainingPoints && fuse.remainingPoints.length >= 2 && fuse.fusePos) {
+        ctx.beginPath();
+        ctx.moveTo(fuse.remainingPoints[0].x, fuse.remainingPoints[0].y);
+        for (let i = 1; i < fuse.remainingPoints.length; i++) {
+          ctx.lineTo(fuse.remainingPoints[i].x, fuse.remainingPoints[i].y);
+        }
+        ctx.stroke();
+
+        // Burning fuse spark (ported vibe from deprecated/core/player.js)
+        const t = performance.now();
+        const flicker = 0.75 + 0.25 * Math.sin(t * 0.02 + player.num);
+        const sparkR = PLAYER_RADIUS * 0.6 * flicker;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+
+        const grad = ctx.createRadialGradient(
+          fuse.fusePos.x,
+          fuse.fusePos.y,
+          0,
+          fuse.fusePos.x,
+          fuse.fusePos.y,
+          sparkR * 2.0
+        );
+        grad.addColorStop(0, 'rgba(255,255,200,0.95)');
+        grad.addColorStop(0.35, 'rgba(255,180,60,0.65)');
+        grad.addColorStop(1, 'rgba(255,40,0,0)');
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(fuse.fusePos.x, fuse.fusePos.y, sparkR * 2.0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Little sparks shooting forward
+        const dir = this._sparkDirection(fuse.remainingPoints);
+        for (let i = 0; i < 6; i++) {
+          const jitter = (i * 0.9 + t * 0.03 + player.num) % (Math.PI * 2);
+          const angle = dir + (Math.sin(jitter) * 0.7);
+          const len = (sparkR * 2.2) * (0.4 + 0.6 * ((Math.sin(jitter * 1.7) + 1) * 0.5));
+          const x2 = fuse.fusePos.x + Math.cos(angle) * len;
+          const y2 = fuse.fusePos.y + Math.sin(angle) * len;
+          ctx.strokeStyle = 'rgba(255,200,80,0.9)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(fuse.fusePos.x, fuse.fusePos.y);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+        return;
+      }
+    }
     
     ctx.beginPath();
     ctx.moveTo(player.trail[0].x, player.trail[0].y);
@@ -956,6 +1410,14 @@ export default class GameClient {
     // Connect to player's current rendered position
     ctx.lineTo(playerX, playerY);
     ctx.stroke();
+  }
+
+  _sparkDirection(remainingPoints) {
+    // Direction from fuse toward the next point (fallback to 0)
+    if (!remainingPoints || remainingPoints.length < 2) return 0;
+    const a = remainingPoints[0];
+    const b = remainingPoints[1];
+    return Math.atan2(b.y - a.y, b.x - a.x);
   }
   
   /**

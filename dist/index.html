@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-touch-fullscreen" content="yes">
+<title>SwarmBlitz.io (Dev)</title>
+<link rel="stylesheet" href="/css/styles.css">
+<link rel="stylesheet" href="/font/css/all.min.css">
+  <script type="module" crossorigin src="/assets/main-CYNmjylr.js"></script>
+</head>
+<body>
+<canvas id="main-ui"></canvas>
+<div id="begin">
+	<div class="bg-scene">
+		<!-- Floating territories -->
+		<div class="float-territory t1"></div>
+		<div class="float-territory t2"></div>
+		<div class="float-territory t3"></div>
+		<div class="float-territory t4"></div>
+		<div class="float-territory t5"></div>
+		<div class="float-territory t6"></div>
+		<div class="float-territory t7"></div>
+		<!-- Floating players with drones -->
+		<div class="float-player p1">
+			<div class="player-drone d1"></div>
+		</div>
+		<div class="float-player p2">
+			<div class="player-drone d1"></div>
+			<div class="player-drone d2"></div>
+		</div>
+		<div class="float-player p3">
+			<div class="player-drone d1"></div>
+		</div>
+		<div class="float-player p4">
+			<div class="player-drone d1"></div>
+			<div class="player-drone d2"></div>
+			<div class="player-drone d3"></div>
+		</div>
+		<!-- Particles -->
+		<div class="bg-particles"></div>
+	</div>
+	<div class="start-title">
+		<h1>Swarm<span>Blitz</span><em>.io</em></h1>
+		<p>CONQUER THE GRID</p>
+	</div>
+	<div class="start-panel">
+		<div class="input-group">
+			<label for="name">PLAYER NAME</label>
+			<input id="name" autocomplete="off" placeholder="Enter your name...">
+		</div>
+		<button class="start start-btn primary" disabled="disabled">
+			<i class="fa fa-play"></i> PLAY
+		</button>
+		<button class="spectate start-btn secondary" disabled="disabled">
+			<i class="fa fa-eye"></i> SPECTATE
+		</button>
+		<div class="start-footer">
+			<span id="error">Connecting to server...</span>
+			<noscript>
+				<span>JavaScript required to play</span>
+			</noscript>
+		</div>
+	</div>
+</div>
+<div id="wasted">
+	<div class="death-panel">
+		<div class="death-header">
+			<h1><i class="fa fa-skull"></i> ELIMINATED</h1>
+		</div>
+		<div class="death-stats">
+			<div class="death-stat">
+				<span class="stat-label">Score</span>
+				<span class="stat-value" id="death-score">0.00%</span>
+			</div>
+			<div class="death-stat">
+				<span class="stat-label">Kills</span>
+				<span class="stat-value" id="death-kills">0</span>
+			</div>
+			<div class="death-stat">
+				<span class="stat-label">Level</span>
+				<span class="stat-value" id="death-level">1</span>
+			</div>
+		</div>
+		<div class="death-killer" id="death-killer-info" style="display: none;">
+			<span>Eliminated by</span>
+			<strong id="death-killer-name">Unknown</strong>
+		</div>
+		<div class="death-buttons">
+			<button class="start orange" disabled="disabled"><i class="fa fa-redo"></i> Play Again</button>
+			<button class="menu yellow"><i class="fa fa-home"></i> Main Menu</button>
+			<button class="spectate green" disabled="disabled"><i class="fa fa-eye"></i> Spectate</button>
+		</div>
+	</div>
+</div>
+<button class="toggle yellow"><i class="fa fa-cogs"></i></button>
+<div id="settings" style="display: none;">
+	<div class="settings-header">
+		<h2><i class="fa fa-cogs"></i> Settings</h2>
+		<button class="settings-close" id="settings-close"><i class="fa fa-times"></i></button>
+	</div>
+	
+	<div class="settings-section settings-nav">
+		<button class="menu yellow" id="settings-menu-btn"><i class="fa fa-home"></i> Main Menu</button>
+	</div>
+	
+	<div class="settings-section">
+		<h3><i class="fa fa-volume-up"></i> Audio</h3>
+		<div class="setting-row">
+			<label>Master Volume</label>
+			<input type="range" id="vol-master" min="0" max="100" value="60">
+			<span class="vol-value" id="vol-master-val">60%</span>
+		</div>
+		<div class="setting-row">
+			<label>Music Volume</label>
+			<input type="range" id="vol-music" min="0" max="100" value="30">
+			<span class="vol-value" id="vol-music-val">30%</span>
+		</div>
+		<div class="setting-row">
+			<label>SFX Volume</label>
+			<input type="range" id="vol-sfx" min="0" max="100" value="80">
+			<span class="vol-value" id="vol-sfx-val">80%</span>
+		</div>
+	</div>
+	
+	<div class="settings-section">
+		<h3><i class="fa fa-gamepad"></i> Controls</h3>
+		<div class="controls-grid">
+			<div class="control-item">
+				<span class="control-key">W A S D</span>
+				<span class="control-desc">Move (keyboard)</span>
+			</div>
+			<div class="control-item">
+				<span class="control-key">Mouse</span>
+				<span class="control-desc">Move (cursor)</span>
+			</div>
+		</div>
+	</div>
+	
+	<div class="settings-section expandable">
+		<h3 class="expandable-header" id="how-to-play-toggle">
+			<i class="fa fa-question-circle"></i> How to Play
+			<i class="fa fa-chevron-down expand-icon"></i>
+		</h3>
+		<ul class="how-to-play expandable-content" id="how-to-play-content" style="display: none;">
+			<li>Control your player with <strong>WASD</strong> or <strong>mouse</strong></li>
+			<li>Leave your territory to create a <strong>trail</strong></li>
+			<li>Return to your territory to <strong>capture</strong> the enclosed area</li>
+			<li>Hit enemy <strong>trails</strong> to eliminate them</li>
+			<li>Don't let enemies hit <strong>your trail!</strong></li>
+			<li>Collect <strong>XP orbs</strong> to level up and get more drones</li>
+		</ul>
+	</div>
+	
+	<div class="settings-footer">
+		SwarmBlitz.io • Territory Capture Game
+	</div>
+</div>
+</body>
+</html>
+
+

@@ -13,6 +13,7 @@
 import { consts } from '../../config.js';
 import Color from '../core/color.js';
 import { DeltaFlags, EventType } from '../net/protocol.js';
+import polygonClipping from 'polygon-clipping';
 
 // Constants
 const PLAYER_RADIUS = 15;
@@ -83,6 +84,155 @@ function pointToSegmentDistance(p, v, w) {
   const projY = v.y + t * (w.y - v.y);
   
   return Math.hypot(p.x - projX, p.y - projY);
+}
+
+/**
+ * Get polygon bounding box
+ */
+function getPolygonBounds(polygon) {
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of polygon) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+/**
+ * Check if two polygons overlap (bounding box + point-in-polygon + edge intersection)
+ */
+function polygonsOverlap(polyA, polyB) {
+  if (!polyA || polyA.length < 3 || !polyB || polyB.length < 3) return false;
+  
+  // Quick bounding box check first
+  const boundsA = getPolygonBounds(polyA);
+  const boundsB = getPolygonBounds(polyB);
+  
+  if (boundsA.maxX < boundsB.minX || boundsB.maxX < boundsA.minX ||
+      boundsA.maxY < boundsB.minY || boundsB.maxY < boundsA.minY) {
+    return false;
+  }
+  
+  // Check if any vertex of A is inside B or vice versa
+  for (const p of polyA) {
+    if (pointInPolygon(p, polyB)) return true;
+  }
+  for (const p of polyB) {
+    if (pointInPolygon(p, polyA)) return true;
+  }
+  
+  // Check if any edges intersect
+  for (let i = 0; i < polyA.length; i++) {
+    const a1 = polyA[i];
+    const a2 = polyA[(i + 1) % polyA.length];
+    for (let j = 0; j < polyB.length; j++) {
+      const b1 = polyB[j];
+      const b2 = polyB[(j + 1) % polyB.length];
+      if (getLineIntersection(a1, a2, b1, b2)) return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Subtract clipPoly from subjectPoly using polygon-clipping library.
+ * Returns the part of subjectPoly that is OUTSIDE clipPoly.
+ * If the result is multiple polygons, returns the largest one (or the one containing preferPoint).
+ */
+function subtractTerritory(subjectPoly, clipPoly, preferPoint) {
+  if (!subjectPoly || subjectPoly.length < 3) return subjectPoly;
+  if (!clipPoly || clipPoly.length < 3) return subjectPoly;
+  if (!polygonsOverlap(subjectPoly, clipPoly)) return subjectPoly;
+
+  // Convert to polygon-clipping format: [[[x,y], [x,y], ...]]
+  const toRing = (poly) => poly.map(p => [p.x, p.y]);
+  const pcSubject = [toRing(subjectPoly)];
+  const pcClip = [toRing(clipPoly)];
+
+  let diff;
+  try {
+    diff = polygonClipping.difference(pcSubject, pcClip);
+  } catch (err) {
+    // Fallback: keep original (better than corrupting territory)
+    return subjectPoly;
+  }
+
+  if (!diff || diff.length === 0) return [];
+
+  const EPS = 1e-6;
+  const cleanedCandidates = [];
+
+  for (const poly of diff) {
+    if (!poly || poly.length === 0) continue;
+    const outer = poly[0];
+    if (!outer || outer.length < 4) continue; // polygon-clipping returns closed rings
+
+    let pts = outer.map(([x, y]) => ({ x, y }));
+    // Drop closing point if it equals the first
+    if (pts.length >= 2) {
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      if (Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS) {
+        pts = pts.slice(0, -1);
+      }
+    }
+
+    // Dedupe consecutive near-identical points
+    const cleaned = [];
+    for (const p of pts) {
+      if (cleaned.length === 0) {
+        cleaned.push(p);
+        continue;
+      }
+      const last = cleaned[cleaned.length - 1];
+      if (Math.abs(p.x - last.x) < EPS && Math.abs(p.y - last.y) < EPS) continue;
+      cleaned.push(p);
+    }
+    // Also drop last if it matches first
+    if (cleaned.length >= 2) {
+      const a = cleaned[0];
+      const b = cleaned[cleaned.length - 1];
+      if (Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS) cleaned.pop();
+    }
+
+    if (cleaned.length >= 3) {
+      cleanedCandidates.push(cleaned);
+    }
+  }
+
+  if (cleanedCandidates.length === 0) return [];
+
+  // If preferPoint is provided, prefer polygons containing it
+  const hasPrefer = preferPoint &&
+    typeof preferPoint.x === 'number' &&
+    typeof preferPoint.y === 'number' &&
+    Number.isFinite(preferPoint.x) &&
+    Number.isFinite(preferPoint.y);
+
+  let candidates = cleanedCandidates;
+  if (hasPrefer) {
+    const containing = cleanedCandidates.filter(poly => pointInPolygon(preferPoint, poly));
+    if (containing.length > 0) {
+      candidates = containing;
+    }
+  }
+
+  // Return the largest candidate
+  let best = candidates[0];
+  let bestArea = polygonArea(best);
+  for (let i = 1; i < candidates.length; i++) {
+    const area = polygonArea(candidates[i]);
+    if (area > bestArea) {
+      bestArea = area;
+      best = candidates[i];
+    }
+  }
+
+  return best;
 }
 
 /**
@@ -308,9 +458,12 @@ class Player {
   
   /**
    * Check if a point hits this player's trail
+   * Returns the FURTHEST hit (highest index) so self-snips start at the crossing point
    */
   hitsTrail(x, y, skipDist = 0) {
     if (this.trail.length < 2) return null;
+    
+    let bestHit = null;
     
     for (let i = 0; i < this.trail.length - 1; i++) {
       if (skipDist > 0 && i >= this.trail.length - 3) continue;
@@ -320,10 +473,13 @@ class Player {
       const dist = pointToSegmentDistance({ x, y }, p1, p2);
       
       if (dist < PLAYER_RADIUS) {
-        return { index: i, point: { x, y } };
+        // Keep the hit with highest index (furthest along trail)
+        if (!bestHit || i > bestHit.index) {
+          bestHit = { index: i, point: { x, y } };
+        }
       }
     }
-    return null;
+    return bestHit;
   }
   
   /**
@@ -373,17 +529,22 @@ class Player {
     const fuseMult = consts.SNIP_FUSE_SPEED_MULT || 1.5;
     const k = consts.SNIP_EXP_ACCEL_PER_SEC || 0.6375;
     const gracePeriod = consts.SNIP_GRACE_PERIOD || 0.25;
+    const maxMult = consts.SNIP_FUSE_MAX_SPEED_MULT || 6.0;
     
     const effectiveElapsed = Math.max(0, this.snipElapsed - gracePeriod);
     const v0 = baseSpeed * fuseMult * 60;
     const accelFactor = k > 0 ? Math.exp(k * effectiveElapsed) : 1;
-    const fuseSpeed = v0 * accelFactor;
+    let fuseSpeed = v0 * accelFactor;
+    fuseSpeed = Math.min(fuseSpeed, baseSpeed * maxMult * 60);
     
     if (this.snipElapsed > gracePeriod) {
       this.snipProgressDist += fuseSpeed * deltaSeconds;
     }
     
-    if (this.snipProgressDist >= this.snipTotalTrailLength) {
+    // Recalculate current trail length (player keeps moving, trail extends)
+    const currentTrailLength = this._calcTrailLengthFromSnip();
+    
+    if (this.snipProgressDist >= currentTrailLength) {
       this.die();
       this._killedBySnip = true;
       this._snipperNum = this.snippedBy;
@@ -393,6 +554,42 @@ class Player {
     if (this.isInOwnTerritory()) {
       this.clearSnip();
     }
+  }
+  
+  /**
+   * Calculate current trail length from snip collision point to player position
+   */
+  _calcTrailLengthFromSnip() {
+    if (!this.snipFusePosition || this.trail.length === 0) {
+      return this.snipTotalTrailLength; // fallback
+    }
+    
+    const startIdx = this.snipFusePosition.segmentIndex;
+    let totalLength = 0;
+    
+    // Distance from collision point to next trail point
+    if (startIdx + 1 < this.trail.length) {
+      const nextPoint = this.trail[startIdx + 1];
+      totalLength += Math.hypot(
+        this.snipFusePosition.x - nextPoint.x,
+        this.snipFusePosition.y - nextPoint.y
+      );
+    }
+    
+    // Sum remaining trail segments
+    for (let i = startIdx + 1; i < this.trail.length - 1; i++) {
+      const p1 = this.trail[i];
+      const p2 = this.trail[i + 1];
+      totalLength += Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    }
+    
+    // Distance from last trail point to player's CURRENT position
+    if (this.trail.length > 0) {
+      const lastPoint = this.trail[this.trail.length - 1];
+      totalLength += Math.hypot(lastPoint.x - this.x, lastPoint.y - this.y);
+    }
+    
+    return totalLength;
   }
   
   /**
@@ -552,6 +749,9 @@ class Player {
     if (areaGained > 0) {
       this._pendingAreaGained = (this._pendingAreaGained || 0) + areaGained;
     }
+    
+    // Flag that this player captured territory this tick (for overlap resolution)
+    this._capturedThisTick = true;
     
     this._territoryDirty = true;
     this._dirty |= DeltaFlags.TERRITORY;
@@ -1022,33 +1222,123 @@ export default class World {
   }
   
   /**
-   * Find empty spawn location
+   * Find empty spawn location with multi-phase safety checks
+   * 
+   * Phases (progressively relaxed):
+   * 1. Strict: far from players, no territory overlap, no trail proximity
+   * 2. Relaxed: closer to players allowed, still territory/trail safe
+   * 3. Minimal: just territory safe
+   * 4. Emergency: any territory-safe spot via grid scan
    */
   findSpawn() {
-    const margin = consts.CELL_WIDTH * 3;
-    const maxAttempts = 100;
+    const margin = consts.SPAWN_MARGIN || consts.CELL_WIDTH * 3;
+    const newTerritoryRadius = consts.CELL_WIDTH * 1.5;
+    const baseMinDist = consts.SPAWN_MIN_DIST || newTerritoryRadius * 4;
+    const maxAttempts = 200;
     
-    for (let i = 0; i < maxAttempts; i++) {
-      const x = margin + Math.random() * (this.mapSize - margin * 2);
-      const y = margin + Math.random() * (this.mapSize - margin * 2);
+    const alivePlayers = Array.from(this.players.values()).filter(p => !p.dead);
+    
+    // Clamp to valid spawn area
+    const clamp = (val) => Math.max(margin, Math.min(this.mapSize - margin, val));
+    
+    // Check if new territory would overlap any existing territory
+    const overlapsTerritory = (x, y) => {
+      if (alivePlayers.length === 0) return false;
       
-      // Check distance from other players
-      let valid = true;
-      for (const p of this.players.values()) {
-        if (p.dead) continue;
-        const dist = Math.hypot(p.x - x, p.y - y);
-        if (dist < consts.CELL_WIDTH * 6) {
-          valid = false;
-          break;
-        }
+      // Sample points: center + 8 points around territory edge
+      const samples = [{ x, y }];
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        samples.push({
+          x: x + Math.cos(angle) * newTerritoryRadius,
+          y: y + Math.sin(angle) * newTerritoryRadius,
+        });
       }
       
-      if (valid) {
+      for (const p of alivePlayers) {
+        if (!p.territory || p.territory.length < 3) continue;
+        
+        // Check if any sample point is inside existing territory
+        for (const sample of samples) {
+          if (pointInPolygon(sample, p.territory)) return true;
+        }
+        
+        // Check if spawn is too close to territory boundary
+        for (const tp of p.territory) {
+          if (Math.hypot(tp.x - x, tp.y - y) < newTerritoryRadius + PLAYER_RADIUS) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    
+    // Check if too close to any player
+    const tooCloseToPlayer = (x, y, minDist) => {
+      if (minDist <= 0) return false;
+      for (const p of alivePlayers) {
+        if (Math.hypot(p.x - x, p.y - y) < minDist) return true;
+      }
+      return false;
+    };
+    
+    // Check if near any player's trail
+    const nearTrail = (x, y) => {
+      const buffer = newTerritoryRadius + PLAYER_RADIUS * 2;
+      for (const p of alivePlayers) {
+        if (!p.trail || p.trail.length < 2) continue;
+        
+        for (let i = 0; i < p.trail.length - 1; i++) {
+          const t1 = p.trail[i];
+          const t2 = p.trail[i + 1];
+          if (pointToSegmentDistance({ x, y }, t1, t2) < buffer) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    
+    // Random position generator
+    const pickRandom = () => ({
+      x: clamp(margin + Math.random() * (this.mapSize - margin * 2)),
+      y: clamp(margin + Math.random() * (this.mapSize - margin * 2)),
+    });
+    
+    // Multi-phase spawn search
+    const phases = [
+      { attempts: Math.floor(maxAttempts * 0.4), minDist: baseMinDist, checkTrail: true },
+      { attempts: Math.floor(maxAttempts * 0.3), minDist: baseMinDist * 0.5, checkTrail: true },
+      { attempts: Math.floor(maxAttempts * 0.2), minDist: newTerritoryRadius * 2, checkTrail: false },
+      { attempts: Math.floor(maxAttempts * 0.1), minDist: 0, checkTrail: false },
+    ];
+    
+    for (const phase of phases) {
+      for (let i = 0; i < phase.attempts; i++) {
+        const { x, y } = pickRandom();
+        if (overlapsTerritory(x, y)) continue;
+        if (tooCloseToPlayer(x, y, phase.minDist)) continue;
+        if (phase.checkTrail && nearTrail(x, y)) continue;
         return { x, y };
       }
     }
     
-    // Fallback: random position
+    // Fallback: grid scan to find ANY territory-safe spot
+    const step = consts.CELL_WIDTH;
+    const offX = Math.random() * step;
+    const offY = Math.random() * step;
+    
+    for (let sy = margin + offY; sy <= this.mapSize - margin; sy += step) {
+      for (let sx = margin + offX; sx <= this.mapSize - margin; sx += step) {
+        const cx = clamp(sx);
+        const cy = clamp(sy);
+        if (!overlapsTerritory(cx, cy)) {
+          return { x: cx, y: cy };
+        }
+      }
+    }
+    
+    // Absolute fallback (map completely covered - shouldn't happen)
     return {
       x: margin + Math.random() * (this.mapSize - margin * 2),
       y: margin + Math.random() * (this.mapSize - margin * 2),
@@ -1177,6 +1467,65 @@ export default class World {
       }
     }
     
+    // TERRITORY OVERLAP RESOLUTION
+    // When a player captures territory, subtract it from overlapping enemy territories
+    // Also check if players are trapped inside the captured territory
+    const alivePlayers = Array.from(this.players.values()).filter(p => !p.dead);
+    
+    for (const capturer of alivePlayers) {
+      if (!capturer._capturedThisTick || capturer.dead) continue;
+      capturer._capturedThisTick = false; // Clear flag
+      
+      for (const other of alivePlayers) {
+        if (other === capturer || other.dead) continue;
+        
+        // Check if territories overlap
+        if (polygonsOverlap(capturer.territory, other.territory)) {
+          // Subtract the capturer's territory from the other player's territory
+          const newTerritory = subtractTerritory(
+            other.territory,
+            capturer.territory,
+            { x: other.spawnX, y: other.spawnY }
+          );
+          
+          // Only update if the result is valid
+          if (newTerritory && newTerritory.length >= 3) {
+            other.territory = newTerritory;
+            other._territoryDirty = true;
+            other._dirty |= DeltaFlags.TERRITORY;
+          } else {
+            // Territory completely consumed - kill the player
+            other.die();
+            dead.push(other);
+            this.pendingEvents.push({
+              type: EventType.PLAYER_KILL,
+              killerNum: capturer.id,
+              victimNum: other.id,
+              killType: 3, // territory consumed
+            });
+          }
+        }
+        
+        // Check if the other player is trapped inside capturer's territory
+        // (player is inside enemy territory and NOT in their own territory)
+        if (!other.dead && pointInPolygon({ x: other.x, y: other.y }, capturer.territory)) {
+          // Player is inside the capturer's territory
+          // Check if they're NOT in their own territory (trapped)
+          if (!pointInPolygon({ x: other.x, y: other.y }, other.territory)) {
+            // Trapped! Kill the player
+            other.die();
+            dead.push(other);
+            this.pendingEvents.push({
+              type: EventType.PLAYER_KILL,
+              killerNum: capturer.id,
+              victimNum: other.id,
+              killType: 4, // trapped
+            });
+          }
+        }
+      }
+    }
+    
     // Check collisions
     const players = Array.from(this.players.values()).filter(p => !p.dead);
     
@@ -1292,22 +1641,53 @@ export default class World {
         this.playerGrid.remove(player);
         this.colors.push(player.color);
         
+        // Determine killer ID
+        let killerId = null;
+        
         // Send PLAYER_KILL event for snip deaths (or any death not already handled)
         if (player._killedBySnip) {
+          killerId = player._snipperNum;
           this.pendingEvents.push({
             type: EventType.PLAYER_KILL,
-            killerNum: player._snipperNum !== null ? player._snipperNum : 65535, // 65535 = self/no killer
+            killerNum: killerId !== null ? killerId : 65535, // 65535 = self/no killer
             victimNum: player.id,
             killType: 1, // snip kill
           });
+        } else {
+          // Find killer from recent PLAYER_KILL events
+          const killEvent = this.pendingEvents.find(
+            e => e.type === EventType.PLAYER_KILL && e.victimNum === player.id
+          );
+          if (killEvent && killEvent.killerNum !== 65535) {
+            killerId = killEvent.killerNum;
+          }
         }
         
-        // Drop XP as coins
+        // Calculate victim's total XP (current + accumulated from levels)
         let totalXp = player.xp;
         for (let lvl = 1; lvl < player.level; lvl++) {
           totalXp += (consts.XP_BASE_PER_LEVEL || 100) + (lvl - 1) * (consts.XP_INCREMENT_PER_LEVEL || 25);
         }
         
+        // Transfer XP to killer (if there is one)
+        if (killerId !== null) {
+          const killer = this.players.get(killerId);
+          if (killer && !killer.dead) {
+            const killerPercent = consts.KILLER_XP_PERCENT || 0.15;
+            const killerXpCalc = Math.floor(totalXp * killerPercent);
+            const killerXp = Math.max(consts.KILLER_XP_MIN || 20, killerXpCalc);
+            
+            // Add XP to killer (handles level ups internally)
+            killer.addXp(killerXp, this.pendingEvents);
+            
+            // Rebuild drones if level changed
+            if (killer.droneCount !== killer.drones.length) {
+              this.rebuildDrones(killer);
+            }
+          }
+        }
+        
+        // Drop remaining XP as coins
         const dropAmount = Math.max(consts.COIN_DROP_MIN || 10, Math.floor(totalXp * (consts.COIN_DROP_PERCENT || 0.15)));
         const numCoins = Math.min(Math.ceil(dropAmount / (consts.COIN_VALUE || 5)), 20);
         const valuePerCoin = Math.ceil(dropAmount / numCoins);

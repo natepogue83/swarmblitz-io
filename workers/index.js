@@ -24,6 +24,24 @@ export default {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
+
+    // Playlist endpoint (used by client SoundManager)
+    // In Workers we can't reliably enumerate static assets at runtime, so keep this list explicit.
+    if (url.pathname === '/api/playlist') {
+      const tracks = [
+        'SwarmBlitz - Arcade Pulse Loop.mp3',
+        'SwarmBlitz - Stealth Loop.mp3',
+        'SwarmBlitz Game Loop (1).mp3',
+      ];
+      return new Response(JSON.stringify({ tracks }), {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+          // Cache lightly (clients can retry if missing)
+          'Cache-Control': 'public, max-age=300',
+        },
+      });
+    }
     
     // Route to room
     if (url.pathname.startsWith('/room/')) {
