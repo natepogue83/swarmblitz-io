@@ -1,6 +1,6 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import Enemy from "./core/enemy.js";
-import EnemySpawner, { ENEMY_TYPES } from "./core/enemy-spawner.js";
+import EnemySpawner, { ENEMY_TYPES, BOSS_TYPES } from "./core/enemy-spawner.js";
 import { consts } from "../config.js";
 import { MSG } from "./net/packet.js";
 import { rollUpgradeChoices, selectUpgrade, initPlayerUpgrades, serializeUpgrades } from "./core/upgrade-system.js";
@@ -431,6 +431,10 @@ function Game(id) {
 		if (enemy.isCharging) {
 			data.isCharging = true;
 		}
+		// Include boss flag
+		if (enemy.isBoss) {
+			data.isBoss = true;
+		}
 		return data;
 	}
 
@@ -446,12 +450,16 @@ function Game(id) {
 	}
 
 	function getEnemyStats() {
+		const bossCount = enemies.filter(e => e.isBoss).length;
 		return {
 			runTime,
 			spawnInterval: enemySpawner.spawnInterval,
 			enemies: enemies.length,
 			kills: enemyKills,
-			unlockedTypes: enemySpawner.getUnlockedTypes()
+			unlockedTypes: enemySpawner.getUnlockedTypes(),
+			bossCount,
+			bossInterval: enemySpawner.getBossInterval(),
+			nextBossIn: Math.max(0, enemySpawner.nextBossAt - runTime)
 		};
 	}
 	
@@ -872,7 +880,11 @@ function Game(id) {
 			}
 		}
 		
-		const enemySpawns = enemySpawner.update(deltaSeconds, activePlayer, mapSize);
+		const spawnResult = enemySpawner.update(deltaSeconds, activePlayer, mapSize);
+		const enemySpawns = spawnResult.enemies || spawnResult; // Handle both old and new format
+		const bossSpawns = spawnResult.bosses || [];
+		
+		// Spawn regular enemies
 		for (const spawn of enemySpawns) {
 			const typeName = spawn.type || 'basic';
 			const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
@@ -903,6 +915,44 @@ function Game(id) {
 			}
 			
 			enemies.push(enemy);
+		}
+		
+		// Spawn bosses
+		for (const spawn of bossSpawns) {
+			const bossType = spawn.type || 'titan';
+			const bossData = BOSS_TYPES[bossType] || BOSS_TYPES.titan;
+			
+			const boss = new Enemy({
+				id: `boss-${nextEnemyId++}`,
+				x: spawn.x,
+				y: spawn.y,
+				type: bossType,
+				radius: bossData.radius,
+				maxHp: bossData.maxHp,
+				hp: bossData.maxHp,
+				speed: bossData.speed,
+				contactDamage: bossData.contactDamage
+			});
+			
+			boss.isBoss = true;
+			
+			// Boss-specific properties
+			if (bossType === 'berserker') {
+				boss.chargeSpeed = bossData.chargeSpeed;
+				boss.chargeCooldown = bossData.chargeCooldown;
+				boss.chargeDistance = bossData.chargeDistance;
+				boss.lastChargeTime = 0;
+				boss.isCharging = false;
+				boss.chargeTargetX = 0;
+				boss.chargeTargetY = 0;
+			} else if (bossType === 'summoner') {
+				boss.summonCooldown = bossData.summonCooldown;
+				boss.summonCount = bossData.summonCount;
+				boss.preferredDistance = bossData.preferredDistance;
+				boss.lastSummonTime = 0;
+			}
+			
+			enemies.push(boss);
 		}
 		
 		if (activePlayer && !activePlayer.dead) {
@@ -953,26 +1003,92 @@ function Game(id) {
 						enemy.chargeTargetX = activePlayer.x;
 						enemy.chargeTargetY = activePlayer.y;
 					}
-				} else if (enemy.type === 'sniper') {
-					// Sniper: tries to maintain preferred distance
-					const preferred = enemy.preferredDistance || 250;
-					if (dist < preferred - 30) {
-						// Too close, back away
+				} else if (enemy.type === 'sniper' || enemy.type === 'summoner') {
+					// Sniper/Summoner: tries to maintain preferred distance and orbits player
+					const preferred = enemy.preferredDistance || 200;
+					
+					// Initialize orbit direction if not set
+					if (enemy.orbitDir === undefined) {
+						enemy.orbitDir = Math.random() < 0.5 ? 1 : -1;
+					}
+					
+					if (dist < preferred - 40) {
+						// Too close, back away quickly
 						moveX = -dx * norm;
 						moveY = -dy * norm;
-						effectiveSpeed *= 0.8;
-					} else if (dist > preferred + 50) {
+						effectiveSpeed *= 1.2; // Move faster when retreating
+					} else if (dist > preferred + 60) {
 						// Too far, approach
 						moveX = dx * norm;
 						moveY = dy * norm;
 					} else {
-						// Good distance, strafe
-						moveX = -dy * norm * 0.5;
-						moveY = dx * norm * 0.5;
-						effectiveSpeed *= 0.6;
+						// Good distance - orbit around player (perpendicular movement)
+						moveX = -dy * norm * enemy.orbitDir;
+						moveY = dx * norm * enemy.orbitDir;
+						// Also slightly adjust distance if needed
+						const distError = dist - preferred;
+						moveX += dx * norm * distError * 0.01;
+						moveY += dy * norm * distError * 0.01;
+						// Normalize
+						const mag = Math.sqrt(moveX * moveX + moveY * moveY);
+						if (mag > 0) {
+							moveX /= mag;
+							moveY /= mag;
+						}
+					}
+					
+					// Summoner: spawn minions periodically
+					if (enemy.type === 'summoner' && enemy.summonCooldown) {
+						if ((runTime - (enemy.lastSummonTime || 0)) >= enemy.summonCooldown) {
+							enemy.lastSummonTime = runTime;
+							// Spawn minions around the summoner
+							const summonCount = enemy.summonCount || 3;
+							for (let s = 0; s < summonCount; s++) {
+								const angle = (s / summonCount) * Math.PI * 2;
+								const spawnDist = enemy.radius + 20;
+								const minionX = enemy.x + Math.cos(angle) * spawnDist;
+								const minionY = enemy.y + Math.sin(angle) * spawnDist;
+								
+								// Spawn basic enemies as minions
+								const minion = new Enemy({
+									id: `enemy-${nextEnemyId++}`,
+									x: minionX,
+									y: minionY,
+									type: 'swarm', // Summons swarm enemies
+									radius: ENEMY_TYPES.swarm.radius,
+									maxHp: ENEMY_TYPES.swarm.maxHp,
+									hp: ENEMY_TYPES.swarm.maxHp,
+									speed: ENEMY_TYPES.swarm.speed,
+									contactDamage: ENEMY_TYPES.swarm.contactDamage
+								});
+								enemies.push(minion);
+							}
+						}
+					}
+				} else if (enemy.type === 'berserker') {
+					// Berserker boss: charges like charger but more aggressive
+					if (enemy.isCharging) {
+						const chargeDx = enemy.chargeTargetX - enemy.x;
+						const chargeDy = enemy.chargeTargetY - enemy.y;
+						const chargeDist = Math.hypot(chargeDx, chargeDy);
+						
+						if (chargeDist < 20) {
+							enemy.isCharging = false;
+							enemy.lastChargeTime = runTime;
+						} else {
+							const chargeNorm = 1 / chargeDist;
+							moveX = chargeDx * chargeNorm;
+							moveY = chargeDy * chargeNorm;
+							effectiveSpeed = enemy.chargeSpeed || 250;
+						}
+					} else if (dist < (enemy.chargeDistance || 250) && 
+							   (runTime - (enemy.lastChargeTime || 0)) >= (enemy.chargeCooldown || 2)) {
+						enemy.isCharging = true;
+						enemy.chargeTargetX = activePlayer.x;
+						enemy.chargeTargetY = activePlayer.y;
 					}
 				}
-				// Basic, tank, swarm all use default "move toward player" behavior
+				// Basic, tank, swarm, titan all use default "move toward player" behavior
 				
 				enemy.vx = moveX * effectiveSpeed;
 				enemy.vy = moveY * effectiveSpeed;

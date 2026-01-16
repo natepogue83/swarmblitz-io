@@ -13,7 +13,11 @@ const ENEMY_STYLES = {
 	charger: { color: "rgba(255, 140, 0, 0.9)",  outline: "rgba(140, 70, 0, 0.9)" },     // Orange - charges at player
 	tank:    { color: "rgba(100, 100, 180, 0.9)", outline: "rgba(40, 40, 100, 0.9)" },   // Blue - slow, high HP
 	swarm:   { color: "rgba(150, 220, 80, 0.9)", outline: "rgba(70, 120, 30, 0.9)" },    // Green - small, fast, groups
-	sniper:  { color: "rgba(180, 60, 180, 0.9)", outline: "rgba(90, 20, 90, 0.9)" }      // Purple - ranged (future)
+	sniper:  { color: "rgba(180, 60, 180, 0.9)", outline: "rgba(90, 20, 90, 0.9)" },     // Purple - keeps distance
+	// Boss types
+	titan:     { color: "rgba(80, 80, 80, 0.95)",   outline: "rgba(40, 40, 40, 0.95)" },   // Dark gray - giant slow boss
+	berserker: { color: "rgba(220, 50, 50, 0.95)",  outline: "rgba(120, 20, 20, 0.95)" },  // Deep red - charging boss
+	summoner:  { color: "rgba(100, 50, 150, 0.95)", outline: "rgba(50, 20, 80, 0.95)" }    // Dark purple - spawns minions
 };
 
 const SHADOW_OFFSET = 5;
@@ -501,6 +505,18 @@ function paintUIBar(ctx) {
 	ctx.fillStyle = "white";
 	ctx.fillText(droneCount, xOffset, centerY);
 
+	// === TOP CENTER: Run Timer ===
+	const stats = client.getEnemyStats();
+	const runTime = stats && stats.runTime != null ? stats.runTime : 0;
+	const minutes = Math.floor(runTime / 60);
+	const seconds = Math.floor(runTime % 60);
+	const timerText = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+	
+	ctx.font = "bold 24px Changa";
+	ctx.textAlign = "center";
+	ctx.fillStyle = "#FFFFFF";
+	ctx.fillText(timerText, canvasWidth / 2, centerY);
+
 	// === TOP RIGHT: Rank ===
 	const rank = sorted.findIndex(val => val.player === user);
 	const rankNum = (rank === -1 ? "--" : rank + 1);
@@ -676,18 +692,17 @@ function paintDebugOverlay(ctx) {
 	const stats = client.getEnemyStats();
 	if (!stats) return;
 	
-	const spawnInterval = stats.spawnInterval != null ? stats.spawnInterval : 0;
-	const runTime = stats.runTime != null ? stats.runTime : 0;
 	const enemyCount = stats.enemies != null ? stats.enemies : 0;
 	const killCount = stats.kills != null ? stats.kills : client.getKills();
 	const unlockedTypes = stats.unlockedTypes || ['basic'];
+	const bossCount = stats.bossCount || 0;
+	const nextBossIn = stats.nextBossIn != null ? stats.nextBossIn : 0;
 	
 	const lines = [
-		`Enemies: ${enemyCount}`,
-		`Spawn: ${spawnInterval.toFixed(2)}s`,
-		`Run: ${runTime.toFixed(1)}s`,
+		`Enemies: ${enemyCount} (${bossCount} bosses)`,
 		`Kills: ${killCount}`,
-		`Types: ${unlockedTypes.join(', ')}`
+		`Types: ${unlockedTypes.join(', ')}`,
+		`Next boss: ${nextBossIn.toFixed(1)}s`
 	];
 	
 	ctx.save();
@@ -2037,6 +2052,17 @@ function renderEnemy(ctx, enemy) {
 	
 	const type = enemy.type || 'basic';
 	const style = ENEMY_STYLES[type] || ENEMY_STYLES.basic;
+	const isBoss = enemy.isBoss;
+	
+	// Boss aura effect (pulsing outer glow)
+	if (isBoss) {
+		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+		ctx.strokeStyle = `rgba(255, 215, 0, ${0.3 + pulse * 0.4})`; // Golden aura
+		ctx.lineWidth = 4 + pulse * 3;
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius + 8 + pulse * 4, 0, Math.PI * 2);
+		ctx.stroke();
+	}
 	
 	// Charging glow effect
 	if (enemy.isCharging) {
@@ -2045,10 +2071,10 @@ function renderEnemy(ctx, enemy) {
 		ctx.shadowColor = style.color;
 	}
 	
-	// Shadow
+	// Shadow (larger for bosses)
 	ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
 	ctx.beginPath();
-	ctx.arc(enemy.x + 2, enemy.y + 2, enemy.radius, 0, Math.PI * 2);
+	ctx.arc(enemy.x + (isBoss ? 4 : 2), enemy.y + (isBoss ? 4 : 2), enemy.radius, 0, Math.PI * 2);
 	ctx.fill();
 	
 	// Body
@@ -2057,10 +2083,32 @@ function renderEnemy(ctx, enemy) {
 	ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
 	ctx.fill();
 	
-	// Outline
+	// Outline (thicker for bosses)
 	ctx.strokeStyle = style.outline;
-	ctx.lineWidth = 2;
+	ctx.lineWidth = isBoss ? 4 : 2;
 	ctx.stroke();
+	
+	// Boss HP bar (always visible for bosses)
+	if (isBoss) {
+		const barWidth = enemy.radius * 2.5;
+		const barHeight = 8;
+		const barX = enemy.x - barWidth / 2;
+		const barY = enemy.y - enemy.radius - 20;
+		const hpRatio = Math.max(0, enemy.hp / enemy.maxHp);
+		
+		// Background
+		ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+		ctx.fillRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4);
+		
+		// HP fill
+		ctx.fillStyle = hpRatio > 0.5 ? "#ffcc00" : (hpRatio > 0.25 ? "#ff8800" : "#ff3300");
+		ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+		
+		// Border
+		ctx.strokeStyle = "#FFD700";
+		ctx.lineWidth = 2;
+		ctx.strokeRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4);
+	}
 	
 	// Type-specific visuals
 	if (type === 'charger') {
@@ -2092,6 +2140,103 @@ function renderEnemy(ctx, enemy) {
 		ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
 		ctx.beginPath();
 		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.3, 0, Math.PI * 2);
+		ctx.fill();
+	} else if (type === 'sniper') {
+		// Crosshair/scope indicator for sniper
+		ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+		ctx.lineWidth = 2;
+		const crossSize = enemy.radius * 0.7;
+		// Vertical line
+		ctx.beginPath();
+		ctx.moveTo(enemy.x, enemy.y - crossSize);
+		ctx.lineTo(enemy.x, enemy.y + crossSize);
+		ctx.stroke();
+		// Horizontal line
+		ctx.beginPath();
+		ctx.moveTo(enemy.x - crossSize, enemy.y);
+		ctx.lineTo(enemy.x + crossSize, enemy.y);
+		ctx.stroke();
+		// Small center circle
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25, 0, Math.PI * 2);
+		ctx.stroke();
+	}
+	
+	// ===== BOSS-SPECIFIC VISUALS =====
+	if (type === 'titan') {
+		// Multiple concentric rings for titan
+		ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+		ctx.lineWidth = 3;
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.7, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.4, 0, Math.PI * 2);
+		ctx.stroke();
+		// X mark in center
+		ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+		ctx.lineWidth = 4;
+		const xSize = enemy.radius * 0.25;
+		ctx.beginPath();
+		ctx.moveTo(enemy.x - xSize, enemy.y - xSize);
+		ctx.lineTo(enemy.x + xSize, enemy.y + xSize);
+		ctx.moveTo(enemy.x + xSize, enemy.y - xSize);
+		ctx.lineTo(enemy.x - xSize, enemy.y + xSize);
+		ctx.stroke();
+	} else if (type === 'berserker') {
+		// Aggressive spikes around berserker
+		ctx.strokeStyle = "rgba(255, 100, 100, 0.8)";
+		ctx.lineWidth = 3;
+		const spikeCount = 6;
+		for (let i = 0; i < spikeCount; i++) {
+			const angle = (i / spikeCount) * Math.PI * 2 + Date.now() / 500;
+			const innerR = enemy.radius * 0.8;
+			const outerR = enemy.radius * 1.2;
+			ctx.beginPath();
+			ctx.moveTo(
+				enemy.x + Math.cos(angle) * innerR,
+				enemy.y + Math.sin(angle) * innerR
+			);
+			ctx.lineTo(
+				enemy.x + Math.cos(angle) * outerR,
+				enemy.y + Math.sin(angle) * outerR
+			);
+			ctx.stroke();
+		}
+		// Charge direction indicator when charging
+		if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
+			const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
+			if (speed > 0) {
+				const angle = Math.atan2(enemy.vy, enemy.vx);
+				ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+				ctx.lineWidth = 5;
+				ctx.beginPath();
+				ctx.moveTo(enemy.x, enemy.y);
+				ctx.lineTo(
+					enemy.x + Math.cos(angle) * enemy.radius * 1.8,
+					enemy.y + Math.sin(angle) * enemy.radius * 1.8
+				);
+				ctx.stroke();
+			}
+		}
+	} else if (type === 'summoner') {
+		// Magical runes/circles for summoner
+		const time = Date.now() / 1000;
+		ctx.strokeStyle = "rgba(200, 100, 255, 0.6)";
+		ctx.lineWidth = 2;
+		// Rotating outer ring
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.85, time, time + Math.PI * 1.5);
+		ctx.stroke();
+		// Counter-rotating inner ring
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.5, -time * 1.5, -time * 1.5 + Math.PI);
+		ctx.stroke();
+		// Pulsing center orb
+		const pulse = 0.5 + 0.5 * Math.sin(time * 3);
+		ctx.fillStyle = `rgba(200, 100, 255, ${0.4 + pulse * 0.4})`;
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25 + pulse * 3, 0, Math.PI * 2);
 		ctx.fill();
 	}
 	
