@@ -2,7 +2,6 @@ export const config = {
 	"dev": true,
 	"port": 8083,
 	"wsPath": "/ws",
-	"bots": 30,
 	"fps": 60,
 	"serverTickRate": 60,
 	"netTickRate": 60,
@@ -42,13 +41,13 @@ export const consts = {
 	
 	// ===== TRAIL SPEED BUFF =====
 	// When players leave their territory, they gain speed over time (risk/reward)
-	"TRAIL_SPEED_BUFF_MAX": 1.4,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
-	"TRAIL_SPEED_BUFF_RAMP_TIME": 5,  // Seconds to reach max speed buff
+	"TRAIL_SPEED_BUFF_MAX": 1.6,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
+	"TRAIL_SPEED_BUFF_RAMP_TIME": 8,  // Seconds to reach max speed buff
 	"TRAIL_SPEED_BUFF_EASE": 2,       // Easing exponent (1 = linear, 2 = quadratic ease-in, higher = slower start)
 	
 	// ===== XP / LEVELING SYSTEM =====
-	"XP_BASE_PER_LEVEL": 100,         // Base XP needed to level up (level 1 → 2)
-	"XP_INCREMENT_PER_LEVEL": 25,    // XP cost increases by this * level each level
+	"XP_BASE_PER_LEVEL": 10,         // Base XP needed to level up (level 1 → 2)
+	"XP_INCREMENT_PER_LEVEL": 15,    // XP cost increases by this * level each level
 	// Formula: XP needed for level L = BASE + (L-1) * INCREMENT
 	// Level 1→2: 50, Level 2→3: 65, Level 3→4: 80, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.04,  // Size increase per level (5%)
@@ -57,13 +56,13 @@ export const consts = {
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)
 	"PLAYER_MAX_HP": 100,
-	"PLAYER_HP_REGEN_IN_TERRITORY": 50,  // SHP per second when in own territory (fast regen)
-	"TERRITORY_DAMAGE_REDUCTION": 0.5,   // Damage reduction when in own territory (0.5 = 50% less damage)
+	"PLAYER_HP_REGEN_IN_TERRITORY": 30,  // SHP per second when in own territory (fast regen)
+	"TERRITORY_DAMAGE_REDUCTION": 0.2,   // Damage reduction when in own territory (0.5 = 50% less damage)
 	
 	// ===== DRONE SYSTEM =====
 	// Note: Drones are now granted automatically via leveling (1 per level)
 	// Drones use hitscan - instant damage when they fire
-	"MAX_DRONES": 50,                 // Maximum drones per player (effectively level cap)
+	"MAX_DRONES": 10,                 // Maximum drones per player (effectively level cap)
 	"DRONE_ORBIT_RADIUS": 55,         // Distance from player center
 	"DRONE_ORBIT_SPEED": 2,         // Radians per second (orbit rotation speed)
 	"DRONE_RADIUS": 10,               // Visual/collision radius
@@ -72,7 +71,7 @@ export const consts = {
 	"DRONE_DAMAGE_DECAY_FACTOR": 0.75,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
 	"DRONE_RANGE": 158,               // Targeting range (reduced 30% from 225)
 	"DRONE_COOLDOWN": .1,             // Seconds between shots
-	"DRONE_UPDATE_EVERY_TICKS": 1,    // Send drone updates every tick for smooth visuals
+	"DRONE_UPDATE_EVERY_TICKS": 1,    // Throttle drone updates sent to clients (1 = every tick)
 	
 	// ===== AREA OF INTEREST (AOI) OPTIMIZATION =====
 	// Reduces bandwidth from O(N²) to O(N×K) where K = avg nearby players

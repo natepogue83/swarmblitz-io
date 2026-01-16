@@ -14,7 +14,13 @@ let user, socket, frame;
 let players, allPlayers;
 let coinsById = new Map();
 let dronesById = new Map(); // Stores all drones keyed by id
+let enemies = [];
+let enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 let kills;
+
+// Upgrade system state
+let upgradeChoices = null; // Current upgrade choices shown to player
+let gamePaused = false; // True when upgrade selection is pending
 let timeout = undefined;
 let dirty = false;
 let deadFrames = 0;
@@ -114,6 +120,13 @@ function connectGame(wsUrl, name, callback, flag) {
 			socket.close();
 			return;
 		}
+		if (type === MSG.UPGRADE_OFFER) {
+			// Server is offering upgrade choices - pause and show UI
+			upgradeChoices = data.choices;
+			gamePaused = true;
+			invokeRenderer("showUpgradeUI", [data.choices, data.newLevel]);
+			return;
+		}
 	});
 	
 	socket.addEventListener("close", () => {
@@ -142,6 +155,13 @@ function handleInitState(data) {
 		if (data.coins) {
 			data.coins.forEach(c => coinsById.set(c.id, c));
 		}
+	
+	if (data.enemies) {
+		enemies = data.enemies;
+	}
+	if (data.enemyStats) {
+		enemyStats = data.enemyStats;
+	}
 
 		// Load players
 		data.players.forEach(p => {
@@ -218,6 +238,9 @@ function updateZoom(zoom) {
 
 function sendTargetAngle() {
 	if (!user || user.dead || !socket) return;
+	
+	// Don't send input while game is paused (upgrade selection)
+	if (gamePaused) return;
 	
 	let targetAngle;
 	
@@ -308,6 +331,14 @@ function getDrones() {
 	return Array.from(dronesById.values());
 }
 
+function getEnemies() {
+	return enemies.slice();
+}
+
+function getEnemyStats() {
+	return { ...enemyStats };
+}
+
 function disconnect() {
 	window.removeEventListener("resize", sendViewportUpdate);
 	if (socket) socket.close();
@@ -375,6 +406,13 @@ function processFrame(data) {
 			}
 			coinsById.delete(id);
 		});
+	}
+	
+	if (data.enemies) {
+		enemies = data.enemies;
+	}
+	if (data.enemyStats) {
+		enemyStats = data.enemyStats;
 	}
 	
 	// Handle XP/Level updates
@@ -531,6 +569,20 @@ function processFrame(data) {
 		if (!player) return;
 		if (val.left) player.die();
 		player.targetAngle = val.targetAngle;
+		
+		// Sync position with server to prevent drift (especially for drones)
+		if (val.x !== undefined && val.y !== undefined) {
+			// Snap to server position when paused, lerp during normal play
+			if (gamePaused) {
+				player.x = val.x;
+				player.y = val.y;
+			} else {
+				// Smooth correction to server position
+				const correctionStrength = 0.3;
+				player.x += (val.x - player.x) * correctionStrength;
+				player.y += (val.y - player.y) * correctionStrength;
+			}
+		}
 	});
 	
 	// Any locally-known player that isn't in the server moves list this frame should be considered gone/dead.
@@ -576,13 +628,14 @@ function paintLoop() {
 	}
 }
 
-
 function reset() {
 	user = null;
 	players = [];
 	allPlayers = [];
 	coinsById.clear();
 	dronesById.clear();
+	enemies = [];
+	enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 	kills = 0;
 	invokeRenderer("reset");
 }
@@ -593,6 +646,12 @@ function setUser(player) {
 }
 
 function update() {
+	// Skip simulation update while upgrade UI is open (game paused)
+	if (gamePaused) {
+		invokeRenderer("update", [frame]);
+		return;
+	}
+	
 	const dead = [];
 	updateFrame(players, dead, undefined, 1 / clientTickRate);
 	
@@ -627,6 +686,37 @@ function setKeyState(key, pressed) {
 	}
 }
 
+// Upgrade system functions
+function selectUpgrade(upgradeId) {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	if (!upgradeChoices || !gamePaused) return;
+	
+	// Validate the selection is one of the choices
+	const validChoice = upgradeChoices.find(c => c.id === upgradeId);
+	if (!validChoice) {
+		console.warn("Invalid upgrade selection:", upgradeId);
+		return;
+	}
+	
+	// Send selection to server
+	socket.send(encodePacket(MSG.UPGRADE_PICK, { upgradeId }));
+	
+	// Clear local state (server will resume)
+	upgradeChoices = null;
+	gamePaused = false;
+	
+	// Notify renderer to hide UI
+	invokeRenderer("hideUpgradeUI", []);
+}
+
+function getUpgradeChoices() {
+	return upgradeChoices;
+}
+
+function isGamePaused() {
+	return gamePaused;
+}
+
 // Export stuff
 export { 
 	connectGame, 
@@ -635,6 +725,8 @@ export {
 	getOthers, 
 	getCoins,
 	getDrones,
+	getEnemies,
+	getEnemyStats,
 	disconnect, 
 	setRenderer, 
 	setAllowAnimation, 
@@ -644,7 +736,10 @@ export {
 	setViewOffset,
 	updateZoom,
 	setKeyState,
-	polygonArea
+	polygonArea,
+	selectUpgrade,
+	getUpgradeChoices,
+	isGamePaused
 };
 
 export const allowAnimation = {

@@ -48,7 +48,11 @@ export function updateStamina(player, deltaSeconds) {
 			player.isExhausted = false;
 		}
 		
-		// Regenerate HP in territory
+		// Regenerate HP in territory (using effective maxHp from upgrades)
+		const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+		const maxHpMult = (player.derivedStats && player.derivedStats.maxHpMult) || 1.0;
+		player.maxHp = baseMaxHp * maxHpMult;
+		
 		if (player.hp < player.maxHp) {
 			player.hp += (consts.PLAYER_HP_REGEN_IN_TERRITORY || 8) * deltaSeconds;
 			if (player.hp > player.maxHp) {

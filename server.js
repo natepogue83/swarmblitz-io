@@ -1,7 +1,7 @@
 import http from "http";
 import path from "path";
 import fs from "fs";
-import { exec, fork } from "child_process";
+import { exec } from "child_process";
 import { fileURLToPath } from "url";
 import { performance } from "perf_hooks";
 import { WebSocketServer } from "ws";
@@ -221,6 +221,14 @@ wss.on("connection", (ws) => {
 			return;
 		}
 		
+		if (type === MSG.UPGRADE_PICK && ws.player) {
+			const upgradeId = payload?.upgradeId;
+			if (upgradeId) {
+				game.handleUpgradePick(ws.player, upgradeId);
+			}
+			return;
+		}
+		
 		if (type === MSG.REQUEST) {
 			if (ws.player) game.sendFullState(ws.player);
 			if (ws.god) game.sendFullStateToGod(ws.god);
@@ -267,29 +275,3 @@ if (enableMetrics) {
 	}, 5000);
 }
 
-const botProcesses = [];
-const botTarget = isProd ? 0 : parseInt(config.bots || 0);
-
-function spawnBot() {
-	const botProcess = fork(path.join(__dirname, "paper-io-bot.js"), [`ws://localhost:${port}${wsPath}`], {
-		stdio: "inherit"
-	});
-	
-	botProcess.on("exit", () => {
-		const index = botProcesses.indexOf(botProcess);
-		if (index > -1) {
-			botProcesses.splice(index, 1);
-		}
-		setTimeout(() => {
-			if (botProcesses.length < botTarget) {
-				spawnBot();
-			}
-		}, 2000);
-	});
-	
-	botProcesses.push(botProcess);
-}
-
-for (let i = 0; i < botTarget; i++) {
-	setTimeout(() => spawnBot(), i * 500);
-}

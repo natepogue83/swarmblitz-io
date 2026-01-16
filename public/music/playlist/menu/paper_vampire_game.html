@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Paper Vampire Survivors Game</title>
+<style>
+  /* Reset the default margin and padding so the canvas covers the viewport cleanly. */
+  body, html {
+    margin: 0;
+    padding: 0;
+    background: #212529;
+    color: #f8f9fa;
+    font-family: sans-serif;
+    overflow: hidden; /* Prevent scrollbars from appearing while playing */
+  }
+
+  /* Center the canvas on the page.  The canvas represents the game world. */
+  #gameCanvas {
+    display: block;
+    margin: auto;
+    background: #111;
+    border: 2px solid #444;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  /* Simple UI container fixed above the canvas. */
+  #ui {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 800px;
+    color: white;
+    font-size: 14px;
+    text-align: center;
+    user-select: none;
+    pointer-events: none;
+  }
+
+  /* XP bar styling. */
+  .bar-container {
+    width: 200px;
+    height: 10px;
+    border: 1px solid #888;
+    margin: 0 auto;
+    position: relative;
+    background: #333;
+  }
+
+  .bar-fill {
+    position: absolute;
+    height: 100%;
+    background: #28a745;
+    width: 0%;
+  }
+
+  #message {
+    margin-top: 10px;
+    font-size: 16px;
+    height: 20px;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<div id="ui">
+  <div>Level: <span id="level">1</span> | XP: <span id="xp">0</span>/<span id="xpNeeded">20</span> | Lives: <span id="lives">3</span></div>
+  <div class="bar-container"><div class="bar-fill" id="xpBar"></div></div>
+  <div id="message"></div>
+</div>
+
+<script>
+/*
+This script implements a small single‑player ".io" style game that mixes elements of Paper.io, Vampire Survivors and Brotato.
+The player controls a square that can extend its territory by drawing a trail outside their base and returning to it, à la Paper.io.
+Meanwhile, waves of enemies spawn and home toward the player.  The player auto‑fires projectiles in random directions like
+Vampire Survivors/Brotato.  Defeating enemies grants XP, levelling up increases the fire rate.
+*/
+(function() {
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Offscreen canvas to track the territory the player has captured.  When the
+// player closes a loop, we fill the polygon on this canvas.  Sampling
+// territoryCanvas's alpha channel lets us determine whether a pixel belongs
+// to the player's territory.
+const territoryCanvas = document.createElement('canvas');
+territoryCanvas.width = canvas.width;
+territoryCanvas.height = canvas.height;
+const territoryCtx = territoryCanvas.getContext('2d');
+
+// Player state.  level and xp drive the bullet spawn rate.  lives grant
+// multiple chances before the game ends.
+const player = {
+  x: canvas.width / 2,
+  y: canvas.height / 2,
+  radius: 6,
+  speed: 2.0,
+  vx: 0,
+  vy: 0,
+  outside: false,
+  path: [],
+  level: 1,
+  xp: 0,
+  xpNeeded: 20,
+  lives: 3,
+  bulletInterval: 600, // base milliseconds between bullets; reduced by level
+  lastBulletTime: 0
+};
+
+// Fill an initial square territory at the centre of the map to serve as the
+// player's base.  Territory is drawn as a solid colour on the offscreen
+// canvas; any non‑transparent pixel is considered safe.
+const startSize = 100;
+territoryCtx.fillStyle = '#066c63';
+territoryCtx.fillRect(player.x - startSize/2, player.y - startSize/2, startSize, startSize);
+
+// Track pressed keys for movement.  Both WASD and arrow keys are supported.
+const keys = {};
+window.addEventListener('keydown', e => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d'].includes(e.key)) {
+    keys[e.key] = true;
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', e => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d'].includes(e.key)) {
+    keys[e.key] = false;
+    e.preventDefault();
+  }
+});
+
+// Arrays for dynamic objects.  Enemies home towards the player; bullets travel
+// in straight lines and vanish after a fixed lifetime.
+const enemies = [];
+const bullets = [];
+let lastSpawnTime = 0;
+let spawnInterval = 2000; // initial milliseconds between enemy spawns
+let gameTime = 0;
+let gameOver = false;
+
+// Spawn a new enemy at a random edge of the screen.  Difficulty scales
+// roughly with distance from the centre and the elapsed game time.  Each
+// enemy type has its own speed, hit points, size, XP reward and colour.
+function spawnEnemy() {
+  let x, y;
+  const margin = 30;
+  const edge = Math.floor(Math.random() * 4);
+  if (edge === 0) { // top
+    x = Math.random() * canvas.width;
+    y = margin;
+  } else if (edge === 1) { // right
+    x = canvas.width - margin;
+    y = Math.random() * canvas.height;
+  } else if (edge === 2) { // bottom
+    x = Math.random() * canvas.width;
+    y = canvas.height - margin;
+  } else { // left
+    x = margin;
+    y = Math.random() * canvas.height;
+  }
+
+  // Determine difficulty class based on distance from the centre and game time.
+  const centerDist = Math.hypot(x - canvas.width/2, y - canvas.height/2);
+  let typeIndex = 0;
+  if (centerDist > 250) typeIndex = 2;
+  else if (centerDist > 150) typeIndex = 1;
+  const timeFactor = Math.min(2, Math.floor(gameTime / 60000));
+  typeIndex = Math.min(typeIndex + timeFactor, 2);
+
+  const enemyTypes = [
+    {speed: 0.8, hp: 1, size: 8, xp: 4, color: '#a71d31'},
+    {speed: 1.1, hp: 2, size: 10, xp: 6, color: '#c64756'},
+    {speed: 1.4, hp: 3, size: 12, xp: 8, color: '#e33d5f'}
+  ];
+  const t = enemyTypes[typeIndex];
+  const enemy = {
+    x: x,
+    y: y,
+    speed: t.speed + Math.random() * 0.3,
+    hp: t.hp,
+    maxHp: t.hp,
+    size: t.size,
+    xp: t.xp,
+    color: t.color
+  };
+  enemies.push(enemy);
+}
+
+// Handle player movement, territory crossing and bullet spawning.  If the
+// player moves outside the captured territory we start recording a trail.
+// When they re‑enter the territory we fill the enclosed polygon into
+// territoryCanvas, capturing it permanently.
+function updatePlayer(delta) {
+  // Determine velocity from pressed keys
+  player.vx = 0;
+  player.vy = 0;
+  if (keys.ArrowUp || keys.w) player.vy = -player.speed;
+  if (keys.ArrowDown || keys.s) player.vy = player.speed;
+  if (keys.ArrowLeft || keys.a) player.vx = -player.speed;
+  if (keys.ArrowRight || keys.d) player.vx = player.speed;
+  // Normalize diagonal movement so diagonal speed isn't faster
+  if (player.vx && player.vy) {
+    player.vx *= Math.SQRT1_2;
+    player.vy *= Math.SQRT1_2;
+  }
+  // Update position and clamp to canvas boundaries
+  let newX = player.x + player.vx;
+  let newY = player.y + player.vy;
+  if (newX < player.radius) newX = player.radius;
+  if (newX > canvas.width - player.radius) newX = canvas.width - player.radius;
+  if (newY < player.radius) newY = player.radius;
+  if (newY > canvas.height - player.radius) newY = canvas.height - player.radius;
+  player.x = newX;
+  player.y = newY;
+
+  // Sample the alpha channel of territoryCanvas to determine if we're inside
+  const pixel = territoryCtx.getImageData(Math.floor(player.x), Math.floor(player.y), 1, 1).data;
+  const inside = pixel[3] > 0;
+  if (player.outside) {
+    // Append to the path while outside
+    player.path.push({x: player.x, y: player.y});
+    // If re‑enter territory, fill the captured area
+    if (inside) {
+      if (player.path.length > 2) {
+        captureArea();
+      }
+      player.outside = false;
+      player.path = [];
+    }
+  } else {
+    // We were inside; if we now leave territory, start a new path
+    if (!inside) {
+      player.outside = true;
+      player.path = [{x: player.x, y: player.y}];
+    }
+  }
+
+  // Auto‑fire bullets at a rate depending on the player's level
+  const now = performance.now();
+  let interval = player.bulletInterval - (player.level * 10);
+  if (interval < 200) interval = 200;
+  if (now - player.lastBulletTime > interval) {
+    spawnBullet();
+    player.lastBulletTime = now;
+  }
+}
+
+// When a trail closes back into the territory this function fills the
+// polygon described by player.path onto the territory canvas.  We close
+// the path so the area inside is filled.  Each captured area becomes part
+// of the permanent territory.
+function captureArea() {
+  territoryCtx.fillStyle = '#066c63';
+  territoryCtx.beginPath();
+  const pts = player.path;
+  if (pts.length > 0) {
+    territoryCtx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+      territoryCtx.lineTo(pts[i].x, pts[i].y);
+    }
+    territoryCtx.closePath();
+    territoryCtx.fill();
+  }
+}
+
+// Create a bullet starting at the player's position, travelling in a random
+// direction.  Bullets have a limited lifetime and cause one point of
+// damage to enemies when they collide.
+function spawnBullet() {
+  const angle = Math.random() * Math.PI * 2;
+  const speed = 4;
+  const bullet = {
+    x: player.x,
+    y: player.y,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    radius: 3,
+    damage: 1,
+    life: 2000, // bullet lifetime in ms
+    spawnTime: performance.now()
+  };
+  bullets.push(bullet);
+}
+
+// Update bullet positions and remove expired bullets.  Bullets travel in
+// straight lines without collision with the territory.
+function updateBullets(delta) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx;
+    b.y += b.vy;
+    b.life -= delta;
+    // Remove if off screen or expired
+    if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height || b.life <= 0) {
+      bullets.splice(i, 1);
+    }
+  }
+}
+
+// Update each enemy: move toward the player, handle collisions with bullets
+// and the player, and remove them when dead.  Also gradually tighten the
+// enemy spawn interval to increase pressure on the player.
+function updateEnemies(delta) {
+  // Spawn new enemies based on a dynamic spawn rate
+  if (performance.now() - lastSpawnTime > spawnInterval) {
+    spawnEnemy();
+    lastSpawnTime = performance.now();
+    // Reduce spawn interval over time but clamp to a minimum
+    if (spawnInterval > 500) spawnInterval -= 20;
+  }
+
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    // Move toward the player's current location
+    const dx = player.x - e.x;
+    const dy = player.y - e.y;
+    const dist = Math.hypot(dx, dy);
+    const nx = dx / dist;
+    const ny = dy / dist;
+    e.x += nx * e.speed;
+    e.y += ny * e.speed;
+
+    // Check collision with bullets
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      const d = Math.hypot(b.x - e.x, b.y - e.y);
+      if (d < e.size + b.radius) {
+        e.hp -= b.damage;
+        bullets.splice(j, 1);
+        if (e.hp <= 0) {
+          // Grant XP and remove the enemy
+          player.xp += e.xp;
+          enemies.splice(i, 1);
+          // Level up logic: XP resets and the requirement increases
+          if (player.xp >= player.xpNeeded) {
+            player.xp -= player.xpNeeded;
+            player.level += 1;
+            player.xpNeeded = Math.floor(player.xpNeeded * 1.3 + 5);
+          }
+          break;
+        }
+      }
+    }
+
+    // Check collision with the player
+    const dp = Math.hypot(player.x - e.x, player.y - e.y);
+    if (dp < player.radius + e.size) {
+      enemies.splice(i, 1);
+      player.lives -= 1;
+      if (player.lives <= 0) {
+        endGame();
+      }
+    }
+  }
+}
+
+// When the player runs out of lives, stop updating the game and display a
+// message.  The user can reload the page to play again.
+function endGame() {
+  gameOver = true;
+  document.getElementById('message').textContent = 'Game Over! Refresh to play again.';
+}
+
+// Render everything on the visible canvas.  The territory is drawn first
+// (from the offscreen canvas), then the current path (if the player is
+// outside), then the player, bullets and enemies.  Finally the UI values
+// are updated.
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Draw the captured territory
+  ctx.drawImage(territoryCanvas, 0, 0);
+
+  // Draw the player's trail while outside the territory
+  if (player.path.length > 1) {
+    ctx.strokeStyle = '#f5b342';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(player.path[0].x, player.path[0].y);
+    for (let i = 1; i < player.path.length; i++) {
+      ctx.lineTo(player.path[i].x, player.path[i].y);
+    }
+    ctx.stroke();
+  }
+
+  // Draw the player as a circle
+  ctx.fillStyle = '#29abe2';
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Draw bullets
+  ctx.fillStyle = '#ffc857';
+  bullets.forEach(b => {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Draw enemies
+  enemies.forEach(e => {
+    ctx.fillStyle = e.color;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.size, 0, Math.PI * 2);
+    ctx.fill();
+    // Draw a ring to visualise remaining HP (for enemies with multiple HP)
+    if (e.maxHp > 1) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const angle = Math.PI * 2 * e.hp / e.maxHp;
+      ctx.arc(e.x, e.y, e.size + 2, -Math.PI / 2, -Math.PI / 2 + angle);
+      ctx.stroke();
+    }
+  });
+
+  // Update UI values
+  document.getElementById('level').textContent = player.level;
+  document.getElementById('xp').textContent = player.xp;
+  document.getElementById('xpNeeded').textContent = player.xpNeeded;
+  document.getElementById('lives').textContent = player.lives;
+  const xpRatio = player.xp / player.xpNeeded;
+  document.getElementById('xpBar').style.width = Math.min(100, xpRatio * 100) + '%';
+}
+
+// Main game loop, called via requestAnimationFrame.  It integrates motion,
+// handles input, spawns enemies, moves bullets and enemies, and redraws
+// everything.  Time deltas are used so motion remains smooth regardless of
+// frame rate.
+let lastTime = performance.now();
+function loop() {
+  if (gameOver) {
+    draw();
+    return;
+  }
+  const now = performance.now();
+  const delta = now - lastTime;
+  lastTime = now;
+  gameTime += delta;
+
+  updatePlayer(delta);
+  updateBullets(delta);
+  updateEnemies(delta);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// Kick off the game loop
+loop();
+})();
+</script>
+</body>
+</html>

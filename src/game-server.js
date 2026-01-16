@@ -1,6 +1,9 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
+import Enemy from "./core/enemy.js";
+import EnemySpawner, { ENEMY_TYPES } from "./core/enemy-spawner.js";
 import { consts } from "../config.js";
 import { MSG } from "./net/packet.js";
+import { rollUpgradeChoices, selectUpgrade, initPlayerUpgrades, serializeUpgrades } from "./core/upgrade-system.js";
 
 // Debug logging (keep off by default for performance)
 const DEBUG_LEVELING_LOGS = false;
@@ -276,13 +279,56 @@ function Game(id) {
 	let coins = [];  // Still called "coins" internally for pickup entities
 	let nextCoinId = 0;
 	let coinSpawnCooldown = 0;
+	
+	// PvE enemies
+	const enemies = [];
+	let nextEnemyId = 0;
+	const enemySpawner = new EnemySpawner();
+	let enemyKills = 0;
+	let runTime = 0;
+	
+	// Upgrade system pause state
+	let gamePaused = false;
+	let pendingUpgradeOffer = null; // { playerNum, choices: [...] }
 
 	this.id = id;
 	
+	// Reset game state for new run (called when player joins/restarts)
+	function resetGameState() {
+		// Clear all enemies
+		enemies.length = 0;
+		nextEnemyId = 0;
+		
+		// Clear all coins/XP pickups
+		coins.length = 0;
+		coinGrid.clear();
+		nextCoinId = 0;
+		coinSpawnCooldown = 0;
+		
+		// Reset enemy spawner
+		enemySpawner.reset();
+		
+		// Reset stats
+		enemyKills = 0;
+		runTime = 0;
+		
+		// Reset pause state
+		gamePaused = false;
+		pendingUpgradeOffer = null;
+		
+		console.log(`[${new Date()}] Game state reset for new run.`);
+	}
+	
 	this.addPlayer = (client, name, viewport) => {
+		if (players.length >= 1) {
+			return { ok: false, error: "Singleplayer only." };
+		}
 		if (players.length >= consts.MAX_PLAYERS) {
 			return { ok: false, error: "There're too many players!" };
 		}
+		
+		// Reset game state for new run (singleplayer restart)
+		resetGameState();
 		
 		const start = findEmptySpawn(players, mapSize);
 		if (!start) return { ok: false, error: "Cannot find spawn location." };
@@ -313,6 +359,9 @@ function Game(id) {
 		p.droneCount = p.level;
 		p.drones = [];
 		rebuildDronesArray(p, p.droneCount);
+		
+		// Initialize upgrade system
+		initPlayerUpgrades(p);
 		
 		// AOI tracking - which players this player knows about
 		p.knownPlayers = new Set();  // Set of player nums this client has received
@@ -362,6 +411,49 @@ function Game(id) {
 		
 		return data;
 	}
+
+	function serializeEnemy(enemy) {
+		const data = enemy.serialData ? enemy.serialData() : {
+			id: enemy.id,
+			x: enemy.x,
+			y: enemy.y,
+			vx: enemy.vx,
+			vy: enemy.vy,
+			radius: enemy.radius,
+			hp: enemy.hp,
+			maxHp: enemy.maxHp,
+			contactDamage: enemy.contactDamage,
+			speed: enemy.speed,
+			lastHitAt: enemy.lastHitAt,
+			type: enemy.type
+		};
+		// Include charging state for client rendering
+		if (enemy.isCharging) {
+			data.isCharging = true;
+		}
+		return data;
+	}
+
+	function getEnemiesForPlayer(player) {
+		const aoiRadius = player.aoiRadius || calculateAOIRadius(player.viewport);
+		const maxDist = aoiRadius + AOI_BUFFER;
+		const maxDistSq = maxDist * maxDist;
+		return enemies.filter(enemy => {
+			const dx = enemy.x - player.x;
+			const dy = enemy.y - player.y;
+			return dx * dx + dy * dy <= maxDistSq;
+		});
+	}
+
+	function getEnemyStats() {
+		return {
+			runTime,
+			spawnInterval: enemySpawner.spawnInterval,
+			enemies: enemies.length,
+			kills: enemyKills,
+			unlockedTypes: enemySpawner.getUnlockedTypes()
+		};
+	}
 	
 	this.addGod = client => {
 		const g = {
@@ -401,6 +493,40 @@ function Game(id) {
 		}
 	};
 
+	this.handleUpgradePick = (player, upgradeId) => {
+		// Validate that this player has a pending upgrade offer
+		if (!gamePaused || !pendingUpgradeOffer || pendingUpgradeOffer.playerNum !== player.num) {
+			console.warn(`[UPGRADE] Invalid upgrade pick from ${player.name} - no pending offer`);
+			return { ok: false, error: "No pending upgrade offer." };
+		}
+		
+		// Validate that the upgrade is one of the offered choices
+		const validChoice = pendingUpgradeOffer.choices.find(c => c.id === upgradeId);
+		if (!validChoice) {
+			console.warn(`[UPGRADE] Invalid upgrade pick from ${player.name} - ${upgradeId} not in choices`);
+			return { ok: false, error: "Invalid upgrade selection." };
+		}
+		
+		// Apply the upgrade
+		const newStacks = selectUpgrade(player, upgradeId);
+		
+		if (DEBUG_LEVELING_LOGS) {
+			console.log(`[UPGRADE] ${player.name} selected ${validChoice.name} (now ${newStacks} stacks)`);
+		}
+		
+		// Clear the pending offer and resume game
+		pendingUpgradeOffer = null;
+		gamePaused = false;
+		
+		// Force an XP update to sync derived stats
+		player._forceXpUpdate = true;
+		
+		return { ok: true, upgradeId, newStacks };
+	};
+	
+	// Expose pause state for external queries
+	this.isPaused = () => gamePaused;
+
 	this.sendFullState = player => {
 		if (!player || !player.client) return;
 		player.frame = frame;
@@ -419,12 +545,15 @@ function Game(id) {
 		}
 		
 		const splayers = nearbyPlayers.map(val => serializePlayer(val, player.num));
+		const senemies = getEnemiesForPlayer(player).map(serializeEnemy);
 		player.client.sendPacket(MSG.INIT, {
 			"num": player.num,
 			"gameid": id,
 			"frame": frame,
 			"players": splayers,
-			"coins": nearbyCoins
+			"coins": nearbyCoins,
+			"enemies": senemies,
+			"enemyStats": getEnemyStats()
 		});
 	};
 
@@ -433,15 +562,23 @@ function Game(id) {
 		god.frame = frame;
 		
 		const splayers = players.map(val => serializePlayer(val, -1));
+		const senemies = enemies.map(serializeEnemy);
 		god.client.sendPacket(MSG.INIT, {
 			"gameid": id,
 			"frame": frame,
 			"players": splayers,
-			"coins": coins
+			"coins": coins,
+			"enemies": senemies,
+			"enemyStats": getEnemyStats()
 		});
 	};
 
 	function tickSim(deltaSeconds) {
+		// Skip simulation if game is paused (upgrade selection pending)
+		if (gamePaused) {
+			return;
+		}
+		
 		const economyDeltas = createEconomyDeltas();
 		
 		// Coin spawning
@@ -516,16 +653,14 @@ function Game(id) {
 				p.knownPlayers.delete(leaveNum);
 			}
 			
-			// Build moves array with position data for client interpolation
 			const moves = [];
 			for (const np of nearby) {
 				moves.push({
 					num: np.num,
 					left: !!np.disconnected || np.dead,
+					targetAngle: np.targetAngle,
 					x: np.x,
-					y: np.y,
-					angle: np.angle,
-					targetAngle: np.targetAngle
+					y: np.y
 				});
 			}
 			for (const bp of inBuffer) {
@@ -533,10 +668,9 @@ function Game(id) {
 					moves.push({
 						num: bp.num,
 						left: !!bp.disconnected || bp.dead,
+						targetAngle: bp.targetAngle,
 						x: bp.x,
-						y: bp.y,
-						angle: bp.angle,
-						targetAngle: bp.targetAngle
+						y: bp.y
 					});
 				}
 			}
@@ -635,6 +769,10 @@ function Game(id) {
 				filteredData.leftPlayers = leaving;
 			}
 			
+			const nearbyEnemies = getEnemiesForPlayer(p).map(serializeEnemy);
+			filteredData.enemies = nearbyEnemies;
+			filteredData.enemyStats = getEnemyStats();
+			
 			p.client.sendPacket(MSG.FRAME, filteredData);
 		}
 		
@@ -643,9 +781,6 @@ function Game(id) {
 			moves: players.map(val => ({
 				num: val.num,
 				left: !!val.disconnected,
-				x: val.x,
-				y: val.y,
-				angle: val.angle,
 				targetAngle: val.targetAngle
 			}))
 		};
@@ -657,6 +792,8 @@ function Game(id) {
 		if (pendingDeltas.captureEvents.length > 0) godData.captureEvents = pendingDeltas.captureEvents;
 		if (pendingDeltas.droneUpdates.length > 0) godData.droneUpdates = pendingDeltas.droneUpdates;
 		if (pendingDeltas.killEvents.length > 0) godData.killEvents = pendingDeltas.killEvents;
+		godData.enemies = enemies.map(serializeEnemy);
+		godData.enemyStats = getEnemyStats();
 		
 		for (const g of gods) {
 			g.client.sendPacket(MSG.FRAME, godData);
@@ -675,6 +812,36 @@ function Game(id) {
 
 	function update(economyDeltas, deltaSeconds, shouldSendDroneUpdates) {
 		const dead = [];
+		runTime += deltaSeconds;
+		
+		const activePlayer = players.find(p => !p.dead && !p.disconnected) || null;
+		
+		const spawnEnemyXp = (x, y) => {
+			const newCoin = {
+				id: nextCoinId++,
+				x: Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, x)),
+				y: Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, y)),
+				value: 1
+			};
+			coins.push(newCoin);
+			coinGrid.insert(newCoin);
+			economyDeltas.coinSpawns.push(newCoin);
+		};
+		
+		const handleEnemyDeath = (enemy, killer) => {
+			if (enemy.dead) return;
+			enemy.dead = true;
+			enemyKills += 1;
+			spawnEnemyXp(enemy.x, enemy.y);
+			if (killer) {
+				economyDeltas.killEvents.push({
+					killerNum: killer.num,
+					victimNum: -1,
+					victimName: enemy.type || "Enemy",
+					killType: "enemy"
+				});
+			}
+		};
 		
 		// Callback for collision kills (from updateFrame)
 		const notifyKill = (killerIdx, victimIdx) => {
@@ -702,6 +869,164 @@ function Game(id) {
 					victimName: p.name || 'Unknown',
 					killType: 'snip'
 				});
+			}
+		}
+		
+		const enemySpawns = enemySpawner.update(deltaSeconds, activePlayer, mapSize);
+		for (const spawn of enemySpawns) {
+			const typeName = spawn.type || 'basic';
+			const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
+			
+			const enemy = new Enemy({
+				id: `enemy-${nextEnemyId++}`,
+				x: spawn.x,
+				y: spawn.y,
+				type: typeName,
+				radius: typeData.radius,
+				maxHp: typeData.maxHp,
+				hp: typeData.maxHp,
+				speed: typeData.speed,
+				contactDamage: typeData.contactDamage
+			});
+			
+			// Type-specific properties
+			if (typeName === 'charger') {
+				enemy.chargeSpeed = typeData.chargeSpeed;
+				enemy.chargeCooldown = typeData.chargeCooldown;
+				enemy.chargeDistance = typeData.chargeDistance;
+				enemy.lastChargeTime = 0;
+				enemy.isCharging = false;
+				enemy.chargeTargetX = 0;
+				enemy.chargeTargetY = 0;
+			} else if (typeName === 'sniper') {
+				enemy.preferredDistance = typeData.preferredDistance;
+			}
+			
+			enemies.push(enemy);
+		}
+		
+		if (activePlayer && !activePlayer.dead) {
+			const playerRadius = activePlayer.getScaledRadius ? activePlayer.getScaledRadius() : PLAYER_RADIUS;
+			const hitCooldown = 0.35;
+			for (const enemy of enemies) {
+				if (enemy.dead) continue;
+				
+				const dx = activePlayer.x - enemy.x;
+				const dy = activePlayer.y - enemy.y;
+				const dist = Math.hypot(dx, dy);
+				const norm = dist > 0 ? 1 / dist : 0;
+				
+				// Apply slow debuff if active
+				let effectiveSpeed = enemy.speed;
+				if (enemy.slowExpires && runTime < enemy.slowExpires) {
+					effectiveSpeed *= (1 - (enemy.slowAmount || 0));
+				} else {
+					enemy.slowAmount = 0;
+				}
+				
+				// Type-specific movement behavior
+				let moveX = dx * norm;
+				let moveY = dy * norm;
+				
+				if (enemy.type === 'charger') {
+					// Charger: winds up then rushes at player's last position
+					if (enemy.isCharging) {
+						// Move toward charge target at high speed
+						const chargeDx = enemy.chargeTargetX - enemy.x;
+						const chargeDy = enemy.chargeTargetY - enemy.y;
+						const chargeDist = Math.hypot(chargeDx, chargeDy);
+						
+						if (chargeDist < 15) {
+							// Reached target, stop charging
+							enemy.isCharging = false;
+							enemy.lastChargeTime = runTime;
+						} else {
+							const chargeNorm = 1 / chargeDist;
+							moveX = chargeDx * chargeNorm;
+							moveY = chargeDy * chargeNorm;
+							effectiveSpeed = enemy.chargeSpeed || 200;
+						}
+					} else if (dist < (enemy.chargeDistance || 180) && 
+							   (runTime - (enemy.lastChargeTime || 0)) >= (enemy.chargeCooldown || 3)) {
+						// Start charging - lock onto player's current position
+						enemy.isCharging = true;
+						enemy.chargeTargetX = activePlayer.x;
+						enemy.chargeTargetY = activePlayer.y;
+					}
+				} else if (enemy.type === 'sniper') {
+					// Sniper: tries to maintain preferred distance
+					const preferred = enemy.preferredDistance || 250;
+					if (dist < preferred - 30) {
+						// Too close, back away
+						moveX = -dx * norm;
+						moveY = -dy * norm;
+						effectiveSpeed *= 0.8;
+					} else if (dist > preferred + 50) {
+						// Too far, approach
+						moveX = dx * norm;
+						moveY = dy * norm;
+					} else {
+						// Good distance, strafe
+						moveX = -dy * norm * 0.5;
+						moveY = dx * norm * 0.5;
+						effectiveSpeed *= 0.6;
+					}
+				}
+				// Basic, tank, swarm all use default "move toward player" behavior
+				
+				enemy.vx = moveX * effectiveSpeed;
+				enemy.vy = moveY * effectiveSpeed;
+				enemy.x += enemy.vx * deltaSeconds;
+				enemy.y += enemy.vy * deltaSeconds;
+				
+				enemy.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.x));
+				enemy.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.y));
+				
+				const hitDx = activePlayer.x - enemy.x;
+				const hitDy = activePlayer.y - enemy.y;
+				const hitDist = Math.hypot(hitDx, hitDy);
+				const hitRadius = playerRadius + enemy.radius;
+				
+				if (hitDist < hitRadius && (runTime - enemy.lastHitAt) >= hitCooldown) {
+					let damage = enemy.contactDamage;
+					const inTerritory = activePlayer.territory && activePlayer.territory.length >= 3 &&
+						pointInPolygon({ x: activePlayer.x, y: activePlayer.y }, activePlayer.territory);
+					if (inTerritory) {
+						const reduction = consts.TERRITORY_DAMAGE_REDUCTION ?? 0.5;
+						damage *= (1 - reduction);
+					}
+					
+					// Apply armor reduction from upgrades
+					const playerStats = activePlayer.derivedStats || {};
+					const armor = playerStats.armor || 0;
+					damage = Math.max(0, damage - armor);
+					
+					// Get effective max HP from upgrades
+					const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+					const maxHpMult = playerStats.maxHpMult || 1.0;
+					activePlayer.maxHp = baseMaxHp * maxHpMult;
+					
+					activePlayer.hp -= damage;
+					if (activePlayer.hp < 0) activePlayer.hp = 0;
+					enemy.lastHitAt = runTime;
+					
+					if (activePlayer.hp <= 0 && !activePlayer.dead) {
+						activePlayer.die();
+						dead.push(activePlayer);
+						economyDeltas.killEvents.push({
+							killerNum: -1,
+							victimNum: activePlayer.num,
+							victimName: activePlayer.name || "Player",
+							killType: "enemy"
+						});
+					}
+				}
+			}
+		}
+		
+		for (let i = enemies.length - 1; i >= 0; i--) {
+			if (enemies[i].dead) {
+				enemies.splice(i, 1);
 			}
 		}
 		
@@ -828,11 +1153,27 @@ function Game(id) {
 			const inTerritory = p.territory && p.territory.length >= 3 && 
 				pointInPolygon({ x: p.x, y: p.y }, p.territory);
 			
+			// Get derived stats from upgrades
+			const stats = p.derivedStats || {};
+			const attackSpeedMult = stats.attackSpeedMult || 1.0;
+			const damageMult = (stats.damageMult || 1.0) + (stats.adrenalSurgeDamage || 0);
+			const critChance = stats.critChance || 0;
+			const critMult = stats.critMult || 2.0;
+			const lifeOnHitPercent = stats.lifeOnHitPercent || 0;
+			const enemySlowPercent = Math.min(stats.enemySlowPercent || 0, 0.6);
+			const chainLightningBounces = stats.chainLightningBounces || 0;
+			const extraProjectiles = stats.extraProjectiles || 0;
+			
+			// Update life on hit cooldown
+			if (p.lifeOnHitCooldown > 0) {
+				p.lifeOnHitCooldown -= deltaSeconds;
+			}
+			
 			// Update each drone
 			for (const drone of p.drones) {
-				// Reduce cooldown
+				// Reduce cooldown (modified by attack speed)
 				if (drone.cooldownRemaining > 0) {
-					drone.cooldownRemaining -= deltaSeconds;
+					drone.cooldownRemaining -= deltaSeconds * attackSpeedMult;
 				}
 				
 				// Drones are disabled when owner is snipped (can't target or fire)
@@ -841,16 +1182,14 @@ function Game(id) {
 					continue; // Skip targeting and firing
 				}
 				
-				// Find target (nearest enemy player in range, measured from the owner center)
+				// Find target (nearest enemy in range, measured from the owner center)
 				let target = null;
 				let minDist = drone.range;
 				const ownerX = p.x;
 				const ownerY = p.y;
 				
-				for (const enemy of players) {
-					if (enemy.dead || enemy.num === p.num) continue;
-					// Don't target snipped invulnerable players (if you want this behavior)
-					// if (enemy.isSnipped) continue;
+				for (const enemy of enemies) {
+					if (enemy.dead || enemy.hp <= 0) continue;
 					
 					// Measure from player center so range matches the rendered ring
 					const dist = Math.hypot(enemy.x - ownerX, enemy.y - ownerY);
@@ -860,71 +1199,150 @@ function Game(id) {
 					}
 				}
 				
-				drone.targetId = target ? target.num : null;
+				drone.targetId = target ? target.id : null;
 				
 				// Hitscan fire if ready and has target
 				if (target && drone.cooldownRemaining <= 0) {
 					drone.cooldownRemaining = consts.DRONE_COOLDOWN || 1.0;
 					
-					// Calculate damage dynamically from config
+					// Calculate base damage dynamically from config
 					// First drone = full damage, 2nd = EXTRA_MULT, 3rd+ = decay factor applied
 					const droneIndex = p.drones.indexOf(drone);
 					const baseDamage = consts.DRONE_DAMAGE || 10;
 					const extraMult = consts.DRONE_DAMAGE_EXTRA_MULT ?? 0.35;
 					const decayFactor = consts.DRONE_DAMAGE_DECAY_FACTOR ?? 0.9;
 					
-					let damage;
+					let baseDmg;
 					if (droneIndex === 0) {
-						damage = baseDamage;
+						baseDmg = baseDamage;
 					} else if (droneIndex === 1) {
-						damage = baseDamage * extraMult;
+						baseDmg = baseDamage * extraMult;
 					} else {
 						// 3rd drone and beyond: apply decay factor for each drone after the 2nd
-						damage = baseDamage * extraMult * Math.pow(decayFactor, droneIndex - 1);
+						baseDmg = baseDamage * extraMult * Math.pow(decayFactor, droneIndex - 1);
 					}
 					
-					// Apply damage reduction if target is in their own territory
-					const targetInTerritory = target.territory && target.territory.length > 0 && 
-						pointInPolygon({ x: target.x, y: target.y }, target.territory);
-					if (targetInTerritory) {
-						const reduction = consts.TERRITORY_DAMAGE_REDUCTION ?? 0.5;
-						damage = damage * (1 - reduction);
+					// Apply damage multiplier from upgrades
+					let damage = baseDmg * damageMult;
+					
+					// Check for critical hit
+					const isCrit = Math.random() < critChance;
+					if (isCrit) {
+						damage *= critMult;
 					}
 					
-					// Hitscan: instant damage to target
-					target.hp -= damage;
-					if (target.hp < 0) target.hp = 0;
+					// Apply damage to primary target
+					applyHitscanDamage(p, drone, target, damage, isCrit, economyDeltas, enemySlowPercent, lifeOnHitPercent);
 					
-					if (DEBUG_HITSCAN_LOGS) {
-						console.log(`[HITSCAN] Drone ${drone.id} (owner: ${p.name}) hit ${target.name} for ${damage.toFixed(1)} dmg${targetInTerritory ? ' (in territory)' : ''}. HP: ${target.hp}/${target.maxHp}`);
+					// Multi-shot: fire at additional nearby enemies
+					if (extraProjectiles > 0) {
+						const nearbyEnemies = enemies.filter(e => 
+							e !== target && !e.dead && e.hp > 0 &&
+							Math.hypot(e.x - ownerX, e.y - ownerY) < drone.range
+						);
+						// Sort by distance
+						nearbyEnemies.sort((a, b) => 
+							Math.hypot(a.x - ownerX, a.y - ownerY) - Math.hypot(b.x - ownerX, b.y - ownerY)
+						);
+						// Fire at up to extraProjectiles additional targets
+						for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
+							const multiTarget = nearbyEnemies[i];
+							applyHitscanDamage(p, drone, multiTarget, damage, isCrit, economyDeltas, enemySlowPercent, lifeOnHitPercent);
+						}
 					}
 					
-					// Send hitscan event for visual feedback (laser line from drone to target)
-					economyDeltas.hitscanEvents.push({
-						fromX: drone.x,
-						fromY: drone.y,
-						toX: target.x,
-						toY: target.y,
-						ownerId: p.num,
-						targetNum: target.num,
-						damage: damage,
-						remainingHp: target.hp
-					});
-					
-					// Check for death
-					if (target.hp <= 0) {
-						target.die();
-						dead.push(target);
+					// Chain lightning: bounce to additional enemies
+					if (chainLightningBounces > 0 && !target.dead) {
+						const hitEnemies = new Set([target.id]);
+						let chainTarget = target;
+						let chainDamage = damage * 0.7; // 70% damage per bounce
 						
-						// Send kill event for the drone owner
-						economyDeltas.killEvents.push({
-							killerNum: p.num,
-							victimNum: target.num,
-							victimName: target.name || 'Unknown',
-							killType: 'drone'
-						});
+						for (let bounce = 0; bounce < chainLightningBounces; bounce++) {
+							// Find nearest enemy not yet hit
+							let nextTarget = null;
+							let nextDist = 200; // Chain range
+							
+							for (const enemy of enemies) {
+								if (enemy.dead || enemy.hp <= 0 || hitEnemies.has(enemy.id)) continue;
+								const dist = Math.hypot(enemy.x - chainTarget.x, enemy.y - chainTarget.y);
+								if (dist < nextDist) {
+									nextDist = dist;
+									nextTarget = enemy;
+								}
+							}
+							
+							if (!nextTarget) break;
+							
+							hitEnemies.add(nextTarget.id);
+							
+							// Apply chain damage
+							nextTarget.hp -= chainDamage;
+							if (nextTarget.hp < 0) nextTarget.hp = 0;
+							
+							// Send chain lightning visual
+							economyDeltas.hitscanEvents.push({
+								fromX: chainTarget.x,
+								fromY: chainTarget.y,
+								toX: nextTarget.x,
+								toY: nextTarget.y,
+								ownerId: p.num,
+								targetEnemyId: nextTarget.id,
+								damage: chainDamage,
+								remainingHp: nextTarget.hp,
+								isChain: true
+							});
+							
+							// Check for death
+							if (nextTarget.hp <= 0) {
+								handleEnemyDeath(nextTarget, p);
+							}
+							
+							chainTarget = nextTarget;
+						}
 					}
 				}
+			}
+		}
+		
+		// Helper function to apply hitscan damage with all effects
+		function applyHitscanDamage(player, drone, target, damage, isCrit, deltas, slowPercent, lifeOnHitPct) {
+			// Apply damage
+			target.hp -= damage;
+			if (target.hp < 0) target.hp = 0;
+			
+			// Apply slow debuff
+			if (slowPercent > 0) {
+				target.slowAmount = Math.min((target.slowAmount || 0) + slowPercent, 0.6);
+				target.slowExpires = runTime + 1.5; // 1.5s duration
+			}
+			
+			// Life on hit (with internal cooldown)
+			if (lifeOnHitPct > 0 && player.lifeOnHitCooldown <= 0) {
+				const healAmount = player.maxHp * lifeOnHitPct;
+				player.hp = Math.min(player.maxHp, player.hp + healAmount);
+				player.lifeOnHitCooldown = 0.1; // 0.1s cooldown
+			}
+			
+			if (DEBUG_HITSCAN_LOGS) {
+				console.log(`[HITSCAN] Drone ${drone.id} (owner: ${player.name}) hit enemy ${target.id} for ${damage.toFixed(1)} dmg${isCrit ? ' (CRIT!)' : ''}. HP: ${target.hp}/${target.maxHp}`);
+			}
+			
+			// Send hitscan event for visual feedback
+			deltas.hitscanEvents.push({
+				fromX: drone.x,
+				fromY: drone.y,
+				toX: target.x,
+				toY: target.y,
+				ownerId: player.num,
+				targetEnemyId: target.id,
+				damage: damage,
+				remainingHp: target.hp,
+				isCrit: isCrit
+			});
+			
+			// Check for death
+			if (target.hp <= 0) {
+				handleEnemyDeath(target, player);
 			}
 		}
 		
@@ -1038,10 +1456,12 @@ function Game(id) {
 
 			// 1. XP pickups (coins) -> add directly to XP
 			const scaledRadius = p.getScaledRadius ? p.getScaledRadius() : PLAYER_RADIUS;
+			const pickupRadiusMult = (p.derivedStats && p.derivedStats.pickupRadiusMult) || 1.0;
+			const effectivePickupRadius = (scaledRadius + consts.COIN_RADIUS) * pickupRadiusMult;
 			for (let i = coins.length - 1; i >= 0; i--) {
 				const coin = coins[i];
 				const dist = Math.hypot(p.x - coin.x, p.y - coin.y);
-				if (dist < scaledRadius + consts.COIN_RADIUS) {
+				if (dist < effectivePickupRadius) {
 					p.xp += coin.value;
 					economyDeltas.coinRemovals.push(coin.id);
 					coinGrid.remove(coin);
@@ -1075,10 +1495,10 @@ function Game(id) {
 			// 3. Auto-level up when XP threshold reached
 			let leveledUp = false;
 			let xpNeeded = getXpForLevel(p.level);
-			while (p.xp >= xpNeeded) {
+			// Only process ONE level-up at a time (upgrade selection will pause)
+			if (p.xp >= xpNeeded && !gamePaused) {
 				p.xp -= xpNeeded;
 				p.level += 1;
-				xpNeeded = getXpForLevel(p.level);
 				leveledUp = true;
 				changed = true;
 				
@@ -1094,6 +1514,24 @@ function Game(id) {
 				
 				if (DEBUG_LEVELING_LOGS) {
 					console.log(`[${new Date()}] ${p.name} reached level ${p.level}!`);
+				}
+				
+				// Generate 3 upgrade choices and pause the game
+				const choices = rollUpgradeChoices(p);
+				pendingUpgradeOffer = {
+					playerNum: p.num,
+					choices: choices
+				};
+				gamePaused = true;
+				
+				// Send upgrade offer to the player
+				p.client.sendPacket(MSG.UPGRADE_OFFER, {
+					choices: choices,
+					newLevel: p.level
+				});
+				
+				if (DEBUG_LEVELING_LOGS) {
+					console.log(`[UPGRADE] Offering upgrades to ${p.name}:`, choices.map(c => c.name).join(', '));
 				}
 			}
 

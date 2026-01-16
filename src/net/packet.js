@@ -10,7 +10,9 @@ export const MSG = {
 	VIEWPORT: 7,
 	PING: 8,
 	PONG: 9,
-	DEAD: 10
+	DEAD: 10,
+	UPGRADE_OFFER: 11,   // Server -> Client: 3 upgrade choices
+	UPGRADE_PICK: 12     // Client -> Server: selected upgrade ID
 };
 
 export function encodePacket(type, payload) {

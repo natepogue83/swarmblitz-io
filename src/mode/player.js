@@ -7,6 +7,15 @@ import * as SoundManager from "../sound-manager.js";
 // Drone rendering constants
 const DRONE_VISUAL_RADIUS = consts.DRONE_RADIUS || 10;
 
+// Enemy type colors and styles
+const ENEMY_STYLES = {
+	basic:   { color: "rgba(200, 60, 60, 0.9)",  outline: "rgba(90, 20, 20, 0.9)" },     // Red - basic
+	charger: { color: "rgba(255, 140, 0, 0.9)",  outline: "rgba(140, 70, 0, 0.9)" },     // Orange - charges at player
+	tank:    { color: "rgba(100, 100, 180, 0.9)", outline: "rgba(40, 40, 100, 0.9)" },   // Blue - slow, high HP
+	swarm:   { color: "rgba(150, 220, 80, 0.9)", outline: "rgba(70, 120, 30, 0.9)" },    // Green - small, fast, groups
+	sniper:  { color: "rgba(180, 60, 180, 0.9)", outline: "rgba(90, 20, 90, 0.9)" }      // Purple - ranged (future)
+};
+
 const SHADOW_OFFSET = 5;
 const ANIMATE_FRAMES = 24;
 const MIN_BAR_WIDTH = 65;
@@ -68,6 +77,19 @@ let soundInitialized = false; // Whether sound manager has been initialized
 const SPEED_TRAIL_THRESHOLD = 1.1; // 10% speed buff to show trail/spikes
 let lastPlayerPos = null; // Track player position for speed trail
 
+// Upgrade UI state
+let upgradeUIVisible = false;
+let upgradeChoices = [];
+let upgradeNewLevel = 1;
+let hoveredUpgrade = -1; // Index of hovered upgrade card (-1 = none)
+
+// Rarity colors for upgrade cards
+const RARITY_COLORS = {
+	basic: '#9E9E9E',      // Gray
+	rare: '#2196F3',       // Blue  
+	legendary: '#FFD700'   // Gold
+};
+
 // Speed spike state - must be declared before reset() is called
 let speedSpikeState = {
 	active: false,
@@ -116,6 +138,25 @@ function handleKeyDown(e) {
 	// Initialize sound on first key press
 	initSoundOnInteraction();
 	
+	// Handle upgrade selection with number keys
+	if (upgradeUIVisible && upgradeChoices && upgradeChoices.length > 0) {
+		const key = e.key;
+		if (key === '1' && upgradeChoices[0]) {
+			client.selectUpgrade(upgradeChoices[0].id);
+			return;
+		}
+		if (key === '2' && upgradeChoices[1]) {
+			client.selectUpgrade(upgradeChoices[1].id);
+			return;
+		}
+		if (key === '3' && upgradeChoices[2]) {
+			client.selectUpgrade(upgradeChoices[2].id);
+			return;
+		}
+		// Block other input while upgrade UI is open
+		return;
+	}
+	
 	// WASD movement controls
 	const key = e.key.toLowerCase();
 	if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
@@ -124,6 +165,9 @@ function handleKeyDown(e) {
 }
 
 function handleKeyUp(e) {
+	// Block input while upgrade UI is open
+	if (upgradeUIVisible) return;
+	
 	// WASD movement controls
 	const key = e.key.toLowerCase();
 	if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
@@ -134,6 +178,18 @@ function handleKeyUp(e) {
 function handleClick(e) {
 	// Initialize sound on first click
 	initSoundOnInteraction();
+	
+	// Handle upgrade selection by clicking cards
+	if (upgradeUIVisible && upgradeChoices && upgradeChoices.length > 0) {
+		const rect = canvas.getBoundingClientRect();
+		const mouseX = e.clientX - rect.left;
+		const mouseY = e.clientY - rect.top;
+		
+		const cardIndex = getHoveredUpgradeCard(mouseX, mouseY);
+		if (cardIndex >= 0 && upgradeChoices[cardIndex]) {
+			client.selectUpgrade(upgradeChoices[cardIndex].id);
+		}
+	}
 }
 
 // Settings panel setup
@@ -260,6 +316,14 @@ function initSoundOnInteraction() {
 
 function handleMouseMove(e) {
 	const rect = canvas.getBoundingClientRect();
+	const mouseX = e.clientX - rect.left;
+	const mouseY = e.clientY - rect.top;
+	
+	// Track hovered upgrade card
+	if (upgradeUIVisible) {
+		hoveredUpgrade = getHoveredUpgradeCard(mouseX, mouseY);
+	}
+	
 	client.updateMousePosition(e.clientX, e.clientY, rect, canvasWidth, canvasHeight, zoom);
 }
 
@@ -333,6 +397,12 @@ function reset() {
 		speedRushActive = false;
 	}
 	clearSpeedTrailParticles();
+	
+	// Reset upgrade UI
+	upgradeUIVisible = false;
+	upgradeChoices = [];
+	upgradeNewLevel = 1;
+	hoveredUpgrade = -1;
 	
 	// Restart background music on respawn
 	if (soundInitialized && !SoundManager.isBackgroundMusicPlaying()) {
@@ -491,6 +561,63 @@ function paintUIBar(ctx) {
 	}
 }
 
+function paintBottomHPBar(ctx) {
+	if (!user) return;
+	
+	const hp = user.hp ?? (consts.PLAYER_MAX_HP ?? 100);
+	const maxHp = user.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
+	
+	// Bar dimensions (above the XP bar)
+	const barWidth = 250;
+	const barHeight = 18;
+	const barX = (canvasWidth - barWidth) / 2;
+	const barY = canvasHeight - 80; // Above XP bar
+	
+	const hpRatio = Math.max(0, Math.min(1, hp / maxHp));
+	
+	// === DARK BACKGROUND ===
+	ctx.fillStyle = "rgba(10, 10, 10, 0.5)";
+	ctx.fillRect(barX - 35, barY - 2, barWidth + 45, barHeight + 4);
+	
+	// === HP LABEL (left side) ===
+	ctx.font = "bold 14px Changa";
+	ctx.fillStyle = "#FF6B6B";
+	ctx.textAlign = "left";
+	ctx.fillText("HP", barX - 30, barY + barHeight - 4);
+	
+	// === HP BAR TRACK (gray background) ===
+	ctx.fillStyle = "rgba(60, 60, 60, 0.8)";
+	ctx.fillRect(barX, barY, barWidth, barHeight - 3);
+	ctx.fillStyle = "rgba(40, 40, 40, 0.8)";
+	ctx.fillRect(barX, barY + barHeight - 3, barWidth, 3);
+	
+	// === HP BAR FILL (color changes based on HP) ===
+	if (hpRatio > 0) {
+		const fillWidth = barWidth * hpRatio;
+		let fillColor, shadowColor;
+		if (hpRatio > 0.5) {
+			fillColor = "#44ff44";
+			shadowColor = "#228822";
+		} else if (hpRatio > 0.25) {
+			fillColor = "#ffcc00";
+			shadowColor = "#cc9900";
+		} else {
+			fillColor = "#ff4444";
+			shadowColor = "#aa2222";
+		}
+		ctx.fillStyle = fillColor;
+		ctx.fillRect(barX, barY, fillWidth, barHeight - 3);
+		ctx.fillStyle = shadowColor;
+		ctx.fillRect(barX, barY + barHeight - 3, fillWidth, 3);
+	}
+	
+	// === HP TEXT (on the bar) ===
+	ctx.font = "13px Changa";
+	ctx.fillStyle = "white";
+	ctx.textAlign = "center";
+	ctx.fillText(Math.floor(hp) + "/" + Math.floor(maxHp), barX + barWidth / 2, barY + barHeight - 4);
+}
+
 function paintBottomXPBar(ctx) {
 	if (!user) return;
 	
@@ -543,6 +670,263 @@ function paintBottomXPBar(ctx) {
 	ctx.fillStyle = "white";
 	ctx.textAlign = "center";
 	ctx.fillText(Math.floor(xp) + "/" + xpPerLevel + " XP", barX + barWidth / 2, barY + barHeight - 9);
+}
+
+function paintDebugOverlay(ctx) {
+	const stats = client.getEnemyStats();
+	if (!stats) return;
+	
+	const spawnInterval = stats.spawnInterval != null ? stats.spawnInterval : 0;
+	const runTime = stats.runTime != null ? stats.runTime : 0;
+	const enemyCount = stats.enemies != null ? stats.enemies : 0;
+	const killCount = stats.kills != null ? stats.kills : client.getKills();
+	const unlockedTypes = stats.unlockedTypes || ['basic'];
+	
+	const lines = [
+		`Enemies: ${enemyCount}`,
+		`Spawn: ${spawnInterval.toFixed(2)}s`,
+		`Run: ${runTime.toFixed(1)}s`,
+		`Kills: ${killCount}`,
+		`Types: ${unlockedTypes.join(', ')}`
+	];
+	
+	ctx.save();
+	ctx.font = "12px monospace";
+	ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+	ctx.textAlign = "left";
+	ctx.textBaseline = "top";
+	
+	const startX = 10;
+	const startY = 8;
+	for (let i = 0; i < lines.length; i++) {
+		ctx.fillText(lines[i], startX, startY + i * 14);
+	}
+	
+	ctx.restore();
+}
+
+// ===== UPGRADE SELECTION UI =====
+
+function paintUpgradeUI(ctx) {
+	if (!upgradeChoices || upgradeChoices.length === 0) return;
+	
+	// Get player color for accent
+	const playerColor = user && user.baseColor ? user.baseColor : null;
+	const accentColor = playerColor ? playerColor.rgbString() : '#FFD700';
+	const shadowAccent = user && user.shadowColor ? user.shadowColor.rgbString() : '#B8860B';
+	
+	// Dark overlay matching game style
+	ctx.fillStyle = "rgba(10, 10, 10, 0.85)";
+	ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+	
+	// Card dimensions - more compact
+	const cardWidth = 200;
+	const cardHeight = 240;
+	const cardGap = 25;
+	const totalWidth = (cardWidth * 3) + (cardGap * 2);
+	const startX = (canvasWidth - totalWidth) / 2;
+	const startY = (canvasHeight - cardHeight) / 2 - 30;
+	
+	// Title banner background (like UI bar style)
+	const bannerY = startY - 80;
+	const bannerHeight = 50;
+	ctx.fillStyle = "rgba(30, 30, 30, 0.9)";
+	ctx.fillRect(startX - 20, bannerY, totalWidth + 40, bannerHeight);
+	
+	// Title accent bar (player color)
+	ctx.fillStyle = accentColor;
+	ctx.fillRect(startX - 20, bannerY, totalWidth + 40, 4);
+	ctx.fillStyle = shadowAccent;
+	ctx.fillRect(startX - 20, bannerY + bannerHeight - 4, totalWidth + 40, 4);
+	
+	// Title text
+	ctx.save();
+	ctx.font = "bold 28px Changa";
+	ctx.fillStyle = accentColor;
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText(`LEVEL UP!`, canvasWidth / 2 - 50, bannerY + bannerHeight / 2);
+	
+	ctx.fillStyle = "white";
+	ctx.font = "bold 24px Changa";
+	ctx.fillText(`Lv.${upgradeNewLevel}`, canvasWidth / 2 + 60, bannerY + bannerHeight / 2);
+	ctx.restore();
+	
+	// Draw each card
+	for (let i = 0; i < upgradeChoices.length; i++) {
+		const choice = upgradeChoices[i];
+		const cardX = startX + i * (cardWidth + cardGap);
+		const cardY = startY;
+		const isHovered = (hoveredUpgrade === i);
+		
+		drawUpgradeCard(ctx, choice, cardX, cardY, cardWidth, cardHeight, isHovered, i + 1, playerColor);
+	}
+	
+	// Instructions at bottom (subtle)
+	ctx.save();
+	ctx.font = "14px Changa";
+	ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText("Click or press 1, 2, 3", canvasWidth / 2, startY + cardHeight + 35);
+	ctx.restore();
+}
+
+function drawUpgradeCard(ctx, choice, x, y, width, height, isHovered, keyNum, playerColor) {
+	const rarityColor = RARITY_COLORS[choice.rarity] || RARITY_COLORS.basic;
+	
+	ctx.save();
+	
+	// Hover offset effect (lift up slightly)
+	const yOffset = isHovered ? -8 : 0;
+	y += yOffset;
+	
+	// Shadow (darker when hovered for depth)
+	ctx.fillStyle = isHovered ? "rgba(0, 0, 0, 0.6)" : "rgba(0, 0, 0, 0.3)";
+	ctx.fillRect(x + 3, y + 5 - yOffset, width, height);
+	
+	// Main card background - match game's dark UI style
+	ctx.fillStyle = isHovered ? "rgba(50, 50, 55, 0.95)" : "rgba(30, 30, 35, 0.95)";
+	ctx.fillRect(x, y, width, height);
+	
+	// Top accent bar (rarity color with shadow offset like XP bar)
+	const barHeight = 6;
+	ctx.fillStyle = rarityColor;
+	ctx.fillRect(x, y, width, barHeight - 2);
+	// Darker shadow portion
+	ctx.fillStyle = isHovered ? rarityColor : shadeColor(rarityColor, -30);
+	ctx.fillRect(x, y + barHeight - 2, width, 2);
+	
+	// Subtle border
+	ctx.strokeStyle = isHovered ? "rgba(255, 255, 255, 0.3)" : "rgba(255, 255, 255, 0.1)";
+	ctx.lineWidth = 1;
+	ctx.strokeRect(x, y, width, height);
+	
+	// Key number badge (top-left, styled like game UI)
+	ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+	ctx.fillRect(x + 8, y + 14, 28, 24);
+	ctx.fillStyle = isHovered ? "#FFD700" : "rgba(255, 255, 255, 0.6)";
+	ctx.font = "bold 18px Changa";
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText(keyNum, x + 22, y + 26);
+	
+	// Rarity label (top-right)
+	ctx.font = "bold 11px Changa";
+	ctx.textAlign = "right";
+	ctx.fillStyle = rarityColor;
+	const rarityLabel = choice.rarity.toUpperCase();
+	ctx.fillText(rarityLabel, x + width - 10, y + 22);
+	
+	// Upgrade name
+	ctx.font = "bold 20px Changa";
+	ctx.fillStyle = "white";
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText(choice.name, x + width / 2, y + 55);
+	
+	// Horizontal divider line
+	ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	ctx.moveTo(x + 15, y + 75);
+	ctx.lineTo(x + width - 15, y + 75);
+	ctx.stroke();
+	
+	// Stack count (using player color accent if available)
+	const currentStacks = choice.currentStacks || 0;
+	ctx.font = "15px Changa";
+	const stackColor = playerColor ? playerColor.rgbString() : '#88CCFF';
+	ctx.fillStyle = stackColor;
+	ctx.fillText(`${currentStacks} → ${currentStacks + 1}`, x + width / 2, y + 95);
+	
+	// Description (multiline) - more compact
+	ctx.font = "13px Changa";
+	ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+	const descLines = choice.description.split('\n');
+	let descY = y + 120;
+	for (const line of descLines) {
+		// Word wrap long lines
+		const words = line.split(' ');
+		let currentLine = '';
+		for (const word of words) {
+			const testLine = currentLine + (currentLine ? ' ' : '') + word;
+			if (ctx.measureText(testLine).width > width - 24) {
+				ctx.fillText(currentLine, x + width / 2, descY);
+				descY += 18;
+				currentLine = word;
+			} else {
+				currentLine = testLine;
+			}
+		}
+		if (currentLine) {
+			ctx.fillText(currentLine, x + width / 2, descY);
+			descY += 18;
+		}
+	}
+	
+	// Hover highlight glow (subtle, matching game style)
+	if (isHovered) {
+		ctx.strokeStyle = rarityColor;
+		ctx.lineWidth = 2;
+		ctx.strokeRect(x - 1, y - 1, width + 2, height + 2);
+	}
+	
+	ctx.restore();
+}
+
+// Helper to darken a color
+function shadeColor(color, percent) {
+	// Handle rgba/rgb strings
+	const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+	if (match) {
+		let r = parseInt(match[1]);
+		let g = parseInt(match[2]);
+		let b = parseInt(match[3]);
+		r = Math.max(0, Math.min(255, r + percent));
+		g = Math.max(0, Math.min(255, g + percent));
+		b = Math.max(0, Math.min(255, b + percent));
+		return `rgb(${r}, ${g}, ${b})`;
+	}
+	// Handle hex colors
+	if (color.startsWith('#')) {
+		let hex = color.slice(1);
+		if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+		let r = parseInt(hex.substr(0, 2), 16);
+		let g = parseInt(hex.substr(2, 2), 16);
+		let b = parseInt(hex.substr(4, 2), 16);
+		r = Math.max(0, Math.min(255, r + percent));
+		g = Math.max(0, Math.min(255, g + percent));
+		b = Math.max(0, Math.min(255, b + percent));
+		return `rgb(${r}, ${g}, ${b})`;
+	}
+	return color;
+}
+
+// Check if mouse is over an upgrade card
+function getHoveredUpgradeCard(mouseX, mouseY) {
+	if (!upgradeUIVisible || !upgradeChoices || upgradeChoices.length === 0) return -1;
+	
+	// Must match paintUpgradeUI dimensions
+	const cardWidth = 200;
+	const cardHeight = 240;
+	const cardGap = 25;
+	const totalWidth = (cardWidth * 3) + (cardGap * 2);
+	const startX = (canvasWidth - totalWidth) / 2;
+	const startY = (canvasHeight - cardHeight) / 2 - 30;
+	
+	for (let i = 0; i < upgradeChoices.length; i++) {
+		const cardX = startX + i * (cardWidth + cardGap);
+		const cardY = startY;
+		
+		// Include hover lift area
+		if (mouseX >= cardX && mouseX <= cardX + cardWidth &&
+			mouseY >= cardY - 10 && mouseY <= cardY + cardHeight) {
+			return i;
+		}
+	}
+	
+	return -1;
 }
 
 // Level up effect is now handled by the levelUp renderer callback
@@ -682,6 +1066,9 @@ function paint(ctx) {
 		ctx.globalAlpha = 1;
 	}
 	
+	// ===== LAYER 3.5: ENEMIES =====
+	renderEnemies(ctx);
+	
 	// ===== LAYER 4: SPEED SPIKES (above trails, below players) =====
 	renderSpeedTrailParticles(ctx);
 	
@@ -718,10 +1105,11 @@ function paint(ctx) {
 		const dissolve = getDyingPlayerEffect(p);
 		if (dissolve >= 1) continue;
 		
-		// Render HP bar if damaged OR if recently hit (even if at full HP due to regen)
+		// Always show HP bar for local player, or if damaged/recently hit for others
+		const isLocalPlayer = (p === user);
 		const recentlyHit = p.lastHitTime && (Date.now() - p.lastHitTime) < HP_BAR_VISIBLE_DURATION;
-		if (p.hp !== undefined && (p.hp < p.maxHp || recentlyHit)) {
-			renderPlayerHpBar(ctx, p);
+		if (p.hp !== undefined && (isLocalPlayer || p.hp < p.maxHp || recentlyHit)) {
+			renderPlayerHpBar(ctx, p, isLocalPlayer);
 		}
 	}
 	
@@ -738,7 +1126,14 @@ function paint(ctx) {
 	// Reset transform for fixed UI
 	ctx.restore();
 	paintUIBar(ctx);
+	paintBottomHPBar(ctx);
 	paintBottomXPBar(ctx);
+	paintDebugOverlay(ctx);
+	
+	// Render upgrade selection UI if visible
+	if (upgradeUIVisible) {
+		paintUpgradeUI(ctx);
+	}
 
 	if ((!user || user.dead) && !showedDead) {
 		showedDead = true;
@@ -1476,18 +1871,20 @@ function renderLootCoins(ctx) {
 	}
 }
 
-function renderPlayerHpBar(ctx, player) {
+function renderPlayerHpBar(ctx, player, isLocalPlayer = false) {
 	// Scale with player size
 	const sizeScale = player.sizeScale || 1.0;
 	const scaledRadius = PLAYER_RADIUS * sizeScale;
 	
-	const barWidth = scaledRadius * 2.5;
-	const barHeight = 6 * sizeScale;
+	// Local player has a slightly larger, more prominent HP bar
+	const sizeMult = isLocalPlayer ? 1.2 : 1.0;
+	const barWidth = scaledRadius * 2.5 * sizeMult;
+	const barHeight = 6 * sizeScale * sizeMult;
 	const barX = player.x - barWidth / 2;
 	const barY = player.y + scaledRadius + 8; // Below player
 	
 	// Background (dark)
-	ctx.fillStyle = "rgba(20, 20, 20, 0.8)";
+	ctx.fillStyle = isLocalPlayer ? "rgba(10, 10, 10, 0.9)" : "rgba(20, 20, 20, 0.8)";
 	ctx.fillRect(barX, barY, barWidth, barHeight);
 	
 	// HP fill
@@ -1512,9 +1909,9 @@ function renderPlayerHpBar(ctx, player) {
 		ctx.stroke();
 	}
 	
-	// Black outline
+	// Black outline (slightly thicker for local player)
 	ctx.strokeStyle = "#000000";
-	ctx.lineWidth = Math.max(1, 2 * sizeScale);
+	ctx.lineWidth = Math.max(1, (isLocalPlayer ? 2.5 : 2) * sizeScale);
 	ctx.strokeRect(barX, barY, barWidth, barHeight);
 }
 
@@ -1631,6 +2028,95 @@ function updateHitscanEffects() {
 function renderHitscanEffects(ctx) {
 	for (const effect of hitscanEffects) {
 		effect.render(ctx);
+	}
+}
+
+// ===== ENEMY RENDERING =====
+function renderEnemy(ctx, enemy) {
+	ctx.save();
+	
+	const type = enemy.type || 'basic';
+	const style = ENEMY_STYLES[type] || ENEMY_STYLES.basic;
+	
+	// Charging glow effect
+	if (enemy.isCharging) {
+		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 80);
+		ctx.shadowBlur = 15 + pulse * 10;
+		ctx.shadowColor = style.color;
+	}
+	
+	// Shadow
+	ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+	ctx.beginPath();
+	ctx.arc(enemy.x + 2, enemy.y + 2, enemy.radius, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Body
+	ctx.fillStyle = style.color;
+	ctx.beginPath();
+	ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Outline
+	ctx.strokeStyle = style.outline;
+	ctx.lineWidth = 2;
+	ctx.stroke();
+	
+	// Type-specific visuals
+	if (type === 'charger') {
+		// Arrow indicator showing charge direction
+		if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
+			const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
+			if (speed > 0) {
+				const angle = Math.atan2(enemy.vy, enemy.vx);
+				ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+				ctx.lineWidth = 3;
+				ctx.beginPath();
+				ctx.moveTo(enemy.x, enemy.y);
+				ctx.lineTo(
+					enemy.x + Math.cos(angle) * enemy.radius * 1.5,
+					enemy.y + Math.sin(angle) * enemy.radius * 1.5
+				);
+				ctx.stroke();
+			}
+		}
+	} else if (type === 'tank') {
+		// Inner ring for tanks
+		ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+		ctx.lineWidth = 3;
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.6, 0, Math.PI * 2);
+		ctx.stroke();
+	} else if (type === 'swarm') {
+		// Small dot in center for swarm
+		ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.3, 0, Math.PI * 2);
+		ctx.fill();
+	}
+	
+	ctx.restore();
+}
+
+function renderEnemyHpBar(ctx, enemy) {
+	const barWidth = enemy.radius * 2.2;
+	const barHeight = 4;
+	const x = enemy.x - barWidth / 2;
+	const y = enemy.y - enemy.radius - 10;
+	const ratio = enemy.maxHp > 0 ? Math.max(0, Math.min(1, enemy.hp / enemy.maxHp)) : 0;
+	
+	ctx.save();
+	ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+	ctx.fillRect(x, y, barWidth, barHeight);
+	ctx.fillStyle = "rgba(220, 60, 60, 0.9)";
+	ctx.fillRect(x, y, barWidth * ratio, barHeight);
+	ctx.restore();
+}
+
+function renderEnemies(ctx) {
+	const enemyList = client.getEnemies();
+	for (const enemy of enemyList) {
+		renderEnemy(ctx, enemy);
 	}
 }
 
@@ -2262,4 +2748,19 @@ class LevelUpTextEffect {
 		
 		ctx.restore();
 	}
+}
+
+// ===== UPGRADE UI EXPORTS =====
+
+export function showUpgradeUI(choices, newLevel) {
+	upgradeChoices = choices || [];
+	upgradeNewLevel = newLevel || 1;
+	upgradeUIVisible = true;
+	hoveredUpgrade = -1;
+}
+
+export function hideUpgradeUI() {
+	upgradeUIVisible = false;
+	upgradeChoices = [];
+	hoveredUpgrade = -1;
 }

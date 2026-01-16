@@ -342,7 +342,9 @@ Player.prototype.move = function(deltaSeconds) {
 	}
 	
 	// Apply speed buff to movement
-	const speedMultiplier = this.currentSpeedBuff;
+	// Include upgrade moveSpeedMult if available
+	const upgradeSpeedMult = (this.derivedStats && this.derivedStats.moveSpeedMult) || 1.0;
+	const speedMultiplier = this.currentSpeedBuff * upgradeSpeedMult;
 
 	// Move in current direction
 	this.x += Math.cos(this.angle) * this.speed * speedMultiplier * frameScale;
