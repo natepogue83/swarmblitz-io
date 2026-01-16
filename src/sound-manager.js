@@ -48,6 +48,17 @@ let enemyFuseFilterNode = null;
 let speedRushSound = null;
 let speedRushGainNode = null;
 let speedRushNoiseSource = null;
+
+// Laser sound limiter - prevents harsh stacking when many drones fire at once
+const laserLimiter = {
+  playerLasers: [],    // Timestamps of recent player laser sounds
+  enemyLasers: [],     // Timestamps of recent enemy laser sounds
+  maxConcurrent: 4,    // Max simultaneous laser sounds before attenuation kicks in
+  windowMs: 100,       // Time window to count concurrent sounds
+  minCooldownMs: 20,   // Minimum time between laser sounds of same type
+  attenuationFactor: 0.6, // Volume multiplier per extra concurrent sound
+  maxDelayMs: 35,      // Maximum random delay offset in milliseconds
+};
 let speedRushOscillator = null;
 
 // Background music state (playlist)
@@ -158,8 +169,39 @@ export function playPlayerLaser() {
   if (settings.volumes.playerLaser <= 0) return;
   resume();
 
+  const nowMs = performance.now();
+  
+  // Cooldown check - skip if too soon after last player laser
+  if (laserLimiter.playerLasers.length > 0) {
+    const lastLaser = laserLimiter.playerLasers[laserLimiter.playerLasers.length - 1];
+    if (nowMs - lastLaser < laserLimiter.minCooldownMs) {
+      return; // Skip this sound, too soon
+    }
+  }
+  
+  // Clean up old timestamps and count concurrent sounds
+  laserLimiter.playerLasers = laserLimiter.playerLasers.filter(t => nowMs - t < laserLimiter.windowMs);
+  const concurrentCount = laserLimiter.playerLasers.length;
+  
+  // Record this sound
+  laserLimiter.playerLasers.push(nowMs);
+  
+  // Calculate volume attenuation based on concurrent sounds
+  let volumeMultiplier = 1.0;
+  if (concurrentCount >= laserLimiter.maxConcurrent) {
+    // Attenuate heavily when over the limit
+    const excess = concurrentCount - laserLimiter.maxConcurrent + 1;
+    volumeMultiplier = Math.pow(laserLimiter.attenuationFactor, excess);
+  } else if (concurrentCount > 1) {
+    // Slight attenuation for multiple concurrent sounds
+    volumeMultiplier = 1.0 - (concurrentCount - 1) * 0.15;
+  }
+
   const vol = settings.volumes.playerLaser;
-  const now = audioContext.currentTime;
+  
+  // Add slight random delay to spread out simultaneous sounds (0-35ms)
+  const randomDelay = (Math.random() * laserLimiter.maxDelayMs) / 1000;
+  const now = audioContext.currentTime + randomDelay;
   const duration = 0.15;
 
   const osc1 = audioContext.createOscillator();
@@ -170,19 +212,22 @@ export function playPlayerLaser() {
   osc1.type = 'sawtooth';
   osc2.type = 'square';
 
-  osc1.frequency.setValueAtTime(1800, now);
-  osc1.frequency.exponentialRampToValueAtTime(400, now + duration * 0.7);
+  // Slight random pitch variation (+/- 5%) for more organic feel
+  const pitchVariation = 0.95 + Math.random() * 0.1;
+  osc1.frequency.setValueAtTime(1800 * pitchVariation, now);
+  osc1.frequency.exponentialRampToValueAtTime(400 * pitchVariation, now + duration * 0.7);
 
-  osc2.frequency.setValueAtTime(1400, now);
-  osc2.frequency.exponentialRampToValueAtTime(300, now + duration * 0.7);
+  osc2.frequency.setValueAtTime(1400 * pitchVariation, now);
+  osc2.frequency.exponentialRampToValueAtTime(300 * pitchVariation, now + duration * 0.7);
 
   filter.type = 'lowpass';
   filter.frequency.setValueAtTime(4000, now);
   filter.frequency.exponentialRampToValueAtTime(800, now + duration);
   filter.Q.value = 2;
 
+  const baseVolume = 0.35 * settings.sfxVolume * vol * volumeMultiplier;
   gainNode.gain.setValueAtTime(0, now);
-  gainNode.gain.linearRampToValueAtTime(0.35 * settings.sfxVolume * vol, now + 0.01);
+  gainNode.gain.linearRampToValueAtTime(baseVolume, now + 0.01);
   gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
 
   osc1.connect(filter);
@@ -202,10 +247,40 @@ export function playEnemyLaser(distance, maxDistance = 800) {
   resume();
 
   const vol = settings.volumes.enemyLaser;
-  const volumeMultiplier = Math.max(0, 1 - (distance / maxDistance));
-  if (volumeMultiplier < 0.05) return;
+  const distanceMultiplier = Math.max(0, 1 - (distance / maxDistance));
+  if (distanceMultiplier < 0.05) return;
 
-  const now = audioContext.currentTime;
+  const nowMs = performance.now();
+  
+  // Cooldown check - skip if too soon after last enemy laser
+  if (laserLimiter.enemyLasers.length > 0) {
+    const lastLaser = laserLimiter.enemyLasers[laserLimiter.enemyLasers.length - 1];
+    if (nowMs - lastLaser < laserLimiter.minCooldownMs) {
+      return; // Skip this sound, too soon
+    }
+  }
+  
+  // Clean up old timestamps and count concurrent sounds
+  laserLimiter.enemyLasers = laserLimiter.enemyLasers.filter(t => nowMs - t < laserLimiter.windowMs);
+  const concurrentCount = laserLimiter.enemyLasers.length;
+  
+  // Record this sound
+  laserLimiter.enemyLasers.push(nowMs);
+  
+  // Calculate volume attenuation based on concurrent sounds
+  let concurrentMultiplier = 1.0;
+  if (concurrentCount >= laserLimiter.maxConcurrent) {
+    // Attenuate heavily when over the limit
+    const excess = concurrentCount - laserLimiter.maxConcurrent + 1;
+    concurrentMultiplier = Math.pow(laserLimiter.attenuationFactor, excess);
+  } else if (concurrentCount > 1) {
+    // Slight attenuation for multiple concurrent sounds
+    concurrentMultiplier = 1.0 - (concurrentCount - 1) * 0.15;
+  }
+
+  // Add slight random delay to spread out simultaneous sounds (0-35ms)
+  const randomDelay = (Math.random() * laserLimiter.maxDelayMs) / 1000;
+  const now = audioContext.currentTime + randomDelay;
   const duration = 0.12;
 
   const osc1 = audioContext.createOscillator();
@@ -216,18 +291,20 @@ export function playEnemyLaser(distance, maxDistance = 800) {
   osc1.type = 'sawtooth';
   osc2.type = 'triangle';
 
-  osc1.frequency.setValueAtTime(900, now);
-  osc1.frequency.exponentialRampToValueAtTime(250, now + duration * 0.8);
+  // Slight random pitch variation (+/- 5%) for more organic feel
+  const pitchVariation = 0.95 + Math.random() * 0.1;
+  osc1.frequency.setValueAtTime(900 * pitchVariation, now);
+  osc1.frequency.exponentialRampToValueAtTime(250 * pitchVariation, now + duration * 0.8);
 
-  osc2.frequency.setValueAtTime(700, now);
-  osc2.frequency.exponentialRampToValueAtTime(180, now + duration * 0.8);
+  osc2.frequency.setValueAtTime(700 * pitchVariation, now);
+  osc2.frequency.exponentialRampToValueAtTime(180 * pitchVariation, now + duration * 0.8);
 
   filter.type = 'lowpass';
   filter.frequency.setValueAtTime(2500, now);
   filter.frequency.exponentialRampToValueAtTime(500, now + duration);
   filter.Q.value = 3;
 
-  const baseVolume = 0.25 * settings.sfxVolume * vol * volumeMultiplier;
+  const baseVolume = 0.25 * settings.sfxVolume * vol * distanceMultiplier * concurrentMultiplier;
   gainNode.gain.setValueAtTime(0, now);
   gainNode.gain.linearRampToValueAtTime(baseVolume, now + 0.008);
   gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);

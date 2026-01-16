@@ -412,23 +412,32 @@ function handleDeath(event) {
   const player = gameClient ? gameClient.getSelfPlayer() : null;
   const finalLevel = player ? player.level : maxLevel;
   
-  // Calculate score (placeholder - would need territory percentage)
-  const score = '0.00%';
+  // Get real territory percentage from game client
+  let score = '0.00%';
+  if (gameClient) {
+    const territoryPercent = gameClient.getTerritoryPercent(gameClient.playerId);
+    score = `${territoryPercent.toFixed(2)}%`;
+  }
   
   // Update death screen
   deathScore.textContent = score;
   deathKills.textContent = kills.toString();
   deathLevel.textContent = finalLevel.toString();
   
-  // Show killer info if available
-  if (event.killerNum !== undefined && event.killerNum !== 65535) {
+  // Show killer info if available (use tracked killer name from game client)
+  let killerName = null;
+  if (gameClient && gameClient.lastKillerName) {
+    killerName = gameClient.lastKillerName;
+  } else if (event.killerNum !== undefined && event.killerNum !== 65535) {
     const killer = gameClient ? gameClient.players.get(event.killerNum) : null;
     if (killer) {
-      deathKillerName.textContent = killer.name;
-      deathKillerInfo.style.display = 'block';
-    } else {
-      deathKillerInfo.style.display = 'none';
+      killerName = killer.name;
     }
+  }
+  
+  if (killerName) {
+    deathKillerName.textContent = killerName;
+    deathKillerInfo.style.display = 'block';
   } else {
     deathKillerInfo.style.display = 'none';
   }

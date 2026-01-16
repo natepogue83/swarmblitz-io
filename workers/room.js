@@ -33,9 +33,13 @@ const NETWORK_TICK_MS = 1000 / NETWORK_TICK_RATE;
 const SIM_TICK_RATE = 60;
 const SIM_TICK_MS = 1000 / SIM_TICK_RATE;
 
-// Alarm rate - Durable Object alarms have variable latency in local dev
-// We request alarms frequently and batch sim ticks as needed
-const ALARM_RATE_MS = 16; // Request 60Hz, will actually fire at ~20-50Hz
+// In-memory tick loop interval (ms)
+// Using setTimeout self-scheduling loop instead of setInterval to prevent tick stacking
+const TICK_LOOP_MS = 16; // ~60Hz target
+
+// Empty room cleanup timeout (ms) - time to wait before clearing large in-memory state
+// This allows for quick reconnects without losing world state
+const EMPTY_ROOM_CLEANUP_MS = 60000; // 60 seconds
 
 // Bot configuration
 const BOT_COUNT = config.bots || 10;
@@ -43,6 +47,195 @@ const BOT_RESPAWN_DELAY = 3000; // 3 seconds before respawning dead bot
 
 // AOI radius for visibility
 const AOI_RADIUS = 800;
+
+// Metrics logging interval (1 minute)
+const METRICS_LOG_INTERVAL_MS = 60000;
+
+/**
+ * Metrics Logger for production monitoring
+ * Logs JSON lines once per minute with comprehensive stats
+ */
+class MetricsLogger {
+  constructor(roomId) {
+    this.roomId = roomId;
+    this.startTime = Date.now();
+    this.lastLogTime = Date.now();
+    
+    // Per-minute counters (reset each log)
+    this.inboundWsMessages = 0;
+    this.outboundWsMessages = 0;
+    this.inboundBytes = 0;
+    this.outboundBytes = 0;
+    this.doRequests = 0;
+    
+    // Tick timing stats
+    this.tickTimes = []; // Array of tick CPU times in ms
+    this.simTickCount = 0;
+    this.netTickCount = 0;
+    
+    // Message type byte tracking
+    this.messageTypeSizes = {
+      FRAME: { count: 0, totalBytes: 0 },
+      INPUT: { count: 0, totalBytes: 0 },
+      PING: { count: 0, totalBytes: 0 },
+      PONG: { count: 0, totalBytes: 0 },
+      HELLO: { count: 0, totalBytes: 0 },
+      INIT: { count: 0, totalBytes: 0 },
+      OTHER: { count: 0, totalBytes: 0 },
+    };
+  }
+  
+  // Track inbound message
+  trackInbound(type, bytes) {
+    this.inboundWsMessages++;
+    this.inboundBytes += bytes;
+    const category = this.messageTypeSizes[type] || this.messageTypeSizes.OTHER;
+    category.count++;
+    category.totalBytes += bytes;
+  }
+  
+  // Track outbound message
+  trackOutbound(type, bytes) {
+    this.outboundWsMessages++;
+    this.outboundBytes += bytes;
+    const category = this.messageTypeSizes[type] || this.messageTypeSizes.OTHER;
+    category.count++;
+    category.totalBytes += bytes;
+  }
+  
+  // Track tick CPU time
+  trackTick(cpuTimeMs, isSim, isNet) {
+    this.tickTimes.push(cpuTimeMs);
+    if (isSim) this.simTickCount++;
+    if (isNet) this.netTickCount++;
+  }
+  
+  // Track DO request
+  trackDoRequest() {
+    this.doRequests++;
+  }
+  
+  // Calculate percentile from sorted array
+  percentile(sortedArr, p) {
+    if (sortedArr.length === 0) return 0;
+    const idx = Math.ceil(p * sortedArr.length) - 1;
+    return sortedArr[Math.max(0, idx)];
+  }
+  
+  // Generate and log metrics (returns true if logged)
+  maybeLog(activeConnections, activePlayers, botCount) {
+    const now = Date.now();
+    const elapsed = now - this.lastLogTime;
+    
+    if (elapsed < METRICS_LOG_INTERVAL_MS) {
+      return false;
+    }
+    
+    const elapsedSec = elapsed / 1000;
+    const elapsedMin = elapsed / 60000;
+    const uptimeSec = (now - this.startTime) / 1000;
+    
+    // Calculate tick stats
+    const sortedTicks = [...this.tickTimes].sort((a, b) => a - b);
+    const avgTickMs = sortedTicks.length > 0 
+      ? sortedTicks.reduce((a, b) => a + b, 0) / sortedTicks.length 
+      : 0;
+    const p95TickMs = this.percentile(sortedTicks, 0.95);
+    const maxTickMs = sortedTicks.length > 0 ? sortedTicks[sortedTicks.length - 1] : 0;
+    
+    // Calculate actual tick rates
+    const actualSimTickRate = this.simTickCount / elapsedSec;
+    const actualNetTickRate = this.netTickCount / elapsedSec;
+    
+    // Calculate per-hour metrics for different denominators
+    // - Per human player (for ad revenue math)
+    // - Per connection (for actual bandwidth cost)
+    // - Per entity (players + bots, for game scaling analysis)
+    const humanHours = (activePlayers * elapsedSec) / 3600;
+    const connectionHours = (activeConnections * elapsedSec) / 3600;
+    const entityCount = activePlayers + botCount;
+    const entityHours = (entityCount * elapsedSec) / 3600;
+    
+    // Calculate average packet sizes
+    const packetSizes = {};
+    for (const [type, stats] of Object.entries(this.messageTypeSizes)) {
+      if (stats.count > 0) {
+        packetSizes[type] = {
+          avgBytes: Math.round(stats.totalBytes / stats.count),
+          count: stats.count,
+        };
+      }
+    }
+    
+    // Build metrics object
+    const metrics = {
+      ts: new Date().toISOString(),
+      roomId: this.roomId,
+      uptimeSec: Math.round(uptimeSec),
+      
+      // Tick rates
+      targetSimHz: SIM_TICK_RATE,
+      targetNetHz: NETWORK_TICK_RATE,
+      actualSimHz: Math.round(actualSimTickRate * 10) / 10,
+      actualNetHz: Math.round(actualNetTickRate * 10) / 10,
+      
+      // Tick CPU time (ms)
+      avgTickMs: Math.round(avgTickMs * 100) / 100,
+      p95TickMs: Math.round(p95TickMs * 100) / 100,
+      maxTickMs: Math.round(maxTickMs * 100) / 100,
+      tickSamples: sortedTicks.length,
+      
+      // Connections
+      connections: activeConnections,
+      players: activePlayers,
+      bots: botCount,
+      
+      // Per-minute message counts
+      wsInPerMin: Math.round(this.inboundWsMessages / elapsedMin),
+      wsOutPerMin: Math.round(this.outboundWsMessages / elapsedMin),
+      doReqPerMin: Math.round(this.doRequests / elapsedMin),
+      
+      // Bandwidth (bytes per minute)
+      bytesInPerMin: Math.round(this.inboundBytes / elapsedMin),
+      bytesOutPerMin: Math.round(this.outboundBytes / elapsedMin),
+      
+      // Per-hour bandwidth metrics (different denominators for different use cases)
+      // Per human player (for ad revenue / monetization math)
+      bytesInPerHumanHour: humanHours > 0 ? Math.round(this.inboundBytes / humanHours) : 0,
+      bytesOutPerHumanHour: humanHours > 0 ? Math.round(this.outboundBytes / humanHours) : 0,
+      // Per WebSocket connection (actual bandwidth cost per connected client)
+      bytesInPerConnHour: connectionHours > 0 ? Math.round(this.inboundBytes / connectionHours) : 0,
+      bytesOutPerConnHour: connectionHours > 0 ? Math.round(this.outboundBytes / connectionHours) : 0,
+      // Per game entity (players + bots, for scaling analysis)
+      bytesOutPerEntityHour: entityHours > 0 ? Math.round(this.outboundBytes / entityHours) : 0,
+      
+      // Packet size estimates
+      packetSizes,
+    };
+    
+    // Log as single JSON line
+    console.log('[METRICS]', JSON.stringify(metrics));
+    
+    // Reset counters
+    this.lastLogTime = now;
+    this.inboundWsMessages = 0;
+    this.outboundWsMessages = 0;
+    this.inboundBytes = 0;
+    this.outboundBytes = 0;
+    this.doRequests = 0;
+    this.tickTimes = [];
+    this.simTickCount = 0;
+    this.netTickCount = 0;
+    
+    // Reset message type tracking
+    for (const stats of Object.values(this.messageTypeSizes)) {
+      stats.count = 0;
+      stats.totalBytes = 0;
+    }
+    
+    return true;
+  }
+}
 
 /**
  * Client connection state
@@ -82,8 +275,16 @@ export class Room {
     this.lastNetTick = Date.now();
     this.simAccumulator = 0;
     
-    // Start game loop
-    this.running = false;
+    // In-memory tick loop state (replaces alarm-based loop for cost efficiency)
+    // Using setTimeout self-scheduling instead of setInterval to prevent tick stacking
+    this.tickTimer = null;        // setTimeout handle for tick loop
+    this.cleanupTimer = null;     // setTimeout handle for empty room cleanup
+    this.running = false;         // Guard to prevent multiple tick loops
+    this.pendingConnections = 0;  // WebSocket connections awaiting hello handshake
+    
+    // Metrics logging (enabled via METRICS_ENABLED env var or always in dev)
+    this.metricsEnabled = env.METRICS_ENABLED === 'true' || env.METRICS_ENABLED === '1';
+    this.metrics = this.metricsEnabled ? new MetricsLogger(state.id.toString()) : null;
   }
   
   /**
@@ -91,6 +292,11 @@ export class Room {
    */
   async fetch(request) {
     const url = new URL(request.url);
+    
+    // Track DO fetch invocation for metrics (this is a real DO request)
+    if (this.metrics) {
+      this.metrics.trackDoRequest();
+    }
     
     // WebSocket upgrade
     if (request.headers.get('Upgrade') === 'websocket') {
@@ -114,11 +320,15 @@ export class Room {
         this.handleDisconnect(server);
       });
       
-      // Start game loop if not running
-      if (!this.running) {
-        this.running = true;
-        this.scheduleLoop();
-      }
+      // Track pending connection (will be decremented when hello is received or on disconnect)
+      this.pendingConnections++;
+      
+      // Cancel any pending cleanup - a new connection arrived
+      // This is race-safe: if cleanup was about to run, we cancel it
+      this.cancelCleanup();
+      
+      // Start in-memory tick loop if not already running
+      this.startTickLoop();
       
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -131,6 +341,7 @@ export class Room {
         humans: this.clients.size,
         coins: this.world.coins.size,
         frame: this.world.frame,
+        running: this.running,
       }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -140,19 +351,120 @@ export class Room {
   }
   
   /**
-   * Schedule next game loop iteration
-   * Uses alarms which are reliable in production
+   * Start the in-memory tick loop
+   * Uses setTimeout self-scheduling to prevent tick stacking
+   * Only starts if not already running (guard against multiple loops)
    */
-  scheduleLoop() {
-    this.state.storage.setAlarm(Date.now() + ALARM_RATE_MS);
+  startTickLoop() {
+    // Guard: prevent multiple tick loops (race-safe)
+    if (this.running) {
+      return;
+    }
+    
+    this.running = true;
+    this.lastSimTick = Date.now();
+    this.lastNetTick = Date.now();
+    this.simAccumulator = 0;
+    
+    console.log('[ROOM] Starting in-memory tick loop');
+    
+    // Schedule first tick
+    this.scheduleNextTick();
   }
   
   /**
-   * Alarm handler - game loop
+   * Stop the in-memory tick loop immediately
+   * Clears the timer and resets running state
+   * Does NOT clear world state - that's handled by scheduleCleanup()
    */
-  async alarm() {
+  stopTickLoop() {
+    if (this.tickTimer) {
+      clearTimeout(this.tickTimer);
+      this.tickTimer = null;
+    }
+    this.running = false;
+    console.log('[ROOM] Stopped tick loop');
+  }
+  
+  /**
+   * Schedule cleanup of large in-memory state after empty room timeout
+   * This allows quick reconnects to preserve world state
+   * Race-safe: checks connections==0 before actually cleaning up
+   */
+  scheduleCleanup() {
+    // Don't schedule if already scheduled
+    if (this.cleanupTimer) {
+      return;
+    }
+    
+    console.log(`[ROOM] Scheduling cleanup in ${EMPTY_ROOM_CLEANUP_MS / 1000}s`);
+    
+    this.cleanupTimer = setTimeout(() => {
+      this.cleanupTimer = null;
+      
+      // Race-safe: double-check no connections (including pending) before cleanup
+      if (this.clients.size > 0 || this.pendingConnections > 0) {
+        console.log('[ROOM] Cleanup cancelled - connections exist');
+        return;
+      }
+      
+      // Double-check tick loop is stopped
+      if (this.running) {
+        console.log('[ROOM] Cleanup cancelled - tick loop still running');
+        return;
+      }
+      
+      console.log('[ROOM] Cleaning up empty room state');
+      
+      // Clear large in-memory state
+      this.world = new World();
+      this.botManager = new BotManager();
+      this.pendingBotRespawns = [];
+      this.botsInitialized = false;
+      
+      // Reset timing state
+      this.lastSimTick = Date.now();
+      this.lastNetTick = Date.now();
+      this.simAccumulator = 0;
+      
+      // Clear player mappings (should already be empty)
+      this.playerToClient.clear();
+      
+      console.log('[ROOM] Empty room cleanup complete - DO now idle');
+    }, EMPTY_ROOM_CLEANUP_MS);
+  }
+  
+  /**
+   * Cancel any pending cleanup (called when new connection arrives)
+   */
+  cancelCleanup() {
+    if (this.cleanupTimer) {
+      clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = null;
+      console.log('[ROOM] Cancelled pending cleanup');
+    }
+  }
+  
+  /**
+   * Schedule the next tick using setTimeout (self-scheduling pattern)
+   * This prevents tick stacking if a tick runs long
+   */
+  scheduleNextTick() {
     if (!this.running) return;
     
+    this.tickTimer = setTimeout(() => {
+      this.tick();
+    }, TICK_LOOP_MS);
+  }
+  
+  /**
+   * Main game tick - runs simulation and network updates
+   * Called from in-memory setTimeout loop (NOT from alarm)
+   */
+  tick() {
+    if (!this.running) return;
+    
+    const tickStart = performance.now();
     const now = Date.now();
     
     // Initialize bots on first tick (after world is ready)
@@ -190,18 +502,52 @@ export class Room {
     }
     
     // Network tick (lower rate)
+    let didNetTick = false;
     const netDelta = now - this.lastNetTick;
     if (netDelta >= NETWORK_TICK_MS) {
       this.lastNetTick = now;
       this.broadcastFrame();
+      didNetTick = true;
     }
     
-    // Continue loop if players connected OR bots exist
-    if (this.clients.size > 0 || this.botManager.count > 0) {
-      this.scheduleLoop();
-    } else {
-      this.running = false;
+    // Track tick timing for metrics
+    if (this.metrics) {
+      const tickEnd = performance.now();
+      const tickCpuMs = tickEnd - tickStart;
+      this.metrics.trackTick(tickCpuMs, simCount > 0, didNetTick);
+      
+      // Log metrics once per minute
+      const humanPlayers = Array.from(this.clients.values()).filter(c => !c.isSpectator).length;
+      this.metrics.maybeLog(this.clients.size, humanPlayers, this.botManager.count);
     }
+    
+    // Continue running if there are active connections OR pending connections (awaiting hello)
+    const hasActiveConnections = this.clients.size > 0 || this.pendingConnections > 0;
+    
+    if (hasActiveConnections) {
+      this.scheduleNextTick();
+    } else {
+      // No connections - immediately stop tick loop (DO becomes idle)
+      // Don't clear state yet - schedule cleanup after timeout
+      console.log('[ROOM] No active connections, stopping tick loop immediately');
+      this.stopTickLoop();
+      this.scheduleCleanup();
+    }
+  }
+  
+  /**
+   * Alarm handler - used only for low-frequency housekeeping
+   * NOT used for game tick loop (that's now in-memory setTimeout)
+   */
+  async alarm() {
+    // Track DO alarm invocation for metrics
+    if (this.metrics) {
+      this.metrics.trackDoRequest();
+    }
+    
+    // Housekeeping tasks could go here (e.g., periodic state persistence)
+    // Currently not used since we use in-memory tick loop
+    console.log('[ROOM] Alarm fired (housekeeping)');
   }
   
   /**
@@ -308,12 +654,26 @@ export class Room {
     try {
       // Binary message
       if (data instanceof ArrayBuffer) {
+        // Track metrics
+        if (this.metrics) {
+          const view = new DataView(data);
+          const type = view.getUint8(0);
+          const typeName = type === PacketType.INPUT ? 'INPUT' : type === PacketType.PING ? 'PING' : 'OTHER';
+          this.metrics.trackInbound(typeName, data.byteLength);
+        }
         this.handleBinaryMessage(ws, data);
         return;
       }
       
       // Text message (for initial handshake)
       const msg = JSON.parse(data);
+      const bytes = typeof data === 'string' ? data.length : 0;
+      
+      // Track metrics
+      if (this.metrics) {
+        const typeName = msg.type === 'hello' ? 'HELLO' : msg.type === 'ping' ? 'PING' : 'OTHER';
+        this.metrics.trackInbound(typeName, bytes);
+      }
       
       switch (msg.type) {
         case 'hello':
@@ -355,6 +715,11 @@ export class Room {
    * Handle hello (join game or spectate)
    */
   handleHello(ws, msg) {
+    // Decrement pending connections - handshake is completing
+    if (this.pendingConnections > 0) {
+      this.pendingConnections--;
+    }
+    
     // Check if spectator
     if (msg.spectate) {
       this.handleSpectateHello(ws);
@@ -367,7 +732,7 @@ export class Room {
     const result = this.world.addPlayer(name);
     
     if (!result.ok) {
-      ws.send(JSON.stringify({ type: 'error', error: result.error }));
+      this.trackedSend(ws, JSON.stringify({ type: 'error', error: result.error }), 'OTHER');
       ws.close();
       return;
     }
@@ -389,7 +754,7 @@ export class Room {
       coins: this.world.getAllCoins().map(c => ({ id: c.id, x: c.x, y: c.y, value: c.value })),
     };
     
-    ws.send(JSON.stringify(initData));
+    this.trackedSend(ws, JSON.stringify(initData), 'INIT');
     
     // Broadcast join to others
     this.broadcastEvent({
@@ -416,7 +781,7 @@ export class Room {
       coins: this.world.getAllCoins().map(c => ({ id: c.id, x: c.x, y: c.y, value: c.value })),
     };
     
-    ws.send(JSON.stringify(initData));
+    this.trackedSend(ws, JSON.stringify(initData), 'INIT');
     console.log('[ROOM] Spectator joined');
   }
   
@@ -435,10 +800,23 @@ export class Room {
   }
   
   /**
+   * Send data with metrics tracking
+   */
+  trackedSend(ws, data, type = 'OTHER') {
+    const bytes = data instanceof ArrayBuffer ? data.byteLength : 
+                  typeof data === 'string' ? data.length : 0;
+    if (this.metrics) {
+      this.metrics.trackOutbound(type, bytes);
+    }
+    ws.send(data);
+  }
+  
+  /**
    * Handle ping
    */
   handlePing(ws, msg) {
-    ws.send(JSON.stringify({ type: 'pong', t: msg.t }));
+    const response = JSON.stringify({ type: 'pong', t: msg.t });
+    this.trackedSend(ws, response, 'PONG');
   }
   
   /**
@@ -453,7 +831,7 @@ export class Room {
     pongView.setUint8(0, PacketType.PONG);
     pongView.setFloat64(1, timestamp, true);
     
-    ws.send(buffer);
+    this.trackedSend(ws, buffer, 'PONG');
   }
   
   /**
@@ -461,6 +839,10 @@ export class Room {
    */
   handleReset(ws) {
     console.log('[DEBUG] Room reset requested');
+    
+    // Stop the tick loop and cancel any pending cleanup
+    this.stopTickLoop();
+    this.cancelCleanup();
     
     // Create fresh world
     this.world = new World();
@@ -478,7 +860,7 @@ export class Room {
     // Notify all clients to reconnect
     for (const [clientWs, client] of this.clients) {
       try {
-        clientWs.send(JSON.stringify({ type: 'reset' }));
+        this.trackedSend(clientWs, JSON.stringify({ type: 'reset' }), 'OTHER');
         clientWs.close(1000, 'Room reset');
       } catch (e) {
         // Ignore errors on close
@@ -497,12 +879,21 @@ export class Room {
    */
   handleDisconnect(ws) {
     const client = this.clients.get(ws);
-    if (!client) return;
+    
+    // If client wasn't registered yet (disconnected before hello), decrement pending
+    if (!client) {
+      if (this.pendingConnections > 0) {
+        this.pendingConnections--;
+        console.log('[ROOM] Pending connection disconnected before hello');
+      }
+      return;
+    }
     
     // Spectators don't have a player
     if (client.isSpectator) {
       this.clients.delete(ws);
       console.log('[ROOM] Spectator disconnected');
+      // Note: tick loop handles stopping when hasActiveConnections() === false
       return;
     }
     
@@ -513,7 +904,12 @@ export class Room {
     this.playerToClient.delete(client.playerId);
     this.clients.delete(ws);
     
-    // Broadcast leave
+    console.log(`[ROOM] Player disconnected, ${this.clients.size} connections remaining`);
+    
+    // Note: tick loop handles stopping when hasActiveConnections() === false
+    // Cleanup is scheduled by the tick loop, not here
+    
+    // Broadcast leave to remaining clients
     this.broadcastEvent({
       type: EventType.PLAYER_LEAVE,
       num: client.playerId,
@@ -539,7 +935,7 @@ export class Room {
           const packet = this.buildSpectatorFramePacket(client, allPlayers, allCoins, events, frame);
           
           if (packet.byteLength > 1) {
-            ws.send(packet);
+            this.trackedSend(ws, packet, 'FRAME');
           }
           client.lastSentFrame = frame;
           continue;
@@ -556,7 +952,7 @@ export class Room {
         const packet = this.buildFramePacket(client, player, nearbyPlayers, nearbyCoins, events, frame);
         
         if (packet.byteLength > 1) {
-          ws.send(packet);
+          this.trackedSend(ws, packet, 'FRAME');
         }
         
         client.lastSentFrame = frame;
@@ -939,7 +1335,7 @@ export class Room {
     for (const [ws, client] of this.clients) {
       if (client.playerId !== excludePlayerId) {
         try {
-          ws.send(data);
+          this.trackedSend(ws, data, 'OTHER');
         } catch (err) {
           console.error('Event broadcast error:', err);
         }

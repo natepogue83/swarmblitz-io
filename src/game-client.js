@@ -590,6 +590,256 @@ class CaptureEffect {
 }
 
 /**
+ * Level-up text effect (floating "LEVEL UP!" text with scaling)
+ * Ported from deprecated/mode/player.js
+ */
+class LevelUpTextEffect {
+  constructor(x, y, newLevel, player, isLocalPlayer) {
+    this.x = x;
+    this.y = y;
+    this.newLevel = newLevel;
+    this.player = player;
+    this.isLocalPlayer = isLocalPlayer;
+    this.spawnTime = performance.now();
+    this.color = player && player.base ? player.base : null;
+    
+    // Text animation
+    this.textY = y - 40;
+    this.textAlpha = 1;
+    this.scale = 0.5;
+  }
+  
+  update() {
+    const elapsed = (performance.now() - this.spawnTime) / 1000;
+    const duration = 1.5;
+    const progress = Math.min(1, elapsed / duration);
+    
+    // Float up and fade
+    this.textY = this.y - 40 - progress * 60;
+    this.textAlpha = Math.max(0, 1 - progress);
+    
+    // Scale up then back down
+    if (progress < 0.3) {
+      this.scale = 0.5 + (progress / 0.3) * 1.0;
+    } else {
+      this.scale = 1.5 - (progress - 0.3) * 0.5;
+    }
+    
+    return progress < 1;
+  }
+  
+  render(ctx) {
+    if (this.textAlpha <= 0) return;
+    
+    ctx.save();
+    ctx.globalAlpha = this.textAlpha;
+    ctx.translate(this.x, this.textY);
+    ctx.scale(this.scale, this.scale);
+    
+    // Glow effect
+    ctx.shadowColor = '#FFD700';
+    ctx.shadowBlur = 20 * this.textAlpha;
+    
+    // Text
+    ctx.fillStyle = '#FFD700';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.lineWidth = 4;
+    ctx.font = 'bold 24px Changa';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    const text = `⬆️ LEVEL ${this.newLevel}! ⬆️`;
+    ctx.strokeText(text, 0, 0);
+    ctx.fillText(text, 0, 0);
+    
+    // Bonus info text below
+    ctx.font = 'bold 14px Changa';
+    ctx.fillStyle = '#88CCFF';
+    ctx.strokeText('+1 Drone, +5% Size', 0, 28);
+    ctx.fillText('+1 Drone, +5% Size', 0, 28);
+    
+    ctx.restore();
+  }
+}
+
+/**
+ * Loot coin animation (coins flying from death location to final position)
+ * Ported from deprecated/mode/player.js
+ */
+class LootCoin {
+  constructor(originX, originY, targetX, targetY, value, coinId = null) {
+    this.originX = originX;
+    this.originY = originY;
+    this.targetX = targetX;
+    this.targetY = targetY;
+    this.value = value;
+    this.coinId = coinId; // Track which real coin this animation is for
+    
+    // Current position (starts at origin)
+    this.x = originX;
+    this.y = originY;
+    
+    // Animation timing
+    this.spawnTime = performance.now();
+    this.duration = 600 + Math.random() * 200; // 600-800ms flight time
+    this.delay = Math.random() * 150; // Stagger the coins
+    
+    // Arc parameters for juicy trajectory
+    this.arcHeight = 40 + Math.random() * 60; // How high the arc goes
+    this.rotation = 0;
+    this.rotationSpeed = (Math.random() - 0.5) * 0.4;
+    
+    // Visual effects
+    this.scale = 0;
+    this.targetScale = 0.8 + Math.random() * 0.4;
+    this.glowIntensity = 1;
+    this.sparkles = [];
+    
+    // Generate initial sparkles
+    for (let i = 0; i < 3; i++) {
+      this.sparkles.push({
+        angle: Math.random() * Math.PI * 2,
+        dist: 8 + Math.random() * 8,
+        size: 2 + Math.random() * 2,
+        speed: 0.05 + Math.random() * 0.05
+      });
+    }
+    
+    this.landed = false;
+    this.landTime = 0;
+    this.bouncePhase = 0;
+  }
+  
+  update() {
+    const now = performance.now();
+    const elapsed = now - this.spawnTime - this.delay;
+    
+    if (elapsed < 0) {
+      // Still in delay phase
+      return true;
+    }
+    
+    const progress = Math.min(1, elapsed / this.duration);
+    
+    if (!this.landed) {
+      // Ease out cubic for smooth deceleration
+      const easeProgress = 1 - Math.pow(1 - progress, 3);
+      
+      // Linear interpolation for x
+      this.x = this.originX + (this.targetX - this.originX) * easeProgress;
+      
+      // Parabolic arc for y (goes up then down)
+      const linearY = this.originY + (this.targetY - this.originY) * easeProgress;
+      const arcOffset = Math.sin(easeProgress * Math.PI) * this.arcHeight;
+      this.y = linearY - arcOffset;
+      
+      // Scale up as it flies
+      this.scale = this.targetScale * Math.min(1, easeProgress * 2);
+      
+      // Rotation
+      this.rotation += this.rotationSpeed;
+      
+      // Update sparkles
+      for (const sparkle of this.sparkles) {
+        sparkle.angle += sparkle.speed;
+      }
+      
+      if (progress >= 1) {
+        this.landed = true;
+        this.landTime = now;
+        this.x = this.targetX;
+        this.y = this.targetY;
+      }
+    } else {
+      // Bounce and settle animation
+      const landElapsed = now - this.landTime;
+      const bounceProgress = Math.min(1, landElapsed / 400);
+      
+      // Damped bounce
+      this.bouncePhase = Math.sin(bounceProgress * Math.PI * 3) * (1 - bounceProgress) * 8;
+      this.y = this.targetY - Math.abs(this.bouncePhase);
+      
+      // Settle rotation
+      this.rotation *= 0.95;
+      
+      // Fade glow
+      this.glowIntensity = Math.max(0.3, 1 - bounceProgress * 0.7);
+      
+      // Done after bounce settles
+      if (bounceProgress >= 1) {
+        return false; // Remove this loot coin animation
+      }
+    }
+    
+    return true;
+  }
+  
+  render(ctx) {
+    const now = performance.now();
+    const elapsed = now - this.spawnTime - this.delay;
+    
+    if (elapsed < 0 || this.scale <= 0) return;
+    
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rotation);
+    ctx.scale(this.scale, this.scale);
+    
+    const coinRadius = (consts.COIN_RADIUS || 8) * 1.2;
+    
+    // Outer glow
+    const glowSize = coinRadius * (2 + this.glowIntensity);
+    const gradient = ctx.createRadialGradient(0, 0, coinRadius * 0.5, 0, 0, glowSize);
+    gradient.addColorStop(0, `rgba(255, 215, 0, ${0.6 * this.glowIntensity})`);
+    gradient.addColorStop(0.5, `rgba(255, 180, 0, ${0.3 * this.glowIntensity})`);
+    gradient.addColorStop(1, 'rgba(255, 150, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(0, 0, glowSize, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Main coin body with gradient
+    const coinGradient = ctx.createRadialGradient(-coinRadius * 0.3, -coinRadius * 0.3, 0, 0, 0, coinRadius);
+    coinGradient.addColorStop(0, '#FFF8DC'); // Light gold highlight
+    coinGradient.addColorStop(0.3, '#FFD700'); // Gold
+    coinGradient.addColorStop(0.7, '#DAA520'); // Goldenrod
+    coinGradient.addColorStop(1, '#B8860B'); // Dark goldenrod edge
+    ctx.fillStyle = coinGradient;
+    ctx.beginPath();
+    ctx.arc(0, 0, coinRadius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Inner ring detail
+    ctx.strokeStyle = 'rgba(139, 90, 43, 0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, coinRadius * 0.7, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Shine highlight
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.beginPath();
+    ctx.ellipse(-coinRadius * 0.25, -coinRadius * 0.25, coinRadius * 0.35, coinRadius * 0.2, -Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.restore();
+    
+    // Render sparkles (in world space)
+    if (!this.landed) {
+      for (const sparkle of this.sparkles) {
+        const sx = this.x + Math.cos(sparkle.angle) * sparkle.dist * this.scale;
+        const sy = this.y + Math.sin(sparkle.angle) * sparkle.dist * this.scale;
+        
+        ctx.fillStyle = `rgba(255, 255, 200, ${0.8 * this.glowIntensity})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, sparkle.size * this.scale, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+}
+
+/**
  * Game Client
  */
 export default class GameClient {
@@ -675,6 +925,23 @@ export default class GameClient {
     
     // Capture feedback effects (pulse ring, particles, +XP text)
     this.captureEffects = [];
+    
+    // Level-up effects (text + particles)
+    this.levelUpEffects = [];
+    
+    // Loot coin animations (coins flying from death to final position)
+    this.lootCoins = [];
+    this.animatingCoinIds = new Set(); // Coin IDs currently being animated (hide real coin)
+    
+    // Territory portion tracking for leaderboard
+    this.playerPortions = new Map(); // playerId -> territory area
+    
+    // Last killer name (for death screen)
+    this.lastKillerName = null;
+    this.lastKillerNum = null;
+    
+    // Recent death locations for loot coin animations
+    this.recentDeaths = []; // { x, y, time }
     
     // Local player outline thickening state (on capture)
     this.localOutlineThicken = {
@@ -1269,7 +1536,14 @@ export default class GameClient {
         
       case EventType.PLAYER_KILL: {
         const victim = this.players.get(event.victimNum);
+        const killer = this.players.get(event.killerNum);
         const isLocalPlayer = event.victimNum === this.playerId;
+        
+        // Track killer for death screen
+        if (isLocalPlayer && killer) {
+          this.lastKillerName = killer.name || 'Unknown';
+          this.lastKillerNum = event.killerNum;
+        }
         
         // Spawn death VFX before player is removed
         if (victim) {
@@ -1284,11 +1558,17 @@ export default class GameClient {
         break;
       }
         
-      case EventType.LEVEL_UP:
-        if (event.playerNum === this.playerId) {
+      case EventType.LEVEL_UP: {
+        const levelPlayer = this.players.get(event.playerNum);
+        const isLocalLevelUp = event.playerNum === this.playerId;
+        if (levelPlayer) {
+          this.spawnLevelUpEffect(levelPlayer.x, levelPlayer.y, event.newLevel, levelPlayer, isLocalLevelUp);
+        }
+        if (isLocalLevelUp) {
           this.onLevelUp(event);
         }
         break;
+      }
         
       case EventType.PLAYER_JOIN:
         if (event.player && !this.players.has(event.player.num)) {
@@ -1300,12 +1580,28 @@ export default class GameClient {
         this.players.delete(event.num);
         break;
         
-      case EventType.COIN_SPAWN:
+      case EventType.COIN_SPAWN: {
         this.coins.set(event.id, new Coin(event));
+        
+        // Check if this coin spawned near a recent death (loot drop)
+        const now = performance.now();
+        for (const death of this.recentDeaths) {
+          const dist = Math.hypot(event.x - death.x, event.y - death.y);
+          if (dist < 150 && now - death.time < 500) { // Within 150 units and 500ms of death
+            // Spawn loot coin animation from death location to coin location
+            // Track the coin ID so we can hide the real coin until animation lands
+            const lootCoin = new LootCoin(death.x, death.y, event.x, event.y, event.value || 5, event.id);
+            this.lootCoins.push(lootCoin);
+            this.animatingCoinIds.add(event.id);
+            break;
+          }
+        }
         break;
+      }
         
       case EventType.COIN_PICKUP:
         this.coins.delete(event.id);
+        this.animatingCoinIds.delete(event.id); // In case coin was picked up during animation
         // SFX: only play for the local player's pickups
         if (event.playerNum === this.playerId) {
           SoundManager.playCoinPickup();
@@ -1485,6 +1781,15 @@ export default class GameClient {
     
     // Capture feedback effects (pulse ring, particles, +XP text)
     this.updateCaptureEffects();
+    
+    // Level-up effects
+    this.updateLevelUpEffects();
+    
+    // Loot coin animations
+    this.updateLootCoins();
+    
+    // Update territory portions for leaderboard
+    this.updateTerritoryPortions();
 
     // Clean up expired effects
     this.effects = this.effects.filter(e => !e.isExpired());
@@ -1711,6 +2016,12 @@ export default class GameClient {
     const color = player.base ? player.base.rgbString() : '#ff4444';
     const lightColor = player.base ? player.base.lighter(0.3).rgbString() : '#ff8888';
     
+    // Track death location for loot coin animations
+    this.recentDeaths.push({ x, y, time: performance.now() });
+    // Clean up old death locations (older than 2 seconds)
+    const now = performance.now();
+    this.recentDeaths = this.recentDeaths.filter(d => now - d.time < 2000);
+    
     // Burst particles (square confetti)
     const burstCount = isLocalPlayer ? 40 : 25;
     for (let i = 0; i < burstCount; i++) {
@@ -1862,6 +2173,125 @@ export default class GameClient {
     for (const effect of this.captureEffects) {
       effect.render(ctx);
     }
+  }
+  
+  /**
+   * Spawn level-up VFX
+   */
+  spawnLevelUpEffect(x, y, newLevel, player, isLocalPlayer) {
+    // Golden burst particles
+    const burstCount = isLocalPlayer ? 30 : 8;
+    for (let i = 0; i < burstCount; i++) {
+      this.deathParticles.push(new DeathParticle(x, y, '#FFD700', 'burst'));
+    }
+    
+    // Golden ring
+    this.deathParticles.push(new DeathParticle(x, y, '#FFD700', 'ring'));
+    
+    // Screen shake for local player
+    if (isLocalPlayer) {
+      this.screenShake.intensity = 10;
+      
+      // Floating "LEVEL UP!" text (only for local player)
+      this.levelUpEffects.push(new LevelUpTextEffect(x, y, newLevel, player, isLocalPlayer));
+      
+      // Play level up sound
+      SoundManager.playLevelUpSound();
+    }
+  }
+  
+  /**
+   * Update level-up effects
+   */
+  updateLevelUpEffects() {
+    for (let i = this.levelUpEffects.length - 1; i >= 0; i--) {
+      if (!this.levelUpEffects[i].update()) {
+        this.levelUpEffects.splice(i, 1);
+      }
+    }
+  }
+  
+  /**
+   * Render level-up effects
+   */
+  renderLevelUpEffects(ctx) {
+    for (const effect of this.levelUpEffects) {
+      effect.render(ctx);
+    }
+  }
+  
+  /**
+   * Update loot coin animations
+   */
+  updateLootCoins() {
+    for (let i = this.lootCoins.length - 1; i >= 0; i--) {
+      const lootCoin = this.lootCoins[i];
+      if (!lootCoin.update()) {
+        // Animation finished - remove from animating set so real coin shows
+        if (lootCoin.coinId !== null) {
+          this.animatingCoinIds.delete(lootCoin.coinId);
+        }
+        this.lootCoins.splice(i, 1);
+      }
+    }
+  }
+  
+  /**
+   * Render loot coin animations
+   */
+  renderLootCoins(ctx) {
+    for (const coin of this.lootCoins) {
+      coin.render(ctx);
+    }
+  }
+  
+  /**
+   * Update territory portions for leaderboard ranking
+   */
+  updateTerritoryPortions() {
+    const mapArea = this.mapSize * this.mapSize;
+    for (const [id, player] of this.players) {
+      if (player.territory && player.territory.length >= 3) {
+        const area = this.polygonArea(player.territory);
+        this.playerPortions.set(id, area / mapArea);
+      } else {
+        this.playerPortions.set(id, 0);
+      }
+    }
+  }
+  
+  /**
+   * Calculate polygon area (for territory percentage)
+   */
+  polygonArea(polygon) {
+    if (!polygon || polygon.length < 3) return 0;
+    let area = 0;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      area += (polygon[j].x + polygon[i].x) * (polygon[j].y - polygon[i].y);
+    }
+    return Math.abs(area / 2);
+  }
+  
+  /**
+   * Get territory percentage for a player
+   */
+  getTerritoryPercent(playerId) {
+    return (this.playerPortions.get(playerId) || 0) * 100;
+  }
+  
+  /**
+   * Get sorted leaderboard by territory percentage
+   */
+  getLeaderboard() {
+    const entries = [];
+    for (const [id, player] of this.players) {
+      entries.push({
+        player,
+        portion: this.playerPortions.get(id) || 0,
+      });
+    }
+    entries.sort((a, b) => b.portion - a.portion);
+    return entries;
   }
   
   /**
@@ -2046,9 +2476,11 @@ export default class GameClient {
       this.drawTerritory(ctx, player);
     }
     
-    // Draw coins
+    // Draw coins (skip coins that have active loot animations)
     for (const coin of this.coins.values()) {
-      this.drawCoin(ctx, coin);
+      if (!this.animatingCoinIds.has(coin.id)) {
+        this.drawCoin(ctx, coin);
+      }
     }
     
     // Draw trails
@@ -2080,6 +2512,12 @@ export default class GameClient {
     
     // Draw capture effects (pulse ring, particles, +XP text)
     this.renderCaptureEffects(ctx);
+    
+    // Draw level-up effects (floating text)
+    this.renderLevelUpEffects(ctx);
+    
+    // Draw loot coin animations
+    this.renderLootCoins(ctx);
     
     // Draw death particles (above everything else in game world)
     this.renderDeathParticles(ctx);
@@ -2559,6 +2997,11 @@ export default class GameClient {
       snipAlpha = 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(time * 4));
     }
     
+    // Draw drone range indicator (only for local player with drones)
+    if (player.num === this.playerId && player.drones && player.drones.length > 0) {
+      this.drawDroneRangeIndicator(ctx, player);
+    }
+    
     // Draw drones
     for (const drone of player.drones) {
       this.drawDrone(ctx, drone, color, player);
@@ -2689,6 +3132,29 @@ export default class GameClient {
       ctx.font = '10px monospace';
       ctx.fillText(`err: ${errorDist.toFixed(1)}px`, player.x, player.y + scaledRadius + 25);
     }
+  }
+  
+  /**
+   * Draw drone range indicator circle (only for local player)
+   */
+  drawDroneRangeIndicator(ctx, player) {
+    const range = consts.DRONE_RANGE || 158;
+    
+    ctx.save();
+    
+    // Animated dash
+    const time = Date.now() / 1000;
+    
+    // Draw subtle dashed circle
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 10]);
+    ctx.lineDashOffset = -time * 30;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, range, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    ctx.restore();
   }
   
   /**
@@ -2880,31 +3346,41 @@ export default class GameClient {
     xOffset += ctx.measureText('XP:').width + 5;
     ctx.fillStyle = 'white';
     ctx.fillText(player.xp, xOffset, centerY);
+    xOffset += ctx.measureText(String(player.xp)).width + 20;
+    
+    // Territory %
+    const territoryPercent = this.getTerritoryPercent(this.playerId);
+    ctx.fillStyle = '#98FB98';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('Territory:', xOffset, centerY);
+    xOffset += ctx.measureText('Territory:').width + 5;
+    ctx.fillStyle = 'white';
+    ctx.fillText(`${territoryPercent.toFixed(2)}%`, xOffset, centerY);
   }
   
   /**
-   * Draw leaderboard
+   * Draw leaderboard (ranked by territory %)
    */
   drawLeaderboard(ctx) {
-    // Sort players by level then XP
-    const sorted = Array.from(this.players.values())
-      .filter(p => !p.dead)
-      .sort((a, b) => b.level - a.level || b.xp - a.xp);
+    // Get leaderboard sorted by territory percentage
+    const leaderboard = this.getLeaderboard().filter(e => !e.player.dead);
+    const leaderboardNum = Math.min(consts.LEADERBOARD_NUM || 5, leaderboard.length);
     
-    const leaderboardNum = Math.min(consts.LEADERBOARD_NUM || 5, sorted.length);
+    // Find max portion for bar scaling
+    const maxPortion = leaderboard.length > 0 ? leaderboard[0].portion : 0;
     
     ctx.font = '18px Arial';
     ctx.textAlign = 'left';
     
     for (let i = 0; i < leaderboardNum; i++) {
-      const player = sorted[i];
+      const { player, portion } = leaderboard[i];
       const name = player.name || 'Unnamed';
       const color = player.base;
       const shadowColor = color.darker(0.3);
       
-      // Calculate bar size (proportional to rank)
-      const portion = 1 - (i / leaderboardNum);
-      const barSize = Math.ceil((LEADERBOARD_WIDTH - MIN_BAR_WIDTH) * portion + MIN_BAR_WIDTH);
+      // Calculate bar size (proportional to territory %)
+      const barPortion = maxPortion > 0 ? portion / maxPortion : 0;
+      const barSize = Math.ceil((LEADERBOARD_WIDTH - MIN_BAR_WIDTH) * barPortion + MIN_BAR_WIDTH);
       const barX = this.canvas.width - barSize;
       const barY = BAR_HEIGHT * (i + 1);
       const offsetY = i === 0 ? 10 : 0;
@@ -2926,10 +3402,11 @@ export default class GameClient {
       ctx.fillStyle = 'black';
       ctx.fillText(name, barX - nameWidth - 15, barY + 27);
       
-      // Level text on bar
+      // Territory % text on bar
       const isMe = player.num === this.playerId;
+      const percentText = `${(portion * 100).toFixed(1)}%`;
       ctx.fillStyle = isMe ? '#FFD700' : 'white';
-      ctx.fillText(`Lv.${player.level}`, barX + 5, barY + BAR_HEIGHT - 15);
+      ctx.fillText(percentText, barX + 5, barY + BAR_HEIGHT - 15);
     }
   }
   

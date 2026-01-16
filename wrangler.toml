@@ -21,6 +21,10 @@ new_sqlite_classes = ["Room"]
 port = 8787
 local_protocol = "http"
 
+# Environment variables (default: metrics disabled)
+[vars]
+METRICS_ENABLED = "false"
+
 # Environment-specific settings
 [env.production]
 name = "swarmblitz-prod"

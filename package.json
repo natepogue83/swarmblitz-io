@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:worker\" \"npm run dev:client\"",
+    "dev:metrics": "concurrently \"npm run dev:worker:metrics\" \"npm run dev:client\"",
     "dev:worker": "wrangler dev",
+    "dev:worker:metrics": "wrangler dev --var METRICS_ENABLED:true",
     "dev:client": "vite",
     "build": "vite build",
     "deploy": "wrangler deploy",
