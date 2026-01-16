@@ -916,7 +916,7 @@ export default class GameClient {
    * Draw player trail
    */
   drawTrail(ctx, player) {
-    if (!player.trail || player.trail.length < 2) return;
+    if (!player.trail || player.trail.length < 1) return;
     
     const color = player.base;
     const tailColor = color.lighter(0.2);
@@ -926,13 +926,35 @@ export default class GameClient {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     
+    const playerX = player.x;
+    const playerY = player.y;
+    
     ctx.beginPath();
     ctx.moveTo(player.trail[0].x, player.trail[0].y);
-    for (let i = 1; i < player.trail.length; i++) {
+    
+    // Draw all trail points except the last one
+    for (let i = 1; i < player.trail.length - 1; i++) {
       ctx.lineTo(player.trail[i].x, player.trail[i].y);
     }
-    // Connect to player
-    ctx.lineTo(player.x, player.y);
+    
+    // For the last trail point, interpolate it towards the player position
+    // This prevents the trail from appearing disconnected or ahead of the player
+    if (player.trail.length > 1) {
+      const lastPoint = player.trail[player.trail.length - 1];
+      const distToPlayer = Math.hypot(lastPoint.x - playerX, lastPoint.y - playerY);
+      
+      // If last point is close to player, just connect directly
+      // Otherwise, draw the last point but lerp it towards player
+      if (distToPlayer > PLAYER_RADIUS * 2) {
+        // Lerp the last point 50% towards player to smooth the connection
+        const lerpedX = lastPoint.x + (playerX - lastPoint.x) * 0.5;
+        const lerpedY = lastPoint.y + (playerY - lastPoint.y) * 0.5;
+        ctx.lineTo(lerpedX, lerpedY);
+      }
+    }
+    
+    // Connect to player's current rendered position
+    ctx.lineTo(playerX, playerY);
     ctx.stroke();
   }
   
