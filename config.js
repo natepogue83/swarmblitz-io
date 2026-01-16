@@ -5,7 +5,7 @@ export const config = {
 	"bots": 30,
 	"fps": 60,
 	"serverTickRate": 60,
-	"netTickRate": 60,
+	"netTickRate": 10, // Network updates per second (server->client)
 	"prod": false
 };
 

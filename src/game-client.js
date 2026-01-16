@@ -30,7 +30,7 @@ class InterpolatedEntity {
     this.num = data.num;
     this.name = data.name || 'Player';
     
-    // Render position (what we draw)
+    // Render position (what we draw - always smooth)
     this.x = data.x;
     this.y = data.y;
     this.angle = data.angle || 0;
@@ -39,6 +39,10 @@ class InterpolatedEntity {
     this.serverX = data.x;
     this.serverY = data.y;
     this.serverAngle = data.angle || 0;
+    
+    // Correction offset (accumulated error to smooth out)
+    this.correctionX = 0;
+    this.correctionY = 0;
     
     // Stats
     this.hp = data.hp || 100;
@@ -71,8 +75,30 @@ class InterpolatedEntity {
   
   /**
    * Update from server data
+   * @param {boolean} isLocalPlayer - If true, accumulate correction offset instead of snapping
    */
-  update(data) {
+  update(data, isLocalPlayer = false) {
+    // For local player: accumulate correction offset (smooth out over time)
+    // For other players: just update server position (interpolateOther handles smoothing)
+    if (isLocalPlayer && data.x !== undefined && data.y !== undefined) {
+      // Calculate how far off we are from server
+      const errorX = data.x - this.x;
+      const errorY = data.y - this.y;
+      
+      // Add to correction offset (will be blended out smoothly in predict())
+      this.correctionX += errorX;
+      this.correctionY += errorY;
+      
+      // If error is huge (>100px), snap immediately (teleport/respawn)
+      const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
+      if (errorDist > 100) {
+        this.x = data.x;
+        this.y = data.y;
+        this.correctionX = 0;
+        this.correctionY = 0;
+      }
+    }
+    
     // Update server-authoritative state
     if (data.x !== undefined) this.serverX = data.x;
     if (data.y !== undefined) this.serverY = data.y;
@@ -139,18 +165,32 @@ class InterpolatedEntity {
   /**
    * Client-side prediction for local player
    * Moves the player based on current angle at the expected speed
+   * 
+   * Key insight: We keep prediction PURE (no jittery corrections).
+   * Instead, we accumulate correction offsets and blend them out smoothly.
    */
   predict(deltaMs, speed, mapSize, inputAngle) {
+    // Blend out any accumulated correction offset (very smoothly)
+    // This absorbs server corrections without causing visible jitter
+    const blendRate = 0.08; // 8% per frame - very smooth
+    this.x += this.correctionX * blendRate;
+    this.y += this.correctionY * blendRate;
+    this.correctionX *= (1 - blendRate);
+    this.correctionY *= (1 - blendRate);
+    
+    // Gently correct angle towards server (prevents drift on turns)
+    let angleError = this.serverAngle - this.angle;
+    while (angleError > Math.PI) angleError -= Math.PI * 2;
+    while (angleError < -Math.PI) angleError += Math.PI * 2;
+    this.angle += angleError * 0.03; // Very gentle - 3% per frame
+    
     // Limit turn rate to match server (0.15 rad/frame at 60fps = 9 rad/sec)
-    // This prevents client/server divergence on sharp turns
     const maxTurnPerFrame = 9 * (deltaMs / 1000);
     
     let angleDiff = inputAngle - this.angle;
-    // Normalize to [-PI, PI]
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
     while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
     
-    // Clamp the turn amount
     if (Math.abs(angleDiff) > maxTurnPerFrame) {
       angleDiff = Math.sign(angleDiff) * maxTurnPerFrame;
     }
@@ -160,8 +200,8 @@ class InterpolatedEntity {
     while (this.angle > Math.PI) this.angle -= Math.PI * 2;
     while (this.angle < -Math.PI) this.angle += Math.PI * 2;
     
-    // Move in the direction we're facing
-    const moveAmount = speed * (deltaMs / 1000) * 60; // speed is per-frame at 60fps
+    // Move in the direction we're facing (pure prediction - no corrections here)
+    const moveAmount = speed * (deltaMs / 1000) * 60;
     this.x += Math.cos(this.angle) * moveAmount;
     this.y += Math.sin(this.angle) * moveAmount;
     
@@ -170,36 +210,49 @@ class InterpolatedEntity {
     this.x = Math.max(radius, Math.min(mapSize - radius, this.x));
     this.y = Math.max(radius, Math.min(mapSize - radius, this.y));
     
-    // Correct towards server position
-    const errorX = this.serverX - this.x;
-    const errorY = this.serverY - this.y;
-    const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
-    
-    // Moderate correction (10-50% per frame based on error)
-    const correctionRate = Math.min(0.5, 0.1 + errorDist * 0.008);
-    this.x += errorX * correctionRate;
-    this.y += errorY * correctionRate;
-    
     // Update drone positions (client-side orbit simulation)
     this.updateDrones(deltaMs);
   }
   
   /**
-   * Smooth interpolation for other players (not local)
-   * Simply moves towards server position smoothly
+   * Smooth movement for other players (not local)
+   * Extrapolates movement based on angle, with correction towards server position
    */
-  interpolateOther(deltaMs) {
-    // Smoothly move towards server position
-    const lerpSpeed = 0.2; // 20% per frame towards target
-    
-    this.x += (this.serverX - this.x) * lerpSpeed;
-    this.y += (this.serverY - this.y) * lerpSpeed;
-    
-    // Smooth angle (handle wraparound)
+  interpolateOther(deltaMs, speed) {
+    // Smoothly interpolate angle towards server angle
     let angleDiff = this.serverAngle - this.angle;
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
     while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-    this.angle += angleDiff * lerpSpeed;
+    
+    // Fast angle lerp (50% per frame at 60fps)
+    const angleLerp = Math.min(1, 0.5 * (deltaMs / 16.67));
+    this.angle += angleDiff * angleLerp;
+    
+    // Normalize angle
+    while (this.angle > Math.PI) this.angle -= Math.PI * 2;
+    while (this.angle < -Math.PI) this.angle += Math.PI * 2;
+    
+    // Always move forward in the direction we're facing (extrapolation)
+    const moveAmount = speed * (deltaMs / 1000) * 60;
+    this.x += Math.cos(this.angle) * moveAmount;
+    this.y += Math.sin(this.angle) * moveAmount;
+    
+    // Correct towards server position to prevent drift
+    const errorX = this.serverX - this.x;
+    const errorY = this.serverY - this.y;
+    const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
+    
+    if (errorDist > 150) {
+      // Too far off (teleport/respawn), snap immediately
+      this.x = this.serverX;
+      this.y = this.serverY;
+    } else {
+      // Correction: 15% base + more for larger errors
+      // This keeps us close to server position without stopping
+      const correctionRate = Math.min(0.5, 0.15 + errorDist * 0.005);
+      this.x += errorX * correctionRate;
+      this.y += errorY * correctionRate;
+    }
     
     // Update drone positions (client-side orbit simulation)
     this.updateDrones(deltaMs);
@@ -267,9 +320,11 @@ export default class GameClient {
     this.coins = new Map();
     this.effects = [];
     
-    // Camera
+    // Camera - smoothly follows player
     this.cameraX = 0;
     this.cameraY = 0;
+    this.cameraTargetX = 0; // Where camera wants to be
+    this.cameraTargetY = 0;
     this.cameraScale = 1;
     
     // Input
@@ -279,15 +334,20 @@ export default class GameClient {
     
     // Timing
     this.lastFrameTime = performance.now();
-    this.networkTickMs = 50; // 20 Hz
+    this.networkTickMs = 100; // 10 Hz (server sends updates every 100ms)
     // Interpolation delay: render slightly in the past to smooth between snapshots
     // Lower = more responsive but potentially jittery, higher = smoother but laggy
-    this.interpolationDelay = this.networkTickMs; // One tick delay (50ms)
+    this.interpolationDelay = this.networkTickMs; // One tick delay (100ms)
     
     // Callbacks
     this.onDeath = options.onDeath || (() => {});
     this.onKill = options.onKill || (() => {});
     this.onLevelUp = options.onLevelUp || (() => {});
+    
+    // Debug mode (press D to toggle)
+    this.debugMode = false;
+    this.lastNetworkUpdate = 0;
+    this.networkGaps = []; // Track last N gaps for averaging
     
     // Bind methods
     this.handleMouseMove = this.handleMouseMove.bind(this);
@@ -305,6 +365,14 @@ export default class GameClient {
     this.canvas.addEventListener('mousemove', this.handleMouseMove);
     this.canvas.addEventListener('touchmove', this.handleTouchMove, { passive: false });
     this.canvas.addEventListener('touchstart', this.handleTouchMove, { passive: false });
+    
+    // Debug toggle (press D)
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'd' || e.key === 'D') {
+        this.debugMode = !this.debugMode;
+        console.log('Debug mode:', this.debugMode ? 'ON' : 'OFF');
+      }
+    });
   }
   
   /**
@@ -392,11 +460,13 @@ export default class GameClient {
       this.coins.set(c.id, new Coin(c));
     }
     
-    // Center camera on player
+    // Center camera on player (instant snap on join, then smooth follow)
     const player = this.players.get(this.playerId);
     if (player) {
       this.cameraX = player.x;
       this.cameraY = player.y;
+      this.cameraTargetX = player.x;
+      this.cameraTargetY = player.y;
     }
     
     // Start game loop
@@ -407,11 +477,24 @@ export default class GameClient {
    * Handle frame update
    */
   handleFrame(data) {
-    // Update self
+    // Track network update timing for debug
+    const now = performance.now();
+    if (this.lastNetworkUpdate) {
+      const gap = now - this.lastNetworkUpdate;
+      this.networkGaps.push(gap);
+      if (this.networkGaps.length > 20) this.networkGaps.shift();
+      
+      if (gap > 150 && this.debugMode) { // More than 150ms gap (expected 100ms)
+        console.warn(`[NET] Long gap between updates: ${gap.toFixed(0)}ms`);
+      }
+    }
+    this.lastNetworkUpdate = now;
+    
+    // Update self (local player uses correction offset for smooth movement)
     if (data.selfPlayer) {
       let player = this.players.get(data.selfPlayer.num);
       if (player) {
-        player.update(data.selfPlayer);
+        player.update(data.selfPlayer, true); // isLocalPlayer = true
       } else {
         player = new InterpolatedEntity(data.selfPlayer);
         this.players.set(data.selfPlayer.num, player);
@@ -425,11 +508,11 @@ export default class GameClient {
       }
     }
     
-    // Update existing players
+    // Update existing players (other players use interpolation)
     for (const p of data.updatedPlayers) {
       const player = this.players.get(p.num);
       if (player) {
-        player.update(p);
+        player.update(p, false); // isLocalPlayer = false
       }
     }
     
@@ -583,15 +666,23 @@ export default class GameClient {
         // Local player: use client-side prediction
         player.predict(deltaMs, consts.SPEED, this.mapSize, this.targetAngle);
       } else {
-        // Other players: smooth interpolation towards server position
-        player.interpolateOther(deltaMs);
+        // Other players: extrapolate movement + gentle correction
+        player.interpolateOther(deltaMs, consts.SPEED);
       }
     }
     
-    // Camera follows local player directly (no extra smoothing needed since prediction is smooth)
+    // Camera smoothly follows local player
+    // This prevents jarring camera movement when server corrections happen
     if (localPlayer) {
-      this.cameraX = localPlayer.x;
-      this.cameraY = localPlayer.y;
+      this.cameraTargetX = localPlayer.x;
+      this.cameraTargetY = localPlayer.y;
+      
+      // Smooth camera movement - lerp towards target
+      // Higher value = more responsive, lower = smoother
+      // At 60fps, 0.15 means camera reaches ~90% of target in ~15 frames (~250ms)
+      const cameraLerp = 0.15;
+      this.cameraX += (this.cameraTargetX - this.cameraX) * cameraLerp;
+      this.cameraY += (this.cameraTargetY - this.cameraY) * cameraLerp;
     }
     
     // Clean up expired effects
@@ -665,6 +756,91 @@ export default class GameClient {
     this.drawTopBar(ctx);
     this.drawLeaderboard(ctx);
     this.drawXPBar(ctx);
+    
+    // Debug HUD
+    if (this.debugMode) {
+      this.drawDebugHUD(ctx);
+    }
+  }
+  
+  /**
+   * Draw debug HUD
+   */
+  drawDebugHUD(ctx) {
+    const x = 10;
+    let y = 150;
+    const lineHeight = 16;
+    
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(5, y - 15, 250, 180);
+    
+    ctx.fillStyle = '#00ff00';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'left';
+    
+    ctx.fillText('=== DEBUG MODE (press D to toggle) ===', x, y);
+    y += lineHeight;
+    
+    // Count players and calculate errors
+    let totalError = 0;
+    let maxError = 0;
+    let playerCount = 0;
+    
+    for (const [id, player] of this.players) {
+      if (id === this.playerId || player.dead) continue;
+      
+      const errorX = player.serverX - player.x;
+      const errorY = player.serverY - player.y;
+      const error = Math.sqrt(errorX * errorX + errorY * errorY);
+      
+      totalError += error;
+      maxError = Math.max(maxError, error);
+      playerCount++;
+    }
+    
+    const avgError = playerCount > 0 ? totalError / playerCount : 0;
+    
+    ctx.fillText(`Players: ${this.players.size} (${playerCount} others)`, x, y);
+    y += lineHeight;
+    ctx.fillText(`Avg position error: ${avgError.toFixed(1)}px`, x, y);
+    y += lineHeight;
+    ctx.fillText(`Max position error: ${maxError.toFixed(1)}px`, x, y);
+    y += lineHeight;
+    
+    // Network timing
+    const avgGap = this.networkGaps.length > 0 
+      ? this.networkGaps.reduce((a, b) => a + b, 0) / this.networkGaps.length 
+      : 0;
+    const maxGap = this.networkGaps.length > 0 
+      ? Math.max(...this.networkGaps) 
+      : 0;
+    const timeSinceUpdate = performance.now() - this.lastNetworkUpdate;
+    
+    ctx.fillText(`Net update gap: avg ${avgGap.toFixed(0)}ms, max ${maxGap.toFixed(0)}ms`, x, y);
+    y += lineHeight;
+    ctx.fillStyle = timeSinceUpdate > 150 ? '#ff0000' : '#00ff00';
+    ctx.fillText(`Time since last update: ${timeSinceUpdate.toFixed(0)}ms`, x, y);
+    ctx.fillStyle = '#00ff00';
+    y += lineHeight;
+    
+    // Show local player info
+    const localPlayer = this.players.get(this.playerId);
+    if (localPlayer) {
+      y += lineHeight;
+      ctx.fillStyle = '#ffff00';
+      ctx.fillText('--- Local Player ---', x, y);
+      y += lineHeight;
+      ctx.fillStyle = '#00ff00';
+      ctx.fillText(`Pos: (${localPlayer.x.toFixed(1)}, ${localPlayer.y.toFixed(1)})`, x, y);
+      y += lineHeight;
+      ctx.fillText(`Server: (${localPlayer.serverX.toFixed(1)}, ${localPlayer.serverY.toFixed(1)})`, x, y);
+      y += lineHeight;
+      const localError = Math.sqrt(
+        Math.pow(localPlayer.serverX - localPlayer.x, 2) +
+        Math.pow(localPlayer.serverY - localPlayer.y, 2)
+      );
+      ctx.fillText(`Correction offset: ${localError.toFixed(1)}px`, x, y);
+    }
   }
   
   /**
@@ -895,6 +1071,46 @@ export default class GameClient {
       ctx.fillStyle = shadowColor.deriveAlpha(snipAlpha).rgbString();
     }
     ctx.fillText(player.name, player.x, player.y - scaledRadius - 8);
+    
+    // Debug overlay
+    if (this.debugMode && player.num !== this.playerId) {
+      // Draw server position (green circle)
+      ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(player.serverX, player.serverY, scaledRadius + 5, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      // Draw line from client pos to server pos (red = error)
+      const errorX = player.serverX - player.x;
+      const errorY = player.serverY - player.y;
+      const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
+      
+      if (errorDist > 1) {
+        ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y);
+        ctx.lineTo(player.serverX, player.serverY);
+        ctx.stroke();
+      }
+      
+      // Draw server angle (blue line)
+      ctx.strokeStyle = 'rgba(0, 100, 255, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(player.serverX, player.serverY);
+      ctx.lineTo(
+        player.serverX + Math.cos(player.serverAngle) * 40,
+        player.serverY + Math.sin(player.serverAngle) * 40
+      );
+      ctx.stroke();
+      
+      // Error text
+      ctx.fillStyle = 'rgba(255, 255, 0, 1)';
+      ctx.font = '10px monospace';
+      ctx.fillText(`err: ${errorDist.toFixed(1)}px`, player.x, player.y + scaledRadius + 25);
+    }
   }
   
   /**

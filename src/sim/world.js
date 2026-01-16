@@ -114,6 +114,7 @@ class Player {
     this.isSnipped = false;
     this.snippedBy = null;
     this.waitLag = 0;
+    this.hasReceivedInput = false; // Don't move until first input received
     
     // Territory and trail
     this.territory = [];
@@ -197,6 +198,9 @@ class Player {
    */
   move(deltaSeconds, mapSize, now) {
     if (this.dead) return;
+    
+    // Don't move until player has sent their first input
+    if (!this.hasReceivedInput) return;
     
     // Wait lag (spawn protection)
     if (this.waitLag < consts.NEW_PLAYER_LAG) {
@@ -381,6 +385,8 @@ class Player {
     
     if (this.snipProgressDist >= this.snipTotalTrailLength) {
       this.die();
+      this._killedBySnip = true;
+      this._snipperNum = this.snippedBy;
       return;
     }
     
@@ -1011,6 +1017,7 @@ export default class World {
     const player = this.players.get(playerId);
     if (player && !player.dead) {
       player.targetAngle = targetAngle;
+      player.hasReceivedInput = true; // Start moving once we get first input
     }
   }
   
@@ -1107,7 +1114,7 @@ export default class World {
    */
   tick(deltaSeconds) {
     const now = Date.now();
-    this.pendingEvents = [];
+    // Don't clear pendingEvents here - they're cleared by the network layer after broadcast
     
     // Spawn coins
     this.coinSpawnCooldown -= deltaSeconds;
@@ -1284,6 +1291,16 @@ export default class World {
         player._deathHandled = true;
         this.playerGrid.remove(player);
         this.colors.push(player.color);
+        
+        // Send PLAYER_KILL event for snip deaths (or any death not already handled)
+        if (player._killedBySnip) {
+          this.pendingEvents.push({
+            type: EventType.PLAYER_KILL,
+            killerNum: player._snipperNum !== null ? player._snipperNum : 65535, // 65535 = self/no killer
+            victimNum: player.id,
+            killType: 1, // snip kill
+          });
+        }
         
         // Drop XP as coins
         let totalXp = player.xp;

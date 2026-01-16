@@ -496,13 +496,11 @@ export default class NetClient {
         break;
         
       case EventType.HITSCAN:
+        // Optimized: server only sends player IDs, client calculates positions
         event.ownerNum = reader.readU16();
         event.targetNum = reader.readU16();
-        event.fromX = dequantizePosition(reader.readU16(), mapSize);
-        event.fromY = dequantizePosition(reader.readU16(), mapSize);
-        event.toX = dequantizePosition(reader.readU16(), mapSize);
-        event.toY = dequantizePosition(reader.readU16(), mapSize);
         event.damage = reader.readU8();
+        // fromX, fromY, toX, toY will be calculated by game-client from player positions
         break;
         
       case EventType.CAPTURE:

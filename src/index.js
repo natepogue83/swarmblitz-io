@@ -202,15 +202,19 @@ function startGame() {
   maxLevel = 1;
   
   // Determine WebSocket URL
+  // Add ?prod to URL to test against production server
+  const testProd = window.location.search.includes('prod');
   let wsUrl;
-  if (config.dev) {
+  if (config.dev && !testProd) {
     // Local development - use wrangler dev server
     wsUrl = `ws://localhost:8787/room/default`;
+    console.log('%c🔧 CONNECTING TO LOCAL SERVER', 'background: #ff9800; color: black; font-size: 16px; padding: 4px 8px;');
   } else {
     // Production - use Cloudflare Workers
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    wsUrl = `${protocol}//${window.location.host}/room/default`;
+    wsUrl = `wss://swarmblitz.dev-1dd.workers.dev/room/default`;
+    console.log('%c☁️ CONNECTING TO PRODUCTION SERVER', 'background: #4caf50; color: white; font-size: 16px; padding: 4px 8px;');
   }
+  console.log('WebSocket URL:', wsUrl);
   
   // Create game client
   gameClient = new GameClient(canvas, {

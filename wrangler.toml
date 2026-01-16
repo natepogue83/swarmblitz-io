@@ -11,9 +11,10 @@ bindings = [
 ]
 
 # Migrations for Durable Objects
+# Using new_sqlite_classes for free plan compatibility
 [[migrations]]
 tag = "v1"
-new_classes = ["Room"]
+new_sqlite_classes = ["Room"]
 
 # Development settings
 [dev]
@@ -26,10 +27,6 @@ name = "swarmblitz-prod"
 
 [env.staging]
 name = "swarmblitz-staging"
-
-# Limits
-[limits]
-cpu_ms = 50
 
 # Observability
 [observability]

@@ -6,6 +6,7 @@
  * - AOI-based delta broadcasting
  * - Binary protocol
  * - Batched network frames
+ * - Server-side bots
  */
 
 import World from '../src/sim/world.js';
@@ -20,14 +21,25 @@ import {
   encodeColor,
   DeltaFlags,
 } from '../src/net/protocol.js';
+import { BotManager } from '../src/sim/bot-ai.js';
+import { config, consts } from '../config.js';
 
 // Network tick rate (Hz) - decoupled from simulation
-const NETWORK_TICK_RATE = 20;
+// 10Hz = 100ms between updates, client interpolates for smoothness
+const NETWORK_TICK_RATE = 10;
 const NETWORK_TICK_MS = 1000 / NETWORK_TICK_RATE;
 
 // Simulation tick rate (Hz) - runs faster for smooth physics
 const SIM_TICK_RATE = 60;
 const SIM_TICK_MS = 1000 / SIM_TICK_RATE;
+
+// Alarm rate - Durable Object alarms have variable latency in local dev
+// We request alarms frequently and batch sim ticks as needed
+const ALARM_RATE_MS = 16; // Request 60Hz, will actually fire at ~20-50Hz
+
+// Bot configuration
+const BOT_COUNT = config.bots || 10;
+const BOT_RESPAWN_DELAY = 3000; // 3 seconds before respawning dead bot
 
 // AOI radius for visibility
 const AOI_RADIUS = 800;
@@ -58,6 +70,11 @@ export class Room {
     this.world = new World();
     this.clients = new Map(); // ws -> Client
     this.playerToClient = new Map(); // playerId -> Client
+    
+    // Bot management
+    this.botManager = new BotManager();
+    this.pendingBotRespawns = []; // { respawnTime, name }
+    this.botsInitialized = false;
     
     // Timing
     this.lastSimTick = Date.now();
@@ -109,6 +126,8 @@ export class Room {
     if (url.pathname === '/status') {
       return new Response(JSON.stringify({
         players: this.world.players.size,
+        bots: this.botManager.count,
+        humans: this.clients.size,
         coins: this.world.coins.size,
         frame: this.world.frame,
       }), {
@@ -121,10 +140,10 @@ export class Room {
   
   /**
    * Schedule next game loop iteration
+   * Uses alarms which are reliable in production
    */
   scheduleLoop() {
-    // Use alarm for Durable Objects
-    this.state.storage.setAlarm(Date.now() + SIM_TICK_MS);
+    this.state.storage.setAlarm(Date.now() + ALARM_RATE_MS);
   }
   
   /**
@@ -135,15 +154,38 @@ export class Room {
     
     const now = Date.now();
     
+    // Initialize bots on first tick (after world is ready)
+    if (!this.botsInitialized) {
+      this.initializeBots();
+      this.botsInitialized = true;
+    }
+    
+    // Handle bot respawns
+    this.processBotRespawns(now);
+    
+    // Update bot AI (runs at 4Hz internally)
+    this.botManager.update(this.world, now);
+    
+    // Check for dead bots and schedule respawns
+    this.checkDeadBots(now);
+    
     // Simulation tick
     const simDelta = now - this.lastSimTick;
     this.lastSimTick = now;
     this.simAccumulator += simDelta;
     
     // Run simulation at fixed timestep
-    while (this.simAccumulator >= SIM_TICK_MS) {
+    let simCount = 0;
+    const maxSimTicks = 10;
+    while (this.simAccumulator >= SIM_TICK_MS && simCount < maxSimTicks) {
       this.world.tick(SIM_TICK_MS / 1000);
       this.simAccumulator -= SIM_TICK_MS;
+      simCount++;
+    }
+    
+    // If we're still behind after max ticks, drop the excess time
+    if (this.simAccumulator > SIM_TICK_MS * 2) {
+      this.simAccumulator = 0;
     }
     
     // Network tick (lower rate)
@@ -153,12 +195,109 @@ export class Room {
       this.broadcastFrame();
     }
     
-    // Continue loop if players connected
-    if (this.clients.size > 0) {
+    // Continue loop if players connected OR bots exist
+    if (this.clients.size > 0 || this.botManager.count > 0) {
       this.scheduleLoop();
     } else {
       this.running = false;
     }
+  }
+  
+  /**
+   * Initialize bots at game start
+   */
+  initializeBots() {
+    const prefixes = consts.PREFIXES.split(' ');
+    const names = consts.NAMES.split(' ');
+    
+    for (let i = 0; i < BOT_COUNT; i++) {
+      const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+      const name = names[Math.floor(Math.random() * names.length)];
+      const botName = `[BOT] ${prefix} ${name}`;
+      
+      this.spawnBot(botName);
+    }
+    
+    console.log(`Initialized ${BOT_COUNT} bots`);
+  }
+  
+  /**
+   * Spawn a single bot
+   */
+  spawnBot(name) {
+    const result = this.world.addPlayer(name);
+    if (result.ok) {
+      const player = result.player;
+      player.hasReceivedInput = true; // Bots start moving immediately
+      player.waitLag = consts.NEW_PLAYER_LAG; // Skip spawn protection
+      this.botManager.addBot(player.id);
+      return player.id;
+    }
+    return null;
+  }
+  
+  /**
+   * Check for dead bots and schedule respawns
+   */
+  checkDeadBots(now) {
+    // Collect dead bots first (can't modify map while iterating)
+    const deadBots = [];
+    
+    for (const [playerId, bot] of this.botManager.bots) {
+      const player = this.world.players.get(playerId);
+      if (!player || player.dead) {
+        deadBots.push({
+          playerId,
+          name: player ? player.name : this.generateBotName(),
+        });
+      }
+    }
+    
+    // Process dead bots
+    for (const { playerId, name } of deadBots) {
+      // Remove from bot manager
+      this.botManager.removeBot(playerId);
+      
+      // Remove from world if still there
+      const player = this.world.players.get(playerId);
+      if (player) {
+        this.world.removePlayer(playerId);
+      }
+      
+      // Schedule respawn
+      this.pendingBotRespawns.push({
+        respawnTime: now + BOT_RESPAWN_DELAY,
+        name: name,
+      });
+    }
+  }
+  
+  /**
+   * Process pending bot respawns
+   */
+  processBotRespawns(now) {
+    const stillPending = [];
+    
+    for (const respawn of this.pendingBotRespawns) {
+      if (now >= respawn.respawnTime) {
+        this.spawnBot(respawn.name);
+      } else {
+        stillPending.push(respawn);
+      }
+    }
+    
+    this.pendingBotRespawns = stillPending;
+  }
+  
+  /**
+   * Generate a random bot name
+   */
+  generateBotName() {
+    const prefixes = consts.PREFIXES.split(' ');
+    const names = consts.NAMES.split(' ');
+    const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+    const name = names[Math.floor(Math.random() * names.length)];
+    return `[BOT] ${prefix} ${name}`;
   }
   
   /**
@@ -312,6 +451,9 @@ export class Room {
     const frame = this.world.frame;
     const events = this.world.pendingEvents;
     
+    // Clear events after capturing them (they'll be sent to all clients)
+    this.world.pendingEvents = [];
+    
     for (const [ws, client] of this.clients) {
       try {
         const player = this.world.getPlayer(client.playerId);
@@ -420,7 +562,11 @@ export class Room {
    * Write full player data
    */
   writePlayerFull(writer, player, mapSize) {
-    writer.writeU16(player.id);
+    // Handle both real player objects (id, color) and serialized format (num, base)
+    const playerId = player.id !== undefined ? player.id : player.num;
+    const color = player.color || player.base;
+    
+    writer.writeU16(playerId);
     writer.writeString(player.name);
     writer.writeU16(quantizePosition(player.x, mapSize));
     writer.writeU16(quantizePosition(player.y, mapSize));
@@ -437,9 +583,9 @@ export class Room {
     writer.writeU8(flags);
     
     // Color
-    writer.writeU8(encodeColor(player.color.hue));
-    writer.writeU8(Math.round(player.color.sat * 255));
-    writer.writeU8(Math.round(player.color.lum * 255));
+    writer.writeU8(encodeColor(color.hue));
+    writer.writeU8(Math.round(color.sat * 255));
+    writer.writeU8(Math.round(color.lum * 255));
     
     // Territory (simplified - just point count and points)
     const territory = player.territory || [];
