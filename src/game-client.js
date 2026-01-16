@@ -1,658 +1,1211 @@
-import { Player, initPlayer, updateFrame, polygonArea } from "./core/index.js";
-import { consts, config } from "../config.js";
-import { MSG, encodePacket, decodePacket } from "./net/packet.js";
+/**
+ * Game Client for SwarmBlitz
+ * 
+ * Handles:
+ * - Client-side game state management
+ * - Entity interpolation for smooth rendering
+ * - Input prediction for responsive controls
+ * - Rendering coordination
+ */
 
-// Helper to calculate XP needed for a level
-function getXpForLevel(level) {
-	const base = consts.XP_BASE_PER_LEVEL || 50;
-	const increment = consts.XP_INCREMENT_PER_LEVEL || 25;
-	return base + (level - 1) * increment;
+import NetClient, { ConnectionState } from './net/client.js';
+import Color from './core/color.js';
+import { consts } from '../config.js';
+import { EventType } from './net/protocol.js';
+
+// UI Constants (matching old renderer)
+const BAR_HEIGHT = 45;
+const SHADOW_OFFSET = 5;
+const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
+const DRONE_VISUAL_RADIUS = consts.DRONE_RADIUS || 10;
+const LEADERBOARD_WIDTH = 400;
+const MIN_BAR_WIDTH = 65;
+
+/**
+ * Entity state with client-side prediction for local player
+ * Drones are simulated purely client-side based on player position and level
+ */
+class InterpolatedEntity {
+  constructor(data) {
+    this.num = data.num;
+    this.name = data.name || 'Player';
+    
+    // Render position (what we draw)
+    this.x = data.x;
+    this.y = data.y;
+    this.angle = data.angle || 0;
+    
+    // Server-authoritative position (last confirmed by server)
+    this.serverX = data.x;
+    this.serverY = data.y;
+    this.serverAngle = data.angle || 0;
+    
+    // Stats
+    this.hp = data.hp || 100;
+    this.maxHp = data.maxHp || 100;
+    this.level = data.level || 1;
+    this.xp = data.xp || 0;
+    this.sizeScale = data.sizeScale || 1.0;
+    
+    // State
+    this.dead = data.dead || false;
+    this.isSnipped = data.isSnipped || false;
+    
+    // Territory and trail
+    this.territory = data.territory || [];
+    this.trail = data.trail || [];
+    
+    // Drones - simulated client-side (not from server)
+    // Each drone has an orbit phase offset for smooth rotation
+    this.droneCount = data.droneCount !== undefined ? data.droneCount : this.level;
+    this.droneOrbitPhase = 0; // Current orbit rotation
+    this.drones = []; // Will be populated in updateDrones()
+    
+    // Color
+    if (data.base) {
+      this.base = new Color(data.base.hue, data.base.sat, data.base.lum);
+    } else {
+      this.base = new Color(Math.random(), 0.8, 0.5);
+    }
+  }
+  
+  /**
+   * Update from server data
+   */
+  update(data) {
+    // Update server-authoritative state
+    if (data.x !== undefined) this.serverX = data.x;
+    if (data.y !== undefined) this.serverY = data.y;
+    if (data.angle !== undefined) this.serverAngle = data.angle;
+    
+    // Update stats
+    if (data.hp !== undefined) this.hp = data.hp;
+    if (data.maxHp !== undefined) this.maxHp = data.maxHp;
+    if (data.level !== undefined) this.level = data.level;
+    if (data.xp !== undefined) this.xp = data.xp;
+    if (data.sizeScale !== undefined) this.sizeScale = data.sizeScale;
+    
+    // Update drone count (from server or derived from level)
+    if (data.droneCount !== undefined) {
+      this.droneCount = data.droneCount;
+    } else if (data.level !== undefined) {
+      this.droneCount = data.level;
+    }
+    
+    // Update state
+    if (data.dead !== undefined) this.dead = data.dead;
+    if (data.isSnipped !== undefined) this.isSnipped = data.isSnipped;
+    
+    // Update territory/trail
+    if (data.territory) this.territory = data.territory;
+    if (data.trail) this.trail = data.trail;
+    
+    // Note: We ignore server drone data - drones are simulated client-side
+  }
+  
+  /**
+   * Update drone positions (client-side simulation)
+   * Called every frame to smoothly orbit drones around player
+   */
+  updateDrones(deltaMs) {
+    const orbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
+    const orbitSpeed = consts.DRONE_ORBIT_SPEED || 2; // radians per second
+    
+    // Update orbit phase
+    this.droneOrbitPhase += orbitSpeed * (deltaMs / 1000);
+    if (this.droneOrbitPhase > Math.PI * 2) {
+      this.droneOrbitPhase -= Math.PI * 2;
+    }
+    
+    // Ensure we have the right number of drones
+    while (this.drones.length < this.droneCount) {
+      this.drones.push({ id: this.drones.length, x: this.x, y: this.y, targetId: null });
+    }
+    while (this.drones.length > this.droneCount) {
+      this.drones.pop();
+    }
+    
+    // Position drones in orbit around player
+    for (let i = 0; i < this.drones.length; i++) {
+      const drone = this.drones[i];
+      const phaseOffset = (i / this.droneCount) * Math.PI * 2;
+      const droneAngle = this.droneOrbitPhase + phaseOffset;
+      
+      drone.x = this.x + Math.cos(droneAngle) * orbitRadius;
+      drone.y = this.y + Math.sin(droneAngle) * orbitRadius;
+    }
+  }
+  
+  /**
+   * Client-side prediction for local player
+   * Moves the player based on current angle at the expected speed
+   */
+  predict(deltaMs, speed, mapSize, inputAngle) {
+    // Limit turn rate to match server (0.15 rad/frame at 60fps = 9 rad/sec)
+    // This prevents client/server divergence on sharp turns
+    const maxTurnPerFrame = 9 * (deltaMs / 1000);
+    
+    let angleDiff = inputAngle - this.angle;
+    // Normalize to [-PI, PI]
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+    
+    // Clamp the turn amount
+    if (Math.abs(angleDiff) > maxTurnPerFrame) {
+      angleDiff = Math.sign(angleDiff) * maxTurnPerFrame;
+    }
+    this.angle += angleDiff;
+    
+    // Normalize angle
+    while (this.angle > Math.PI) this.angle -= Math.PI * 2;
+    while (this.angle < -Math.PI) this.angle += Math.PI * 2;
+    
+    // Move in the direction we're facing
+    const moveAmount = speed * (deltaMs / 1000) * 60; // speed is per-frame at 60fps
+    this.x += Math.cos(this.angle) * moveAmount;
+    this.y += Math.sin(this.angle) * moveAmount;
+    
+    // Clamp to map bounds
+    const radius = 15;
+    this.x = Math.max(radius, Math.min(mapSize - radius, this.x));
+    this.y = Math.max(radius, Math.min(mapSize - radius, this.y));
+    
+    // Correct towards server position
+    const errorX = this.serverX - this.x;
+    const errorY = this.serverY - this.y;
+    const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
+    
+    // Moderate correction (10-50% per frame based on error)
+    const correctionRate = Math.min(0.5, 0.1 + errorDist * 0.008);
+    this.x += errorX * correctionRate;
+    this.y += errorY * correctionRate;
+    
+    // Update drone positions (client-side orbit simulation)
+    this.updateDrones(deltaMs);
+  }
+  
+  /**
+   * Smooth interpolation for other players (not local)
+   * Simply moves towards server position smoothly
+   */
+  interpolateOther(deltaMs) {
+    // Smoothly move towards server position
+    const lerpSpeed = 0.2; // 20% per frame towards target
+    
+    this.x += (this.serverX - this.x) * lerpSpeed;
+    this.y += (this.serverY - this.y) * lerpSpeed;
+    
+    // Smooth angle (handle wraparound)
+    let angleDiff = this.serverAngle - this.angle;
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+    this.angle += angleDiff * lerpSpeed;
+    
+    // Update drone positions (client-side orbit simulation)
+    this.updateDrones(deltaMs);
+  }
 }
 
-let running = false;
-let user, socket, frame;
-let players, allPlayers;
-let coinsById = new Map();
-let dronesById = new Map(); // Stores all drones keyed by id
-let kills;
-let timeout = undefined;
-let dirty = false;
-let deadFrames = 0;
-let requesting = -1;
-let frameCache = [];
-let _allowAnimation = true;
-let renderer;
-let mouseX = 0, mouseY = 0;
-let lastScreenX = 0, lastScreenY = 0;
-let lastZoom = 1;
-let mouseSet = false;
-let viewOffset = { x: 0, y: 0 };
-const clientTickRate = config.netTickRate || config.serverTickRate || config.fps || 60;
-
-// WASD keyboard control state
-let wasdKeys = { w: false, a: false, s: false, d: false };
-let useWasd = false; // True when WASD keys are being pressed
-let wasdCurrentAngle = 0; // Current smoothed WASD angle
-let wasdTargetAngle = 0; // Target angle based on key presses
-const WASD_TURN_SPEED = 0.15; // Radians per frame for smooth turning
-
-let requestAnimationFrame;
-try {
-	requestAnimationFrame = window.requestAnimationFrame;
-} catch {
-	requestAnimationFrame = callback => { setTimeout(callback, 1000 / 30) };
+/**
+ * Coin entity
+ */
+class Coin {
+  constructor(data) {
+    this.id = data.id;
+    this.x = data.x;
+    this.y = data.y;
+    this.value = data.value || 5;
+  }
 }
 
-// Get current viewport dimensions for AOI calculation
-function getViewportDimensions() {
-	// Use the actual window dimensions
-	const width = window.innerWidth || document.documentElement.clientWidth || 800;
-	const height = window.innerHeight || document.documentElement.clientHeight || 600;
-	return { width, height };
+/**
+ * Hitscan effect (laser beam)
+ */
+class HitscanEffect {
+  constructor(fromX, fromY, toX, toY, color) {
+    this.fromX = fromX;
+    this.fromY = fromY;
+    this.toX = toX;
+    this.toY = toY;
+    this.color = color;
+    this.startTime = performance.now();
+    this.duration = 100; // ms
+  }
+  
+  isExpired() {
+    return performance.now() - this.startTime > this.duration;
+  }
+  
+  getAlpha() {
+    const elapsed = performance.now() - this.startTime;
+    return Math.max(0, 1 - elapsed / this.duration);
+  }
 }
 
-// Send viewport update to server
-function sendViewportUpdate() {
-	if (socket && socket.readyState === WebSocket.OPEN) {
-		const viewport = getViewportDimensions();
-		socket.send(encodePacket(MSG.VIEWPORT, viewport));
-	}
+/**
+ * Game Client
+ */
+export default class GameClient {
+  constructor(canvas, options = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    
+    // Network
+    this.net = new NetClient({
+      url: options.wsUrl || 'ws://localhost:8787/room/default',
+      onStateChange: (state) => this.handleStateChange(state),
+      onInit: (data) => this.handleInit(data),
+      onFrame: (data) => this.handleFrame(data),
+      onEvent: (event) => this.handleEvent(event),
+      onError: (err) => this.handleError(err),
+    });
+    
+    // Game state
+    this.mapSize = 0;
+    this.playerId = null;
+    this.players = new Map();
+    this.coins = new Map();
+    this.effects = [];
+    
+    // Camera
+    this.cameraX = 0;
+    this.cameraY = 0;
+    this.cameraScale = 1;
+    
+    // Input
+    this.mouseX = 0;
+    this.mouseY = 0;
+    this.targetAngle = 0;
+    
+    // Timing
+    this.lastFrameTime = performance.now();
+    this.networkTickMs = 50; // 20 Hz
+    // Interpolation delay: render slightly in the past to smooth between snapshots
+    // Lower = more responsive but potentially jittery, higher = smoother but laggy
+    this.interpolationDelay = this.networkTickMs; // One tick delay (50ms)
+    
+    // Callbacks
+    this.onDeath = options.onDeath || (() => {});
+    this.onKill = options.onKill || (() => {});
+    this.onLevelUp = options.onLevelUp || (() => {});
+    
+    // Bind methods
+    this.handleMouseMove = this.handleMouseMove.bind(this);
+    this.handleTouchMove = this.handleTouchMove.bind(this);
+    this.gameLoop = this.gameLoop.bind(this);
+    
+    // Setup input handlers
+    this.setupInput();
+  }
+  
+  /**
+   * Setup input handlers
+   */
+  setupInput() {
+    this.canvas.addEventListener('mousemove', this.handleMouseMove);
+    this.canvas.addEventListener('touchmove', this.handleTouchMove, { passive: false });
+    this.canvas.addEventListener('touchstart', this.handleTouchMove, { passive: false });
+  }
+  
+  /**
+   * Handle mouse move
+   */
+  handleMouseMove(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.mouseX = e.clientX - rect.left;
+    this.mouseY = e.clientY - rect.top;
+    this.updateTargetAngle();
+  }
+  
+  /**
+   * Handle touch move
+   */
+  handleTouchMove(e) {
+    e.preventDefault();
+    if (e.touches.length > 0) {
+      const rect = this.canvas.getBoundingClientRect();
+      this.mouseX = e.touches[0].clientX - rect.left;
+      this.mouseY = e.touches[0].clientY - rect.top;
+      this.updateTargetAngle();
+    }
+  }
+  
+  /**
+   * Update target angle from mouse position
+   */
+  updateTargetAngle() {
+    const player = this.players.get(this.playerId);
+    if (!player) return;
+    
+    // Convert mouse to world coordinates
+    const worldX = this.cameraX + (this.mouseX - this.canvas.width / 2) / this.cameraScale;
+    const worldY = this.cameraY + (this.mouseY - this.canvas.height / 2) / this.cameraScale;
+    
+    // Calculate angle
+    this.targetAngle = Math.atan2(worldY - player.y, worldX - player.x);
+    
+    // Send to server
+    this.net.sendInput(this.targetAngle);
+  }
+  
+  /**
+   * Connect to server
+   */
+  connect(playerName) {
+    this.net.connect(playerName);
+  }
+  
+  /**
+   * Disconnect from server
+   */
+  disconnect() {
+    this.net.disconnect();
+    this.stopGameLoop();
+  }
+  
+  /**
+   * Handle connection state change
+   */
+  handleStateChange(state) {
+    console.log('Connection state:', state);
+  }
+  
+  /**
+   * Handle init message
+   */
+  handleInit(data) {
+    this.playerId = data.playerId;
+    this.mapSize = data.mapSize;
+    
+    // Clear state
+    this.players.clear();
+    this.coins.clear();
+    this.effects = [];
+    
+    // Add all players
+    for (const p of data.players) {
+      this.players.set(p.num, new InterpolatedEntity(p));
+    }
+    
+    // Add all coins
+    for (const c of data.coins) {
+      this.coins.set(c.id, new Coin(c));
+    }
+    
+    // Center camera on player
+    const player = this.players.get(this.playerId);
+    if (player) {
+      this.cameraX = player.x;
+      this.cameraY = player.y;
+    }
+    
+    // Start game loop
+    this.startGameLoop();
+  }
+  
+  /**
+   * Handle frame update
+   */
+  handleFrame(data) {
+    // Update self
+    if (data.selfPlayer) {
+      let player = this.players.get(data.selfPlayer.num);
+      if (player) {
+        player.update(data.selfPlayer);
+      } else {
+        player = new InterpolatedEntity(data.selfPlayer);
+        this.players.set(data.selfPlayer.num, player);
+      }
+    }
+    
+    // Add new players
+    for (const p of data.newPlayers) {
+      if (!this.players.has(p.num)) {
+        this.players.set(p.num, new InterpolatedEntity(p));
+      }
+    }
+    
+    // Update existing players
+    for (const p of data.updatedPlayers) {
+      const player = this.players.get(p.num);
+      if (player) {
+        player.update(p);
+      }
+    }
+    
+    // Remove players
+    for (const id of data.removedPlayerIds) {
+      this.players.delete(id);
+    }
+    
+    // Update coins (replace with visible set)
+    this.coins.clear();
+    for (const c of data.coins) {
+      this.coins.set(c.id, new Coin(c));
+    }
+    
+    // Process events
+    for (const event of data.events) {
+      this.handleEvent(event);
+    }
+  }
+  
+  /**
+   * Handle game event
+   */
+  handleEvent(event) {
+    switch (event.type) {
+      case EventType.HITSCAN:
+        this.addHitscanEffect(event);
+        break;
+        
+      case EventType.PLAYER_KILL:
+        if (event.victimNum === this.playerId) {
+          this.onDeath(event);
+        } else if (event.killerNum === this.playerId) {
+          this.onKill(event);
+        }
+        break;
+        
+      case EventType.LEVEL_UP:
+        if (event.playerNum === this.playerId) {
+          this.onLevelUp(event);
+        }
+        break;
+        
+      case EventType.PLAYER_JOIN:
+        if (event.player && !this.players.has(event.player.num)) {
+          this.players.set(event.player.num, new InterpolatedEntity(event.player));
+        }
+        break;
+        
+      case EventType.PLAYER_LEAVE:
+        this.players.delete(event.num);
+        break;
+        
+      case EventType.COIN_SPAWN:
+        this.coins.set(event.id, new Coin(event));
+        break;
+        
+      case EventType.COIN_PICKUP:
+        this.coins.delete(event.id);
+        break;
+        
+      case 'dead':
+        this.onDeath(event);
+        break;
+    }
+  }
+  
+  /**
+   * Add hitscan effect
+   * Calculates laser positions from player positions (saves bandwidth)
+   */
+  addHitscanEffect(event) {
+    const owner = this.players.get(event.ownerNum);
+    const target = this.players.get(event.targetNum);
+    
+    if (!owner || !target) return;
+    
+    const color = owner.base;
+    
+    // Pick a random drone from the owner to fire from (visual only)
+    let fromX = owner.x;
+    let fromY = owner.y;
+    if (owner.drones.length > 0) {
+      const drone = owner.drones[Math.floor(Math.random() * owner.drones.length)];
+      fromX = drone.x;
+      fromY = drone.y;
+    }
+    
+    this.effects.push(new HitscanEffect(
+      fromX,
+      fromY,
+      target.x,
+      target.y,
+      color
+    ));
+  }
+  
+  /**
+   * Handle network error
+   */
+  handleError(err) {
+    console.error('Network error:', err);
+  }
+  
+  /**
+   * Start game loop
+   */
+  startGameLoop() {
+    this.running = true;
+    this.lastFrameTime = performance.now();
+    requestAnimationFrame(this.gameLoop);
+  }
+  
+  /**
+   * Stop game loop
+   */
+  stopGameLoop() {
+    this.running = false;
+  }
+  
+  /**
+   * Main game loop
+   */
+  gameLoop(timestamp) {
+    if (!this.running) return;
+    
+    const deltaMs = timestamp - this.lastFrameTime;
+    this.lastFrameTime = timestamp;
+    
+    // Update
+    this.update(deltaMs);
+    
+    // Render
+    this.render();
+    
+    // Flush pending input
+    this.net.flushInput();
+    
+    // Continue loop
+    requestAnimationFrame(this.gameLoop);
+  }
+  
+  /**
+   * Update game state
+   */
+  update(deltaMs) {
+    const localPlayer = this.players.get(this.playerId);
+    
+    for (const [id, player] of this.players) {
+      if (id === this.playerId && localPlayer && !localPlayer.dead) {
+        // Local player: use client-side prediction
+        player.predict(deltaMs, consts.SPEED, this.mapSize, this.targetAngle);
+      } else {
+        // Other players: smooth interpolation towards server position
+        player.interpolateOther(deltaMs);
+      }
+    }
+    
+    // Camera follows local player directly (no extra smoothing needed since prediction is smooth)
+    if (localPlayer) {
+      this.cameraX = localPlayer.x;
+      this.cameraY = localPlayer.y;
+    }
+    
+    // Clean up expired effects
+    this.effects = this.effects.filter(e => !e.isExpired());
+  }
+  
+  /**
+   * Render game
+   */
+  render() {
+    const ctx = this.ctx;
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const gameHeight = height - BAR_HEIGHT;
+    
+    // Clear with light background
+    ctx.fillStyle = '#e2ebf3';
+    ctx.fillRect(0, 0, width, height);
+    
+    // Save context for game world
+    ctx.save();
+    
+    // Move below the top bar
+    ctx.translate(0, BAR_HEIGHT);
+    
+    // Clip to game area
+    ctx.beginPath();
+    ctx.rect(0, 0, width, gameHeight);
+    ctx.clip();
+    
+    // Apply camera transform
+    ctx.translate(width / 2, gameHeight / 2);
+    ctx.scale(this.cameraScale, this.cameraScale);
+    ctx.translate(-this.cameraX, -this.cameraY);
+    
+    // Draw grid background
+    this.drawGrid(ctx);
+    
+    // Draw territories (sorted by num for consistent z-ordering)
+    const sortedPlayers = Array.from(this.players.values()).sort((a, b) => a.num - b.num);
+    for (const player of sortedPlayers) {
+      this.drawTerritory(ctx, player);
+    }
+    
+    // Draw coins
+    for (const coin of this.coins.values()) {
+      this.drawCoin(ctx, coin);
+    }
+    
+    // Draw trails
+    for (const player of sortedPlayers) {
+      this.drawTrail(ctx, player);
+    }
+    
+    // Draw players
+    for (const player of sortedPlayers) {
+      if (!player.dead) {
+        this.drawPlayer(ctx, player);
+      }
+    }
+    
+    // Draw effects
+    for (const effect of this.effects) {
+      this.drawHitscan(ctx, effect);
+    }
+    
+    // Restore context
+    ctx.restore();
+    
+    // Draw UI (top bar, leaderboard, XP bar)
+    this.drawTopBar(ctx);
+    this.drawLeaderboard(ctx);
+    this.drawXPBar(ctx);
+  }
+  
+  /**
+   * Draw grid background
+   */
+  drawGrid(ctx) {
+    const mapSize = this.mapSize;
+    const borderWidth = consts.BORDER_WIDTH || 20;
+    
+    // Light background
+    ctx.fillStyle = 'rgb(211, 225, 237)';
+    ctx.fillRect(0, 0, mapSize, mapSize);
+    
+    // Subtle grid lines
+    ctx.strokeStyle = 'rgba(180, 200, 220, 0.5)';
+    ctx.lineWidth = 1;
+    const gridSpacing = consts.CELL_WIDTH * 2;
+    
+    ctx.beginPath();
+    for (let x = 0; x <= mapSize; x += gridSpacing) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, mapSize);
+    }
+    for (let y = 0; y <= mapSize; y += gridSpacing) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(mapSize, y);
+    }
+    ctx.stroke();
+    
+    // Border (light gray)
+    ctx.fillStyle = 'lightgray';
+    ctx.fillRect(-borderWidth, 0, borderWidth, mapSize);
+    ctx.fillRect(-borderWidth, -borderWidth, mapSize + borderWidth * 2, borderWidth);
+    ctx.fillRect(mapSize, 0, borderWidth, mapSize);
+    ctx.fillRect(-borderWidth, mapSize, mapSize + borderWidth * 2, borderWidth);
+  }
+  
+  /**
+   * Draw player territory
+   */
+  drawTerritory(ctx, player) {
+    if (!player.territory || player.territory.length < 3) return;
+    
+    const color = player.base;
+    const isSnipped = player.isSnipped;
+    
+    // Snipped visual effect - flashing
+    let snipAlpha = 1;
+    if (isSnipped) {
+      const time = Date.now() / 100;
+      snipAlpha = 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(time * 4));
+    }
+    
+    // Territory fill (semi-transparent)
+    ctx.fillStyle = color.deriveAlpha(0.4 * snipAlpha).rgbString();
+    ctx.beginPath();
+    ctx.moveTo(player.territory[0].x, player.territory[0].y);
+    for (let i = 1; i < player.territory.length; i++) {
+      ctx.lineTo(player.territory[i].x, player.territory[i].y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    
+    // Territory outline
+    ctx.strokeStyle = color.deriveAlpha(0.9 * snipAlpha).rgbString();
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+  
+  /**
+   * Draw player trail
+   */
+  drawTrail(ctx, player) {
+    if (!player.trail || player.trail.length < 2) return;
+    
+    const color = player.base;
+    const tailColor = color.lighter(0.2);
+    
+    ctx.strokeStyle = tailColor.rgbString();
+    ctx.lineWidth = PLAYER_RADIUS;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    ctx.beginPath();
+    ctx.moveTo(player.trail[0].x, player.trail[0].y);
+    for (let i = 1; i < player.trail.length; i++) {
+      ctx.lineTo(player.trail[i].x, player.trail[i].y);
+    }
+    // Connect to player
+    ctx.lineTo(player.x, player.y);
+    ctx.stroke();
+  }
+  
+  /**
+   * Draw coin
+   */
+  drawCoin(ctx, coin) {
+    const radius = consts.COIN_RADIUS || 8;
+    
+    // Shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.beginPath();
+    ctx.arc(coin.x + 2, coin.y + 2, radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Main coin body
+    ctx.fillStyle = '#FFD700';
+    ctx.shadowBlur = 5;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+    ctx.beginPath();
+    ctx.arc(coin.x, coin.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    
+    // Shine effect
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.beginPath();
+    ctx.arc(coin.x - radius * 0.3, coin.y - radius * 0.3, radius * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  
+  /**
+   * Draw player
+   */
+  drawPlayer(ctx, player) {
+    const scaledRadius = PLAYER_RADIUS * (player.sizeScale || 1.0);
+    const color = player.base;
+    const shadowColor = color.darker(0.3);
+    const lightColor = color.lighter(0.1);
+    const isSnipped = player.isSnipped;
+    
+    // Snipped visual effect
+    let snipAlpha = 1;
+    if (isSnipped) {
+      const time = Date.now() / 100;
+      snipAlpha = 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(time * 4));
+    }
+    
+    // Draw drones
+    for (const drone of player.drones) {
+      this.drawDrone(ctx, drone, color, player);
+    }
+    
+    // Player shadow
+    ctx.fillStyle = shadowColor.deriveAlpha(snipAlpha).rgbString();
+    ctx.beginPath();
+    ctx.arc(player.x + 2, player.y + 4, scaledRadius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Player body
+    if (isSnipped) {
+      // Ghost effect: red-tinted, semi-transparent
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 100 * 4);
+      ctx.fillStyle = `rgba(255, ${Math.floor(100 * pulse)}, ${Math.floor(100 * pulse)}, ${snipAlpha})`;
+    } else {
+      ctx.fillStyle = color.rgbString();
+    }
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, scaledRadius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Snipped glow ring
+    if (isSnipped) {
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 100 * 6);
+      ctx.strokeStyle = `rgba(255, 50, 50, ${0.5 + 0.5 * pulse})`;
+      ctx.lineWidth = 3 + 2 * pulse;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, scaledRadius + 4 + 2 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    
+    // Direction indicator (dot, not line)
+    const indicatorX = player.x + Math.cos(player.angle) * scaledRadius * 0.6;
+    const indicatorY = player.y + Math.sin(player.angle) * scaledRadius * 0.6;
+    ctx.fillStyle = lightColor.deriveAlpha(snipAlpha).rgbString();
+    ctx.beginPath();
+    ctx.arc(indicatorX, indicatorY, scaledRadius * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // HP bar (only show if damaged)
+    if (player.hp < player.maxHp) {
+      const barWidth = scaledRadius * 2.5;
+      const barHeight = 6 * (player.sizeScale || 1.0);
+      const barX = player.x - barWidth / 2;
+      const barY = player.y + scaledRadius + 8;
+      
+      // Background
+      ctx.fillStyle = 'rgba(20, 20, 20, 0.8)';
+      ctx.fillRect(barX, barY, barWidth, barHeight);
+      
+      // HP fill
+      const hpRatio = Math.max(0, player.hp / player.maxHp);
+      if (hpRatio > 0.5) {
+        ctx.fillStyle = '#44ff44';
+      } else if (hpRatio > 0.25) {
+        ctx.fillStyle = '#ffcc00';
+      } else {
+        ctx.fillStyle = '#ff4444';
+      }
+      ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+      
+      // Quarter divider lines
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+      ctx.lineWidth = Math.max(1, 1.5 * (player.sizeScale || 1.0));
+      for (let i = 1; i <= 3; i++) {
+        const divX = barX + (barWidth * i / 4);
+        ctx.beginPath();
+        ctx.moveTo(divX, barY);
+        ctx.lineTo(divX, barY + barHeight);
+        ctx.stroke();
+      }
+      
+      // Black outline
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = Math.max(1, 2 * (player.sizeScale || 1.0));
+      ctx.strokeRect(barX, barY, barWidth, barHeight);
+    }
+    
+    // Name (with snipped indicator)
+    ctx.fillStyle = shadowColor.rgbString();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 14px Arial';
+    if (isSnipped) {
+      ctx.fillStyle = 'rgba(255, 50, 50, 1)';
+      ctx.fillText('SNIPPED!', player.x, player.y - scaledRadius - 22);
+      ctx.fillStyle = shadowColor.deriveAlpha(snipAlpha).rgbString();
+    }
+    ctx.fillText(player.name, player.x, player.y - scaledRadius - 8);
+  }
+  
+  /**
+   * Draw drone
+   */
+  drawDrone(ctx, drone, color, owner) {
+    const radius = DRONE_VISUAL_RADIUS;
+    const isDisabled = owner && owner.isSnipped;
+    const isUserDrone = owner && owner.num === this.playerId;
+    
+    ctx.save();
+    
+    // Shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.beginPath();
+    ctx.arc(drone.x + 2, drone.y + 2, radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Outer glow when targeting (not when disabled)
+    if (drone.targetId !== null && !isDisabled) {
+      const time = Date.now() / 150;
+      const pulse = 0.4 + 0.3 * Math.sin(time * 4);
+      ctx.shadowBlur = 12 * pulse;
+      ctx.shadowColor = isUserDrone ? '#FFD700' : (color ? color.rgbString() : '#FF6600');
+    }
+    
+    // Main body
+    if (isDisabled) {
+      ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
+    } else if (color) {
+      ctx.fillStyle = color.deriveAlpha(isUserDrone ? 0.95 : 0.8).rgbString();
+    } else {
+      ctx.fillStyle = isUserDrone ? 'rgba(100, 200, 100, 0.95)' : 'rgba(200, 100, 100, 0.8)';
+    }
+    ctx.beginPath();
+    ctx.arc(drone.x, drone.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Border
+    if (isDisabled) {
+      ctx.strokeStyle = 'rgba(60, 60, 60, 0.6)';
+    } else {
+      ctx.strokeStyle = color ? color.darker(0.2).rgbString() : '#444';
+    }
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    ctx.shadowBlur = 0;
+    
+    // Inner core (highlight)
+    if (isDisabled) {
+      ctx.fillStyle = 'rgba(80, 80, 80, 0.4)';
+    } else {
+      ctx.fillStyle = color ? color.lighter(0.3).deriveAlpha(0.7).rgbString() : 'rgba(255, 255, 255, 0.5)';
+    }
+    ctx.beginPath();
+    ctx.arc(drone.x - radius * 0.25, drone.y - radius * 0.25, radius * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Targeting indicator (small dot when active)
+    if (drone.targetId !== null && !isDisabled) {
+      const time = Date.now() / 100;
+      const pulse = 0.5 + 0.5 * Math.sin(time * 5);
+      ctx.fillStyle = `rgba(255, 100, 100, ${0.6 + 0.4 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(drone.x, drone.y, radius * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // Disabled indicator (X mark) when snipped
+    if (isDisabled) {
+      ctx.strokeStyle = 'rgba(255, 80, 80, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      const xSize = radius * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(drone.x - xSize, drone.y - xSize);
+      ctx.lineTo(drone.x + xSize, drone.y + xSize);
+      ctx.moveTo(drone.x + xSize, drone.y - xSize);
+      ctx.lineTo(drone.x - xSize, drone.y + xSize);
+      ctx.stroke();
+    }
+    
+    ctx.restore();
+  }
+  
+  /**
+   * Draw hitscan effect
+   */
+  drawHitscan(ctx, effect) {
+    const alpha = effect.getAlpha();
+    const color = effect.color;
+    
+    ctx.save();
+    ctx.lineCap = 'round';
+    
+    // Outer glow (thicker, more transparent)
+    ctx.lineWidth = 12 * alpha;
+    ctx.strokeStyle = color.deriveAlpha(0.5 * alpha).rgbString();
+    ctx.beginPath();
+    ctx.moveTo(effect.fromX, effect.fromY);
+    ctx.lineTo(effect.toX, effect.toY);
+    ctx.stroke();
+    
+    // Core laser line (thinner, brighter)
+    ctx.lineWidth = 5 * alpha;
+    ctx.strokeStyle = color.lighter(0.4).deriveAlpha(0.95 * alpha).rgbString();
+    ctx.beginPath();
+    ctx.moveTo(effect.fromX, effect.fromY);
+    ctx.lineTo(effect.toX, effect.toY);
+    ctx.stroke();
+    
+    // Bright center
+    ctx.lineWidth = 2 * alpha;
+    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(effect.fromX, effect.fromY);
+    ctx.lineTo(effect.toX, effect.toY);
+    ctx.stroke();
+    
+    // Impact flash at target
+    const flashSize = 20 * alpha;
+    const gradient = ctx.createRadialGradient(effect.toX, effect.toY, 0, effect.toX, effect.toY, flashSize);
+    gradient.addColorStop(0, color.lighter(0.6).deriveAlpha(alpha).rgbString());
+    gradient.addColorStop(0.4, color.deriveAlpha(0.6 * alpha).rgbString());
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(effect.toX, effect.toY, flashSize, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.restore();
+  }
+  
+  /**
+   * Draw top UI bar
+   */
+  drawTopBar(ctx) {
+    const player = this.players.get(this.playerId);
+    if (!player) return;
+    
+    // Bar background - dark gray
+    ctx.fillStyle = '#3a3a3a';
+    ctx.fillRect(0, 0, this.canvas.width, BAR_HEIGHT);
+    
+    // Reset text alignment
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    
+    // Get user stats
+    const level = player.level || 1;
+    const droneCount = player.drones ? player.drones.length : 1;
+    
+    // === TOP LEFT: Level, HP, Drones (horizontal) ===
+    let xOffset = 15;
+    const centerY = BAR_HEIGHT / 2 + 6;
+    
+    // RTT
+    ctx.fillStyle = '#88CCFF';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('RTT:', xOffset, centerY);
+    xOffset += ctx.measureText('RTT:').width + 5;
+    ctx.fillStyle = 'white';
+    ctx.fillText(`${Math.round(this.net.getRTT())}ms`, xOffset, centerY);
+    xOffset += ctx.measureText(`${Math.round(this.net.getRTT())}ms`).width + 20;
+    
+    // Level
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('Level:', xOffset, centerY);
+    xOffset += ctx.measureText('Level:').width + 5;
+    ctx.fillStyle = 'white';
+    ctx.fillText(level, xOffset, centerY);
+    xOffset += ctx.measureText(String(level)).width + 20;
+    
+    // HP
+    ctx.fillStyle = '#FF6B6B';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('HP:', xOffset, centerY);
+    xOffset += ctx.measureText('HP:').width + 5;
+    ctx.fillStyle = 'white';
+    ctx.fillText(`${Math.round(player.hp)}/${player.maxHp}`, xOffset, centerY);
+    xOffset += ctx.measureText(`${Math.round(player.hp)}/${player.maxHp}`).width + 20;
+    
+    // XP
+    ctx.fillStyle = '#9370DB';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('XP:', xOffset, centerY);
+    xOffset += ctx.measureText('XP:').width + 5;
+    ctx.fillStyle = 'white';
+    ctx.fillText(player.xp, xOffset, centerY);
+  }
+  
+  /**
+   * Draw leaderboard
+   */
+  drawLeaderboard(ctx) {
+    // Sort players by level then XP
+    const sorted = Array.from(this.players.values())
+      .filter(p => !p.dead)
+      .sort((a, b) => b.level - a.level || b.xp - a.xp);
+    
+    const leaderboardNum = Math.min(consts.LEADERBOARD_NUM || 5, sorted.length);
+    
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'left';
+    
+    for (let i = 0; i < leaderboardNum; i++) {
+      const player = sorted[i];
+      const name = player.name || 'Unnamed';
+      const color = player.base;
+      const shadowColor = color.darker(0.3);
+      
+      // Calculate bar size (proportional to rank)
+      const portion = 1 - (i / leaderboardNum);
+      const barSize = Math.ceil((LEADERBOARD_WIDTH - MIN_BAR_WIDTH) * portion + MIN_BAR_WIDTH);
+      const barX = this.canvas.width - barSize;
+      const barY = BAR_HEIGHT * (i + 1);
+      const offsetY = i === 0 ? 10 : 0;
+      
+      // Shadow background
+      ctx.fillStyle = 'rgba(10, 10, 10, 0.3)';
+      ctx.fillRect(barX - 10, barY + 10 - offsetY, barSize + 10, BAR_HEIGHT + offsetY);
+      
+      // Main bar
+      ctx.fillStyle = color.rgbString();
+      ctx.fillRect(barX, barY, barSize, BAR_HEIGHT - SHADOW_OFFSET);
+      
+      // Shadow
+      ctx.fillStyle = shadowColor.rgbString();
+      ctx.fillRect(barX, barY + BAR_HEIGHT - SHADOW_OFFSET, barSize, SHADOW_OFFSET);
+      
+      // Name (to the left of bar)
+      const nameWidth = ctx.measureText(name).width;
+      ctx.fillStyle = 'black';
+      ctx.fillText(name, barX - nameWidth - 15, barY + 27);
+      
+      // Level text on bar
+      const isMe = player.num === this.playerId;
+      ctx.fillStyle = isMe ? '#FFD700' : 'white';
+      ctx.fillText(`Lv.${player.level}`, barX + 5, barY + BAR_HEIGHT - 15);
+    }
+  }
+  
+  /**
+   * Draw XP bar at bottom
+   */
+  drawXPBar(ctx) {
+    const player = this.players.get(this.playerId);
+    if (!player) return;
+    
+    const level = player.level || 1;
+    const xp = player.xp || 0;
+    const xpPerLevel = (consts.XP_BASE_PER_LEVEL || 50) + (level - 1) * (consts.XP_INCREMENT_PER_LEVEL || 25);
+    
+    // Bar dimensions
+    const barWidth = 250;
+    const barHeight = 28;
+    const barX = (this.canvas.width - barWidth) / 2;
+    const barY = this.canvas.height - 45;
+    
+    const progressRatio = Math.min(1, xp / xpPerLevel);
+    const color = player.base;
+    const shadowColor = color.darker(0.3);
+    
+    // Dark background
+    ctx.fillStyle = 'rgba(10, 10, 10, 0.5)';
+    ctx.fillRect(barX - 60, barY - 2, barWidth + 70, barHeight + 4);
+    
+    // Level text (left side)
+    ctx.font = 'bold 18px Arial';
+    ctx.fillStyle = '#FFD700';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Lv.${level}`, barX - 55, barY + barHeight - 8);
+    
+    // XP bar track (gray background)
+    ctx.fillStyle = 'rgba(60, 60, 60, 0.8)';
+    ctx.fillRect(barX, barY, barWidth, barHeight - SHADOW_OFFSET);
+    ctx.fillStyle = 'rgba(40, 40, 40, 0.8)';
+    ctx.fillRect(barX, barY + barHeight - SHADOW_OFFSET, barWidth, SHADOW_OFFSET);
+    
+    // XP bar fill
+    if (progressRatio > 0) {
+      const fillWidth = barWidth * progressRatio;
+      ctx.fillStyle = color.rgbString();
+      ctx.fillRect(barX, barY, fillWidth, barHeight - SHADOW_OFFSET);
+      ctx.fillStyle = shadowColor.rgbString();
+      ctx.fillRect(barX, barY + barHeight - SHADOW_OFFSET, fillWidth, SHADOW_OFFSET);
+    }
+    
+    // XP text on bar
+    ctx.font = '16px Arial';
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${Math.floor(xp)}/${xpPerLevel} XP`, barX + barWidth / 2, barY + barHeight - 9);
+  }
+  
+  /**
+   * Get self player
+   */
+  getSelfPlayer() {
+    return this.players.get(this.playerId);
+  }
+  
+  /**
+   * Resize canvas
+   */
+  resize(width, height) {
+    this.canvas.width = width;
+    this.canvas.height = height;
+  }
 }
 
-// Public API
-function connectGame(wsUrl, name, callback, flag) {
-	if (running) return;
-	running = true;
-	user = null;
-	deadFrames = 0;
-	
-	const prefixes = consts.PREFIXES.split(" ");
-	const names = consts.NAMES.split(" ");
-	name = name || [prefixes[Math.floor(Math.random() * prefixes.length)], names[Math.floor(Math.random() * names.length)]].join(" ");
-	
-	socket = new WebSocket(wsUrl);
-	socket.binaryType = "arraybuffer";
-	
-	socket.addEventListener("open", () => {
-		console.info("Connected to server.");
-		const viewport = getViewportDimensions();
-		socket.send(encodePacket(MSG.HELLO, {
-			name: name,
-			type: 0,
-			gameid: -1,
-			god: flag,
-			viewport
-		}));
-	});
-	
-	// Listen for window resize to update AOI on server
-	window.addEventListener("resize", sendViewportUpdate);
-	
-	socket.addEventListener("message", (event) => {
-		const [type, data] = decodePacket(event.data);
-		if (type === MSG.HELLO_ACK) {
-			if (data?.ok) {
-				console.info("Connected to game!");
-			} else {
-				const msg = data?.error || "Unable to connect to game.";
-				console.error("Unable to connect to game: " + msg);
-				running = false;
-				socket.close();
-			}
-			if (callback) callback(!!data?.ok, data?.error);
-			return;
-		}
-		if (type === MSG.INIT) {
-			handleInitState(data);
-			return;
-		}
-		if (type === MSG.FRAME) {
-			processFrame(data);
-			return;
-		}
-		if (type === MSG.DEAD) {
-			socket.close();
-			return;
-		}
-	});
-	
-	socket.addEventListener("close", () => {
-		console.info("Server has disconnected. Creating new game.");
-		window.removeEventListener("resize", sendViewportUpdate);
-		if (!user) return;
-		user.die();
-		dirty = true;
-		paintLoop();
-		running = false;
-		invokeRenderer("disconnect", []);
-	});
-	
-	socket.addEventListener("error", () => {
-		console.error("WebSocket error");
-	});
-}
-
-function handleInitState(data) {
-	if (timeout != undefined) clearTimeout(timeout);
-		
-		frame = data.frame;
-		reset();
-		
-		// Load XP pickups (coins)
-		if (data.coins) {
-			data.coins.forEach(c => coinsById.set(c.id, c));
-		}
-
-		// Load players
-		data.players.forEach(p => {
-			const pl = new Player(p);
-			// Copy stat multipliers
-			pl.speedMult = p.speedMult || 1.0;
-			pl.snipGraceBonusSec = p.snipGraceBonusSec || 0;
-			
-			// XP/Level fields
-			pl.level = p.level || 1;
-			pl.xp = p.xp || 0;
-			pl.xpPerLevel = p.xpPerLevel || getXpForLevel(pl.level);
-			pl.sizeScale = p.sizeScale || 1.0;
-			
-			// HP fields
-			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP ?? 100);
-			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
-			
-			// Drone fields
-			pl.droneCount = p.droneCount || 1;
-			pl.drones = p.drones || [];
-			// Store drones in the map
-			for (const d of pl.drones) {
-				dronesById.set(d.id, d);
-			}
-			
-			addPlayer(pl);
-			if (!p.territory || p.territory.length === 0) {
-				initPlayer(pl);
-			}
-		});
-		
-		user = allPlayers[data.num];
-		setUser(user);
-		
-		invokeRenderer("paint", []);
-		frame = data.frame;
-		
-		if (requesting !== -1) {
-			const minFrame = requesting;
-			requesting = -1;
-			while (frameCache.length > frame - minFrame) {
-				processFrame(frameCache[frame - minFrame]);
-			}
-			frameCache = [];
-		}
-}
-
-function updateMousePosition(clientX, clientY, canvasRect, canvasWidth, canvasHeight, zoom) {
-	if (!user) return;
-	
-	// Store screen position and zoom for continuous updates
-	lastScreenX = clientX - canvasRect.left;
-	const screenY = clientY - canvasRect.top;
-	
-	const BAR_HEIGHT = 45;
-	lastScreenY = screenY - BAR_HEIGHT;
-	lastZoom = zoom;
-	mouseSet = true;
-	
-	// Convert to world coordinates
-	mouseX = (lastScreenX / lastZoom) + viewOffset.x;
-	mouseY = (lastScreenY / lastZoom) + viewOffset.y;
-}
-
-function setViewOffset(x, y) {
-	viewOffset.x = x;
-	viewOffset.y = y;
-}
-
-function updateZoom(zoom) {
-	lastZoom = zoom;
-}
-
-function sendTargetAngle() {
-	if (!user || user.dead || !socket) return;
-	
-	let targetAngle;
-	
-	// Check if WASD is being used
-	if (useWasd) {
-		// Calculate target direction from WASD keys
-		let dx = 0, dy = 0;
-		if (wasdKeys.w) dy -= 1;
-		if (wasdKeys.s) dy += 1;
-		if (wasdKeys.a) dx -= 1;
-		if (wasdKeys.d) dx += 1;
-		
-		// If no keys pressed, don't send update
-		if (dx === 0 && dy === 0) return;
-		
-		// Calculate target angle from key combination
-		wasdTargetAngle = Math.atan2(dy, dx);
-		
-		// Smoothly interpolate current angle toward target (omnidirectional)
-		let angleDiff = wasdTargetAngle - wasdCurrentAngle;
-		
-		// Normalize angle difference to [-PI, PI]
-		while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-		while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-		
-		// Smoothly turn toward target
-		if (Math.abs(angleDiff) < WASD_TURN_SPEED) {
-			wasdCurrentAngle = wasdTargetAngle;
-		} else {
-			wasdCurrentAngle += Math.sign(angleDiff) * WASD_TURN_SPEED;
-		}
-		
-		// Normalize current angle to [-PI, PI]
-		while (wasdCurrentAngle > Math.PI) wasdCurrentAngle -= Math.PI * 2;
-		while (wasdCurrentAngle < -Math.PI) wasdCurrentAngle += Math.PI * 2;
-		
-		targetAngle = wasdCurrentAngle;
-	} else {
-		// Mouse control
-		if (!mouseSet) return;
-		
-		// Update world mouse position based on last screen position and current view offset.
-		mouseX = (lastScreenX / lastZoom) + viewOffset.x;
-		mouseY = (lastScreenY / lastZoom) + viewOffset.y;
-
-		// Calculate angle from player to mouse position
-		const dx = mouseX - user.x;
-		const dy = mouseY - user.y;
-		
-		// If mouse is too close to player center, don't update angle
-		if (dx * dx + dy * dy < 100) return;
-		
-		targetAngle = Math.atan2(dy, dx);
-		
-		// Sync WASD angle with mouse when not using WASD (for smooth transition)
-		wasdCurrentAngle = targetAngle;
-	}
-	
-	if (socket.readyState === WebSocket.OPEN) {
-		socket.send(encodePacket(MSG.INPUT, {
-			frame: frame,
-			targetAngle: targetAngle
-		}));
-	}
-}
-
-function getUser() {
-	return user;
-}
-
-function getPlayers() {
-	return players.slice();
-}
-
-function getOthers() {
-	const ret = [];
-	for (const p of players) {
-		if (p !== user) ret.push(p);
-	}
-	return ret;
-}
-
-function getCoins() {
-	return Array.from(coinsById.values());
-}
-
-function getDrones() {
-	return Array.from(dronesById.values());
-}
-
-function disconnect() {
-	window.removeEventListener("resize", sendViewportUpdate);
-	if (socket) socket.close();
-	running = false;
-}
-
-// Private API
-function addPlayer(player) {
-	if (allPlayers[player.num]) return;
-	allPlayers[player.num] = players[players.length] = player;
-	invokeRenderer("addPlayer", [player]);
-	return players.length - 1;
-}
-
-function invokeRenderer(name, args) {
-	if (renderer && typeof renderer[name] === "function") {
-		renderer[name].apply(null, args);
-	}
-}
-
-function processFrame(data) {
-	if (timeout != undefined) clearTimeout(timeout);
-	
-	if (requesting !== -1 && requesting < data.frame) {
-		frameCache.push(data);
-		return;
-	}
-	
-	if (data.frame - 1 !== frame) {
-		console.error("Frames don't match up!");
-		if (socket && socket.readyState === WebSocket.OPEN) {
-			socket.send(encodePacket(MSG.REQUEST));
-		}
-		requesting = data.frame;
-		frameCache.push(data);
-		return;
-	}
-	
-	frame++;
-	
-	// Handle economy deltas
-	if (data.coinSpawns) {
-		// Check for death loot coins (have fromDeath flag)
-		const deathLootCoins = data.coinSpawns.filter(c => c.fromDeath);
-		if (deathLootCoins.length > 0) {
-			// Group by origin point
-			const originX = deathLootCoins[0].originX;
-			const originY = deathLootCoins[0].originY;
-			invokeRenderer("spawnLootCoins", [originX, originY, deathLootCoins]);
-		}
-		data.coinSpawns.forEach(c => coinsById.set(c.id, c));
-	}
-	if (data.coinRemovals) {
-		data.coinRemovals.forEach(id => {
-			const coin = coinsById.get(id);
-			// Check if coin was near the local player (player picked it up)
-			if (coin && user && !user.dead) {
-				const dx = coin.x - user.x;
-				const dy = coin.y - user.y;
-				const dist = Math.sqrt(dx * dx + dy * dy);
-				// If coin was within pickup range, notify renderer
-				if (dist < 60) {
-					invokeRenderer("coinPickup", [coin]);
-				}
-			}
-			coinsById.delete(id);
-		});
-	}
-	
-	// Handle XP/Level updates
-	if (data.xpUpdates) {
-		data.xpUpdates.forEach(update => {
-			const p = allPlayers[update.num];
-			if (p) {
-				p.level = update.level;
-				p.xp = update.xp;
-				p.xpPerLevel = update.xpPerLevel; // Store XP needed for next level
-				p.sizeScale = update.sizeScale;
-				// Update drone count
-				if (update.droneCount !== undefined) {
-					p.droneCount = update.droneCount;
-				}
-			}
-		});
-	}
-	
-	// Handle level-up events (for visual feedback)
-	if (data.levelUps) {
-		data.levelUps.forEach(levelUp => {
-			invokeRenderer("levelUp", [levelUp.x, levelUp.y, levelUp.newLevel, allPlayers[levelUp.playerNum]]);
-		});
-	}
-	
-	// Handle drone updates (positions, targeting)
-	if (data.droneUpdates) {
-		data.droneUpdates.forEach(update => {
-			const p = allPlayers[update.ownerNum];
-			if (p) {
-				// Update player's drones array
-				p.drones = update.drones || [];
-				// Update global drone map
-				for (const d of p.drones) {
-					d.ownerId = update.ownerNum;
-					dronesById.set(d.id, d);
-				}
-			}
-		});
-	}
-	
-	// Handle hitscan events (drone laser shots)
-	if (data.hitscanEvents) {
-		data.hitscanEvents.forEach(hit => {
-			const target = allPlayers[hit.targetNum];
-			if (target) {
-				// Use server's authoritative HP value
-				if (hit.remainingHp !== undefined) {
-					target.hp = hit.remainingHp;
-				} else {
-					// Fallback to local calculation
-					target.hp = Math.max(0, (target.hp || 100) - hit.damage);
-				}
-				// Track last hit time for HP bar visibility
-				target.lastHitTime = Date.now();
-			}
-			// Notify renderer of hitscan for visual effect (laser line)
-			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage]);
-		});
-	}
-	
-	// Handle capture events for visual feedback
-	if (data.captureEvents) {
-		data.captureEvents.forEach(evt => {
-			const player = allPlayers[evt.playerNum];
-			const isLocalPlayer = user && evt.playerNum === user.num;
-			invokeRenderer("captureSuccess", [evt.x, evt.y, evt.xpGained, player, isLocalPlayer]);
-		});
-	}
-	
-	// Handle territory updates (when server sends changed territories)
-	if (data.territoryUpdates) {
-		data.territoryUpdates.forEach(update => {
-			const player = allPlayers[update.num];
-			if (player && update.territory) {
-				player.territory = update.territory;
-			}
-		});
-	}
-	
-	// Handle kill events (for kill sound and counter)
-	if (data.killEvents) {
-		data.killEvents.forEach(evt => {
-			// Check if local player got the kill
-			if (user && evt.killerNum === user.num) {
-				kills++;
-				invokeRenderer("playerKill", [evt.killerNum, evt.victimNum, evt.victimName, evt.killType]);
-			}
-			// Check if local player was killed
-			if (user && evt.victimNum === user.num) {
-				const killer = allPlayers[evt.killerNum];
-				const killerName = killer ? (killer.name || 'Unknown') : 'Unknown';
-				invokeRenderer("playerWasKilled", [killerName, evt.killType]);
-			}
-		});
-	}
-
-	if (data.newPlayers) {
-		data.newPlayers.forEach(p => {
-			if (user && p.num === user.num) return;
-			const pl = new Player(p);
-			// Copy XP/Level fields
-			pl.level = p.level || 1;
-			pl.xp = p.xp || 0;
-			pl.xpPerLevel = p.xpPerLevel || getXpForLevel(pl.level);
-			pl.sizeScale = p.sizeScale || 1.0;
-			// HP fields
-			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP ?? 100);
-			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
-			// Drone fields
-			pl.droneCount = p.droneCount || 1;
-			pl.drones = p.drones || [];
-			for (const d of pl.drones) {
-				dronesById.set(d.id, d);
-			}
-			addPlayer(pl);
-			if (!p.territory || p.territory.length === 0) {
-				initPlayer(pl);
-			}
-		});
-	}
-	
-	// Handle players leaving AOI (server stopped sending them)
-	// Note: This is NOT a death - just out of view. Don't trigger death effects.
-	if (data.leftPlayers) {
-		data.leftPlayers.forEach(num => {
-			const p = allPlayers[num];
-			if (p && p !== user) {
-				// Remove their drones from the map
-				if (p.drones) {
-					for (const d of p.drones) {
-						dronesById.delete(d.id);
-					}
-				}
-				// Remove from players array
-				const idx = players.indexOf(p);
-				if (idx !== -1) {
-					players.splice(idx, 1);
-				}
-				delete allPlayers[num];
-				// Use silent removal - no death animation
-				invokeRenderer("removePlayerSilent", [p]);
-			}
-		});
-	}
-	
-	// IMPORTANT: never rely on array index alignment between server `moves[]` and local `players[]`.
-	// Players can be added/removed and local ordering can drift, which would randomly kill the wrong player.
-	const presentNums = new Set();
-	data.moves.forEach(val => {
-		presentNums.add(val.num);
-		const player = allPlayers[val.num];
-		if (!player) return;
-		if (val.left) player.die();
-		player.targetAngle = val.targetAngle;
-	});
-	
-	// Any locally-known player that isn't in the server moves list this frame should be considered gone/dead.
-	for (const p of players) {
-		if (p && !presentNums.has(p.num)) {
-			p.die();
-		}
-	}
-	
-	update();
-	
-	dirty = true;
-	requestAnimationFrame(paintLoop);
-	
-	timeout = setTimeout(() => {
-		console.warn("Server has timed-out. Disconnecting.");
-		if (socket) socket.close();
-	}, 3000);
-}
-
-function paintLoop() {
-	if (!dirty) return;
-	invokeRenderer("paint", []);
-	dirty = false;
-	
-	if (user && user.dead) {
-		if (timeout) clearTimeout(timeout);
-		if (deadFrames === 60) {
-			const before = _allowAnimation;
-			_allowAnimation = false;
-			update();
-			invokeRenderer("paint", []);
-			_allowAnimation = before;
-			user = null;
-			deadFrames = 0;
-			return;
-		}
-		if (socket) socket.close();
-		deadFrames++;
-		dirty = true;
-		update();
-		requestAnimationFrame(paintLoop);
-	}
-}
-
-
-function reset() {
-	user = null;
-	players = [];
-	allPlayers = [];
-	coinsById.clear();
-	dronesById.clear();
-	kills = 0;
-	invokeRenderer("reset");
-}
-
-function setUser(player) {
-	user = player;
-	invokeRenderer("setUser", [player]);
-}
-
-function update() {
-	const dead = [];
-	updateFrame(players, dead, undefined, 1 / clientTickRate);
-	
-	dead.forEach(val => {
-		console.log((val.name || "Unnamed") + " is dead");
-		delete allPlayers[val.num];
-		invokeRenderer("removePlayer", [val]);
-	});
-	
-	invokeRenderer("update", [frame]);
-}
-
-function setRenderer(r) {
-	renderer = r;
-}
-
-function setAllowAnimation(allow) {
-	_allowAnimation = allow;
-}
-
-function getKills() {
-	return kills;
-}
-
-// WASD key state management
-function setKeyState(key, pressed) {
-	const k = key.toLowerCase();
-	if (k in wasdKeys) {
-		wasdKeys[k] = pressed;
-		// Check if any WASD key is pressed
-		useWasd = wasdKeys.w || wasdKeys.a || wasdKeys.s || wasdKeys.d;
-	}
-}
-
-// Export stuff
-export { 
-	connectGame, 
-	getUser, 
-	getPlayers, 
-	getOthers, 
-	getCoins,
-	getDrones,
-	disconnect, 
-	setRenderer, 
-	setAllowAnimation, 
-	getKills,
-	updateMousePosition,
-	sendTargetAngle,
-	setViewOffset,
-	updateZoom,
-	setKeyState,
-	polygonArea
-};
-
-export const allowAnimation = {
-	get: function() {
-		return _allowAnimation;
-	},
-	set: function(val) {
-		_allowAnimation = !!val;
-	},
-	enumerable: true
-};
+export { GameClient, InterpolatedEntity, Coin, HitscanEffect };

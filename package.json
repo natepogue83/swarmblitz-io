@@ -1,30 +1,31 @@
 {
   "name": "swarmblitz-io",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "SwarmBlitz.io - A multiplayer territory capture game with free movement",
-  "main": "server.js",
+  "description": "SwarmBlitz.io - A multiplayer territory capture game with free movement (Cloudflare Workers Edition)",
+  "main": "workers/index.js",
   "type": "module",
   "scripts": {
-    "build": "rollup -c rollup.config.js -f iife | terser -c -m > public/js/bundle.js",
-    "build-dev": "rollup -c rollup.config.js -f iife -o public/js/bundle.js -w",
-    "cleanup": "node cleanup.js",
-    "prestart": "npm run cleanup",
-    "start": "npm run build && node server.js",
-    "start:bw": "npm run build && cross-env BW_LOG=1 node server.js",
-    "predev": "npm run cleanup",
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "cross-env VITE=true nodemon --watch server.js --watch src/ --watch config.js server.js",
-    "dev:server:bw": "cross-env VITE=true BW_LOG=1 nodemon --watch server.js --watch src/ --watch config.js server.js",
-    "dev:bw": "concurrently \"npm run dev:server:bw\" \"npm run dev:client\"",
+    "dev": "concurrently \"npm run dev:worker\" \"npm run dev:client\"",
+    "dev:worker": "wrangler dev",
     "dev:client": "vite",
-    "load:test": "node tools/load-test.js"
+    "build": "vite build",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "load:test": "node tools/load-test.js",
+    "load:test:50": "node tools/load-test.js 50 ws://localhost:8787/room/default 30000",
+    "load:test:100": "node tools/load-test.js 100 ws://localhost:8787/room/default 60000",
+    "deprecated:start": "node deprecated/server.js",
+    "deprecated:dev": "nodemon --watch deprecated/ deprecated/server.js"
   },
   "repository": "stevenjoezhang/paper.io",
   "keywords": [
     "Paper-IO",
     "IO",
-    "Game"
+    "Game",
+    "Cloudflare Workers",
+    "Durable Objects"
   ],
   "author": "Mimi <stevenjoezhang@gmail.com> (https://zhangshuqiao.org)",
   "license": "MIT",
@@ -34,19 +35,12 @@
   "homepage": "https://github.com/stevenjoezhang/paper.io",
   "dependencies": {
     "@fortawesome/fontawesome-free": "^6.2.0",
-    "@msgpack/msgpack": "^3.1.3",
-    "jquery": "^3.6.1",
-    "polygon-clipping": "^0.15.7",
-    "ws": "^8.19.0"
+    "polygon-clipping": "^0.15.7"
   },
   "devDependencies": {
-    "@rollup/plugin-commonjs": "^23.0.2",
-    "@rollup/plugin-node-resolve": "^15.0.1",
     "concurrently": "^9.2.1",
-    "cross-env": "^7.0.3",
-    "nodemon": "^3.1.11",
-    "rollup": "^3.3.0",
-    "terser": "^5.15.1",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "wrangler": "^3.0.0",
+    "ws": "^8.19.0"
   }
 }

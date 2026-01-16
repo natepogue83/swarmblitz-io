@@ -1,0 +1,64 @@
+/**
+ * SwarmBlitz Cloudflare Worker Entry Point
+ * 
+ * Routes requests to Room Durable Objects
+ */
+
+export { Room } from './room.js';
+
+/**
+ * Main worker fetch handler
+ */
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    
+    // CORS headers
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
+    
+    // Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+    
+    // Route to room
+    if (url.pathname.startsWith('/room/')) {
+      const roomId = url.pathname.split('/')[2] || 'default';
+      
+      // Get or create Room Durable Object
+      const id = env.ROOM.idFromName(roomId);
+      const room = env.ROOM.get(id);
+      
+      // Forward request to room
+      return room.fetch(request);
+    }
+    
+    // Health check
+    if (url.pathname === '/health') {
+      return new Response(JSON.stringify({ status: 'ok' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    
+    // List rooms (for debugging)
+    if (url.pathname === '/rooms') {
+      // Note: Durable Objects don't have a built-in list API
+      // This would need external tracking (KV, D1, etc.)
+      return new Response(JSON.stringify({ rooms: ['default'] }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    
+    // Serve static files (if configured)
+    // In production, use Cloudflare Pages or R2 for static assets
+    
+    return new Response('SwarmBlitz API', {
+      headers: corsHeaders,
+    });
+  },
+};
+
