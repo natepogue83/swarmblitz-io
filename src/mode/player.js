@@ -575,6 +575,18 @@ function createDevConsole() {
 					<button id="dev-clear-drones">Clear All Drones</button>
 				</div>
 			</div>
+			<div class="dev-section">
+				<h3>Time Speed (Scaling Test)</h3>
+				<div class="dev-row">
+					<button id="dev-time-1x" class="dev-time-btn active">1x</button>
+					<button id="dev-time-2x" class="dev-time-btn">2x</button>
+					<button id="dev-time-4x" class="dev-time-btn">4x</button>
+					<button id="dev-time-8x" class="dev-time-btn">8x</button>
+				</div>
+				<div class="dev-row">
+					<span style="color:#888;font-size:0.75rem;">Speeds up game timer (enemy scaling/spawning) without affecting framerate</span>
+				</div>
+			</div>
 		</div>
 		<div class="dev-console-footer">
 			Press \` or ESC to close
@@ -677,6 +689,11 @@ function createDevConsole() {
 			transform: translateY(2px);
 			border-bottom-width: 1px;
 		}
+		#dev-console .dev-time-btn.active {
+			background: linear-gradient(to bottom, #5a8a55, #4a7a45);
+			border-color: #98FB98;
+			color: #98FB98;
+		}
 		#dev-console input, #dev-console select {
 			background: #2a2a30;
 			border: 2px solid #444;
@@ -724,6 +741,24 @@ function createDevConsole() {
 		client.devAddDrone(droneTypeId);
 	};
 	document.getElementById('dev-clear-drones').onclick = () => client.devClearDrones();
+	
+	// Time speed buttons
+	const timeSpeedBtns = [
+		{ id: 'dev-time-1x', multiplier: 1 },
+		{ id: 'dev-time-2x', multiplier: 2 },
+		{ id: 'dev-time-4x', multiplier: 4 },
+		{ id: 'dev-time-8x', multiplier: 8 }
+	];
+	timeSpeedBtns.forEach(({ id, multiplier }) => {
+		document.getElementById(id).onclick = () => {
+			client.devSetTimeSpeed(multiplier);
+			// Update active state
+			timeSpeedBtns.forEach(btn => {
+				document.getElementById(btn.id).classList.remove('active');
+			});
+			document.getElementById(id).classList.add('active');
+		};
+	});
 	
 	// Close button handler
 	devConsoleElement.querySelector('.dev-close').onclick = () => closeDevConsole();
@@ -1217,23 +1252,60 @@ function paintDebugOverlay(ctx) {
 	const bossCount = stats.bossCount || 0;
 	const nextBossIn = stats.nextBossIn != null ? stats.nextBossIn : 0;
 	
+	// Scaling debug info
+	const hpMult = stats.hpMult != null ? stats.hpMult : 1;
+	const dmgMult = stats.dmgMult != null ? stats.dmgMult : 1;
+	const timeSpeed = stats.timeSpeed != null ? stats.timeSpeed : 1;
+	const sampleSpawnHp = stats.sampleSpawnHp != null ? stats.sampleSpawnHp : 30;
+	
 	const lines = [
 		`Enemies: ${enemyCount} (${bossCount} bosses)`,
 		`Kills: ${killCount}`,
 		`Types: ${unlockedTypes.join(', ')}`,
-		`Next boss: ${nextBossIn.toFixed(1)}s`
-	];
+		`Next boss: ${nextBossIn.toFixed(1)}s`,
+		``,
+		`── Scaling ──`,
+		`HP Mult: ${hpMult.toFixed(2)}x`,
+		`DMG Mult: ${dmgMult.toFixed(2)}x`,
+		`Basic spawn HP: ${sampleSpawnHp}`,
+		timeSpeed !== 1 ? `⏩ Time Speed: ${timeSpeed}x` : null
+	].filter(line => line !== null);
 	
 	ctx.save();
 	ctx.font = "12px monospace";
-	ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
 	ctx.textAlign = "left";
 	ctx.textBaseline = "top";
 	
 	const startX = 10;
 	const startY = 8;
+	const lineHeight = 14;
+	
+	// Draw background for better readability
+	const maxWidth = 180;
+	const bgHeight = lines.length * lineHeight + 8;
+	ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+	ctx.fillRect(startX - 4, startY - 4, maxWidth, bgHeight);
+	
 	for (let i = 0; i < lines.length; i++) {
-		ctx.fillText(lines[i], startX, startY + i * 14);
+		const line = lines[i];
+		// Color-code scaling lines
+		if (line.startsWith('HP Mult:') || line.startsWith('DMG Mult:')) {
+			const mult = parseFloat(line.split(':')[1]);
+			if (mult >= 3) {
+				ctx.fillStyle = "#FF6B6B"; // Red for high scaling
+			} else if (mult >= 2) {
+				ctx.fillStyle = "#FFD700"; // Yellow for medium
+			} else {
+				ctx.fillStyle = "#98FB98"; // Green for low
+			}
+		} else if (line.startsWith('⏩')) {
+			ctx.fillStyle = "#4ECDC4"; // Cyan for time speed
+		} else if (line.startsWith('──')) {
+			ctx.fillStyle = "#888888"; // Gray for separator
+		} else {
+			ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+		}
+		ctx.fillText(line, startX, startY + i * lineHeight);
 	}
 	
 	ctx.restore();
