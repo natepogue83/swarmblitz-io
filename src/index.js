@@ -329,9 +329,11 @@ function startGame() {
   
   // Determine WebSocket URL
   // Add ?prod to URL to test against production server
+  // Auto-detect production: if not on localhost, use production server
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   const testProd = window.location.search.includes('prod');
   let wsUrl;
-  if (config.dev && !testProd) {
+  if (isLocalhost && !testProd) {
     // Local development - use wrangler dev server
     wsUrl = `ws://localhost:8787/room/default`;
     console.log('%c🔧 CONNECTING TO LOCAL SERVER', 'background: #ff9800; color: black; font-size: 16px; padding: 4px 8px;');

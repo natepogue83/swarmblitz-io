@@ -93,8 +93,8 @@ export const Quant = {
   // Territory point count: 8-bit (max 255 points per territory)
   TERRITORY_POINTS_MAX: 255,
   
-  // Trail point count: 8-bit
-  TRAIL_POINTS_MAX: 255,
+  // Trail point count: 16-bit (allows longer trails)
+  TRAIL_POINTS_MAX: 65535,
 };
 
 /**

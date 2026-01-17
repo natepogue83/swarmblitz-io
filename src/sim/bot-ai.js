@@ -9,6 +9,11 @@
  * - Runs at 4Hz (every 250ms) instead of 60Hz
  * - Natural-looking movement patterns
  * - Avoids walls, own trail, and enemy trails
+ * 
+ * Optimizations:
+ * - Squared distance comparisons (avoid sqrt)
+ * - Cached territory center
+ * - Precomputed danger distances
  */
 
 import { consts } from '../../config.js';
@@ -21,13 +26,20 @@ const BotState = {
   AVOIDING: 3,             // Emergency avoidance (wall/trail)
 };
 
-// Map dimensions
+// Map dimensions (cached)
 const MAP_SIZE = consts.GRID_COUNT * consts.CELL_WIDTH;
 const WALL_MARGIN = consts.CELL_WIDTH * 2;
+
+// Precomputed danger distances (squared for fast comparison)
+const TRAIL_DANGER_DIST = consts.CELL_WIDTH * 2;
+const TRAIL_DANGER_DIST_SQ = TRAIL_DANGER_DIST * TRAIL_DANGER_DIST;
+const ENEMY_DANGER_DIST = consts.CELL_WIDTH * 3;
+const ENEMY_DANGER_DIST_SQ = ENEMY_DANGER_DIST * ENEMY_DANGER_DIST;
 
 /**
  * Bot AI controller
  * Manages AI state and decision-making for a single bot
+ * Optimized with cached values and squared distance comparisons
  */
 export class BotAI {
   constructor(playerId) {
@@ -49,6 +61,10 @@ export class BotAI {
     // Personality (varies per bot for diverse behavior)
     this.aggressiveness = Math.random(); // 0-1, affects trail length
     this.wanderSpeed = 0.1 + Math.random() * 0.2; // How fast angle changes
+    
+    // Cached territory center (updated when territory changes)
+    this._cachedTerritoryCenter = { x: MAP_SIZE / 2, y: MAP_SIZE / 2 };
+    this._lastTerritoryLength = 0;
   }
   
   /**
@@ -178,19 +194,26 @@ export class BotAI {
   }
   
   /**
-   * Get territory center point
+   * Get territory center point (cached for performance)
    */
   getTerritoryCenter(territory) {
     if (!territory || territory.length === 0) {
-      return { x: MAP_SIZE / 2, y: MAP_SIZE / 2 };
+      return this._cachedTerritoryCenter;
     }
     
-    let cx = 0, cy = 0;
-    for (const point of territory) {
-      cx += point.x;
-      cy += point.y;
+    // Only recalculate if territory changed
+    if (territory.length !== this._lastTerritoryLength) {
+      this._lastTerritoryLength = territory.length;
+      let cx = 0, cy = 0;
+      for (let i = 0; i < territory.length; i++) {
+        cx += territory[i].x;
+        cy += territory[i].y;
+      }
+      this._cachedTerritoryCenter.x = cx / territory.length;
+      this._cachedTerritoryCenter.y = cy / territory.length;
     }
-    return { x: cx / territory.length, y: cy / territory.length };
+    
+    return this._cachedTerritoryCenter;
   }
   
   /**
@@ -215,18 +238,21 @@ export class BotAI {
   
   /**
    * Get angle to avoid own trail, or null if safe
+   * Uses squared distance for performance
    */
   getTrailAvoidanceAngle(x, y, trail) {
-    const dangerDist = consts.CELL_WIDTH * 2;
+    const maxIdx = trail.length - 10;
     
     // Check trail points (skip recent ones)
-    for (let i = 0; i < trail.length - 10; i++) {
+    for (let i = 0; i < maxIdx; i++) {
       const point = trail[i];
-      const dist = Math.hypot(point.x - x, point.y - y);
+      const dx = point.x - x;
+      const dy = point.y - y;
+      const distSq = dx * dx + dy * dy;
       
-      if (dist < dangerDist) {
+      if (distSq < TRAIL_DANGER_DIST_SQ) {
         // Turn away from trail point
-        return Math.atan2(y - point.y, x - point.x);
+        return Math.atan2(-dy, -dx);
       }
     }
     return null;
@@ -234,20 +260,23 @@ export class BotAI {
   
   /**
    * Get angle to avoid enemy trails
+   * Uses squared distance for performance
    */
   getEnemyTrailAvoidance(x, y, self, world) {
-    const dangerDist = consts.CELL_WIDTH * 3;
-    
     for (const player of world.players.values()) {
       if (player.id === self.id || player.dead) continue;
-      if (!player.trail || player.trail.length === 0) continue;
+      const trail = player.trail;
+      if (!trail || trail.length === 0) continue;
       
-      for (const point of player.trail) {
-        const dist = Math.hypot(point.x - x, point.y - y);
+      for (let i = 0; i < trail.length; i++) {
+        const point = trail[i];
+        const dx = point.x - x;
+        const dy = point.y - y;
+        const distSq = dx * dx + dy * dy;
         
-        if (dist < dangerDist) {
+        if (distSq < ENEMY_DANGER_DIST_SQ) {
           // Turn away from enemy trail
-          return Math.atan2(y - point.y, x - point.x);
+          return Math.atan2(-dy, -dx);
         }
       }
     }

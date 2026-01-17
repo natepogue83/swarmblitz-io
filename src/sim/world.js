@@ -980,6 +980,7 @@ class Drone {
   
   /**
    * Find and attack target
+   * Optimized to use squared distance comparisons
    */
   update(owner, players, deltaSeconds, events) {
     if (this.cooldown > 0) {
@@ -992,17 +993,21 @@ class Drone {
       return;
     }
     
-    // Find nearest enemy in range
+    // Find nearest enemy in range using squared distance
     const range = consts.DRONE_RANGE || 158;
+    const rangeSq = range * range;
     let target = null;
-    let minDist = range;
+    let minDistSq = rangeSq;
     
-    for (const enemy of players) {
+    for (let i = 0; i < players.length; i++) {
+      const enemy = players[i];
       if (enemy.dead || enemy.id === owner.id) continue;
       
-      const dist = Math.hypot(enemy.x - owner.x, enemy.y - owner.y);
-      if (dist < minDist) {
-        minDist = dist;
+      const dx = enemy.x - owner.x;
+      const dy = enemy.y - owner.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < minDistSq) {
+        minDistSq = distSq;
         target = enemy;
       }
     }
@@ -1075,11 +1080,14 @@ class Coin {
 
 /**
  * Spatial grid for efficient AOI queries
+ * Optimized to minimize allocations and use squared distance checks
  */
 class SpatialGrid {
   constructor(mapSize, cellSize) {
     this.cellSize = cellSize;
     this.cells = new Map();
+    // Reusable array for getNearby results to reduce allocations
+    this._nearbyBuffer = [];
   }
   
   _key(x, y) {
@@ -1090,16 +1098,21 @@ class SpatialGrid {
   
   insert(entity) {
     const key = this._key(entity.x, entity.y);
-    if (!this.cells.has(key)) {
-      this.cells.set(key, new Set());
+    let cell = this.cells.get(key);
+    if (!cell) {
+      cell = new Set();
+      this.cells.set(key, cell);
     }
-    this.cells.get(key).add(entity);
+    cell.add(entity);
     entity._gridKey = key;
   }
   
   remove(entity) {
-    if (entity._gridKey && this.cells.has(entity._gridKey)) {
-      this.cells.get(entity._gridKey).delete(entity);
+    if (entity._gridKey) {
+      const cell = this.cells.get(entity._gridKey);
+      if (cell) {
+        cell.delete(entity);
+      }
     }
     entity._gridKey = null;
   }
@@ -1112,8 +1125,15 @@ class SpatialGrid {
     }
   }
   
+  /**
+   * Get entities within radius using squared distance (avoids sqrt)
+   * Reuses internal buffer to minimize allocations
+   */
   getNearby(x, y, radius) {
-    const nearby = [];
+    const nearby = this._nearbyBuffer;
+    nearby.length = 0; // Clear without reallocating
+    
+    const radiusSq = radius * radius;
     const cellRadius = Math.ceil(radius / this.cellSize);
     const cx = Math.floor(x / this.cellSize);
     const cy = Math.floor(y / this.cellSize);
@@ -1124,8 +1144,37 @@ class SpatialGrid {
         const cell = this.cells.get(key);
         if (cell) {
           for (const entity of cell) {
-            const dist = Math.hypot(entity.x - x, entity.y - y);
-            if (dist <= radius) {
+            const ex = entity.x - x;
+            const ey = entity.y - y;
+            if (ex * ex + ey * ey <= radiusSq) {
+              nearby.push(entity);
+            }
+          }
+        }
+      }
+    }
+    return nearby;
+  }
+  
+  /**
+   * Get entities within radius, returning a fresh array (for cases where caller needs to keep result)
+   */
+  getNearbyFresh(x, y, radius) {
+    const nearby = [];
+    const radiusSq = radius * radius;
+    const cellRadius = Math.ceil(radius / this.cellSize);
+    const cx = Math.floor(x / this.cellSize);
+    const cy = Math.floor(y / this.cellSize);
+    
+    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+      for (let dy = -cellRadius; dy <= cellRadius; dy++) {
+        const key = `${cx + dx},${cy + dy}`;
+        const cell = this.cells.get(key);
+        if (cell) {
+          for (const entity of cell) {
+            const ex = entity.x - x;
+            const ey = entity.y - y;
+            if (ex * ex + ey * ey <= radiusSq) {
               nearby.push(entity);
             }
           }
@@ -1158,6 +1207,11 @@ export default class World {
     
     // Events accumulated during tick
     this.pendingEvents = [];
+    
+    // Reusable arrays to reduce per-tick allocations
+    this._deadPlayers = [];
+    this._alivePlayers = [];
+    this._playersArray = []; // Cached array of players for collision checks
   }
   
   /**
@@ -1401,6 +1455,7 @@ export default class World {
   
   /**
    * Main simulation tick
+   * Optimized to reduce allocations and use spatial queries
    */
   tick(deltaSeconds) {
     const now = Date.now();
@@ -1413,8 +1468,19 @@ export default class World {
       this.coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC || 2.5;
     }
     
-    // Update players
-    const dead = [];
+    // Reuse dead array to reduce allocations
+    const dead = this._deadPlayers;
+    dead.length = 0;
+    
+    // Cache players array for drone updates (avoid Array.from in hot loop)
+    const playersArray = this._playersArray;
+    playersArray.length = 0;
+    for (const p of this.players.values()) {
+      playersArray.push(p);
+    }
+    
+    // Coin pickup radius (precompute once)
+    const coinRadius = consts.COIN_RADIUS || 8;
     
     for (const player of this.players.values()) {
       if (player.dead) continue;
@@ -1422,17 +1488,24 @@ export default class World {
       player.move(deltaSeconds, this.mapSize, now);
       this.playerGrid.update(player);
       
-      // Update drones
+      // Update drones - use cached array instead of Array.from
       for (const drone of player.drones) {
         drone.updatePosition(player, deltaSeconds);
-        drone.update(player, Array.from(this.players.values()), deltaSeconds, this.pendingEvents);
+        drone.update(player, playersArray, deltaSeconds, this.pendingEvents);
       }
       
-      // Check coin pickups
+      // Check coin pickups using spatial grid (O(k) instead of O(n))
       const scaledRadius = player.getScaledRadius();
-      for (const coin of this.coins.values()) {
-        const dist = Math.hypot(player.x - coin.x, player.y - coin.y);
-        if (dist < scaledRadius + (consts.COIN_RADIUS || 8)) {
+      const pickupRadius = scaledRadius + coinRadius;
+      const nearbyCoins = this.coinGrid.getNearby(player.x, player.y, pickupRadius);
+      
+      // Use squared distance to avoid sqrt
+      const pickupRadiusSq = pickupRadius * pickupRadius;
+      for (let i = 0; i < nearbyCoins.length; i++) {
+        const coin = nearbyCoins[i];
+        const dx = player.x - coin.x;
+        const dy = player.y - coin.y;
+        if (dx * dx + dy * dy < pickupRadiusSq) {
           player.addXp(coin.value, this.pendingEvents);
           this.coinGrid.remove(coin);
           this.coins.delete(coin.id);
@@ -1471,7 +1544,7 @@ export default class World {
     
     // Second pass: collect any players killed by drones (their dead flag was set during another player's drone update)
     for (const player of this.players.values()) {
-      if (player.dead && !dead.includes(player)) {
+      if (player.dead && dead.indexOf(player) === -1) {
         dead.push(player);
       }
     }
@@ -1479,14 +1552,38 @@ export default class World {
     // TERRITORY OVERLAP RESOLUTION
     // When a player captures territory, subtract it from overlapping enemy territories
     // NOTE: Capturing territory does NOT kill players - only trail collisions do
-    const alivePlayers = Array.from(this.players.values()).filter(p => !p.dead);
+    // Reuse alive players array to reduce allocations
+    const alivePlayers = this._alivePlayers;
+    alivePlayers.length = 0;
+    for (const p of this.players.values()) {
+      if (!p.dead) alivePlayers.push(p);
+    }
     
-    for (const capturer of alivePlayers) {
+    // Only check territory overlaps for players who captured this tick
+    // Use spatial proximity check first to avoid expensive polygon operations
+    for (let i = 0; i < alivePlayers.length; i++) {
+      const capturer = alivePlayers[i];
       if (!capturer._capturedThisTick || capturer.dead) continue;
       capturer._capturedThisTick = false; // Clear flag
       
-      for (const other of alivePlayers) {
+      // Skip if capturer has no territory
+      if (!capturer.territory || capturer.territory.length < 3) continue;
+      
+      for (let j = 0; j < alivePlayers.length; j++) {
+        const other = alivePlayers[j];
         if (other === capturer || other.dead) continue;
+        if (!other.territory || other.territory.length < 3) continue;
+        
+        // Quick distance check - skip if players are far apart
+        // Use current positions as approximation (faster than computing territory centroids)
+        const dx = capturer.x - other.x;
+        const dy = capturer.y - other.y;
+        const distSq = dx * dx + dy * dy;
+        
+        // Skip if players are more than 800 units apart (territories unlikely to overlap)
+        // This is a conservative estimate - territories can grow large, so use generous threshold
+        const maxOverlapDist = 800;
+        if (distSq > maxOverlapDist * maxOverlapDist) continue;
         
         // Check if territories overlap
         if (polygonsOverlap(capturer.territory, other.territory)) {
@@ -1510,45 +1607,83 @@ export default class World {
     }
     
     // Check collisions
-    const players = Array.from(this.players.values()).filter(p => !p.dead);
+    // Trail collisions: For each player with a trail, check all other players against it
+    // Body collisions: Use spatial grid for proximity checks
+    const bodyCollisionRadius = 100;
+    const checkedPairs = new Set();
     
-    for (let i = 0; i < players.length; i++) {
-      const p1 = players[i];
-      if (p1.dead) continue;
+    // Collect players with active trails (usually a small subset)
+    const playersWithTrails = [];
+    for (let i = 0; i < alivePlayers.length; i++) {
+      const p = alivePlayers[i];
+      if (!p.dead && !p.isSnipped && p.trail && p.trail.length >= 2) {
+        // Compute trail bounding box for fast rejection
+        let minX = p.trail[0].x, maxX = p.trail[0].x;
+        let minY = p.trail[0].y, maxY = p.trail[0].y;
+        for (let j = 1; j < p.trail.length; j++) {
+          const tp = p.trail[j];
+          if (tp.x < minX) minX = tp.x;
+          if (tp.x > maxX) maxX = tp.x;
+          if (tp.y < minY) minY = tp.y;
+          if (tp.y > maxY) maxY = tp.y;
+        }
+        // Expand by player radius for collision detection
+        playersWithTrails.push({
+          player: p,
+          minX: minX - PLAYER_RADIUS,
+          maxX: maxX + PLAYER_RADIUS,
+          minY: minY - PLAYER_RADIUS,
+          maxY: maxY + PLAYER_RADIUS,
+        });
+      }
+    }
+    
+    // Check trail collisions: for each player, check against all trails
+    for (let i = 0; i < alivePlayers.length; i++) {
+      const p1 = alivePlayers[i];
+      if (p1.dead || p1.isSnipped) continue;
       
-      for (let j = i + 1; j < players.length; j++) {
-        const p2 = players[j];
-        if (p2.dead) continue;
+      // Check if p1 hits any trail
+      for (let j = 0; j < playersWithTrails.length; j++) {
+        const { player: p2, minX, maxX, minY, maxY } = playersWithTrails[j];
+        if (p2 === p1) continue;
         
-        // Trail collision (p1 hits p2's trail)
-        if (!p1.isSnipped) {
-          const hit = p2.hitsTrail(p1.x, p1.y, 0);
-          if (hit && !p2.isSnipped) {
-            p2.startSnip({ x: p1.x, y: p1.y }, hit, p1.id);
-            this.pendingEvents.push({
-              type: EventType.SNIP_START,
-              playerNum: p2.id,
-              snipperNum: p1.id,
-            });
-          }
+        // Quick bounding box rejection
+        if (p1.x < minX || p1.x > maxX || p1.y < minY || p1.y > maxY) continue;
+        
+        // Detailed trail hit check
+        const hit = p2.hitsTrail(p1.x, p1.y, 0);
+        if (hit) {
+          p2.startSnip({ x: p1.x, y: p1.y }, hit, p1.id);
+          this.pendingEvents.push({
+            type: EventType.SNIP_START,
+            playerNum: p2.id,
+            snipperNum: p1.id,
+          });
+          // Remove from playersWithTrails since they're now snipped
+          playersWithTrails.splice(j, 1);
+          j--;
         }
+      }
+      
+      // Check body collisions using spatial grid
+      const nearby = this.playerGrid.getNearby(p1.x, p1.y, bodyCollisionRadius);
+      
+      for (let j = 0; j < nearby.length; j++) {
+        const p2 = nearby[j];
+        if (p2 === p1 || p2.dead) continue;
         
-        // Trail collision (p2 hits p1's trail)
-        if (!p2.isSnipped) {
-          const hit = p1.hitsTrail(p2.x, p2.y, 0);
-          if (hit && !p1.isSnipped) {
-            p1.startSnip({ x: p2.x, y: p2.y }, hit, p2.id);
-            this.pendingEvents.push({
-              type: EventType.SNIP_START,
-              playerNum: p1.id,
-              snipperNum: p2.id,
-            });
-          }
-        }
+        // Create unique pair key to avoid checking twice
+        const pairKey = p1.id < p2.id ? `${p1.id},${p2.id}` : `${p2.id},${p1.id}`;
+        if (checkedPairs.has(pairKey)) continue;
+        checkedPairs.add(pairKey);
         
-        // Body collision
-        const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
-        if (dist < p1.getScaledRadius() + p2.getScaledRadius()) {
+        // Body collision - use squared distance to avoid sqrt
+        const dx = p1.x - p2.x;
+        const dy = p1.y - p2.y;
+        const distSq = dx * dx + dy * dy;
+        const combinedRadius = p1.getScaledRadius() + p2.getScaledRadius();
+        if (distSq < combinedRadius * combinedRadius) {
           const p1InTerritory = p1.isInOwnTerritory();
           const p2InTerritory = p2.isInOwnTerritory();
           

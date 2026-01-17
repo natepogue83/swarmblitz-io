@@ -425,8 +425,8 @@ export default class NetClient {
       });
     }
     
-    // Trail
-    const trailCount = reader.readU8();
+    // Trail (U16 count to support longer trails)
+    const trailCount = reader.readU16();
     const trail = [];
     for (let i = 0; i < trailCount; i++) {
       trail.push({
@@ -506,7 +506,7 @@ export default class NetClient {
     }
     
     if (dirty & DeltaFlags.TRAIL) {
-      const count = reader.readU8();
+      const count = reader.readU16();
       delta.trail = [];
       for (let i = 0; i < count; i++) {
         delta.trail.push({

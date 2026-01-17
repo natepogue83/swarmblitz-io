@@ -10,7 +10,7 @@
  */
 
 import World from '../src/sim/world.js';
-import { BinaryWriter } from '../src/net/codec.js';
+import { BinaryWriter, BinaryWriterPool } from '../src/net/codec.js';
 import { 
   PacketType, 
   EventType, 
@@ -23,6 +23,9 @@ import {
 } from '../src/net/protocol.js';
 import { BotManager } from '../src/sim/bot-ai.js';
 import { config, consts } from '../config.js';
+
+// Shared writer pool for all rooms (reduces allocations)
+const writerPool = new BinaryWriterPool(32, 512);
 
 // Network tick rate (Hz) - decoupled from simulation
 // 10Hz = 100ms between updates, client interpolates for smoothness
@@ -380,6 +383,7 @@ class MetricsLogger {
 
 /**
  * Client connection state
+ * Optimized with AOI caching and reusable buffers
  */
 class Client {
   constructor(ws, playerId, isSpectator = false) {
@@ -390,6 +394,25 @@ class Client {
     this.lastSentFrame = 0;
     this.lastPing = Date.now();
     this.rtt = 0;
+    
+    // AOI caching - skip queries if player hasn't moved across grid cells
+    this._lastGridKey = null;
+    this._cachedNearbyPlayers = null;
+    this._cachedNearbyCoins = null;
+    
+    // Reusable arrays for delta tracking (avoid allocations per frame)
+    this._newEntities = [];
+    this._updatedEntities = [];
+    this._removedEntities = [];
+    this._currentEntities = new Set();
+  }
+  
+  /**
+   * Invalidate AOI cache (called when player moves to new grid cell)
+   */
+  invalidateAOICache() {
+    this._cachedNearbyPlayers = null;
+    this._cachedNearbyCoins = null;
   }
 }
 
@@ -1221,6 +1244,7 @@ export class Room {
   
   /**
    * Broadcast frame to all clients
+   * Optimized with AOI caching and early-exit for empty frames
    */
   broadcastFrame() {
     const frame = this.world.frame;
@@ -1234,6 +1258,9 @@ export class Room {
     let buildTime = 0;
     let sendTime = 0;
     let phaseStart;
+    
+    // Grid cell size for AOI caching
+    const gridCellSize = this.world.playerGrid.cellSize;
     
     for (const [ws, client] of this.clients) {
       try {
@@ -1260,10 +1287,36 @@ export class Room {
         const player = this.world.getPlayer(client.playerId);
         if (!player) continue;
         
-        // === AOI PHASE ===
+        // === AOI PHASE with caching ===
         phaseStart = performance.now();
-        const nearbyPlayers = this.world.getPlayersInAOI(player.x, player.y, AOI_RADIUS);
-        const nearbyCoins = this.world.getCoinsInAOI(player.x, player.y, AOI_RADIUS);
+        
+        // Check if player moved to a new grid cell
+        const gridX = Math.floor(player.x / gridCellSize);
+        const gridY = Math.floor(player.y / gridCellSize);
+        const currentGridKey = `${gridX},${gridY}`;
+        
+        let nearbyPlayers, nearbyCoins;
+        
+        if (client._lastGridKey !== currentGridKey) {
+          // Player moved to new cell - refresh AOI
+          client._lastGridKey = currentGridKey;
+          nearbyPlayers = this.world.getPlayersInAOI(player.x, player.y, AOI_RADIUS);
+          nearbyCoins = this.world.getCoinsInAOI(player.x, player.y, AOI_RADIUS);
+          // Cache fresh copies (getNearby returns reused buffer)
+          client._cachedNearbyPlayers = nearbyPlayers.slice();
+          client._cachedNearbyCoins = nearbyCoins.slice();
+        } else if (client._cachedNearbyPlayers) {
+          // Use cached AOI results
+          nearbyPlayers = client._cachedNearbyPlayers;
+          nearbyCoins = client._cachedNearbyCoins;
+        } else {
+          // First frame or cache miss
+          nearbyPlayers = this.world.getPlayersInAOI(player.x, player.y, AOI_RADIUS);
+          nearbyCoins = this.world.getCoinsInAOI(player.x, player.y, AOI_RADIUS);
+          client._cachedNearbyPlayers = nearbyPlayers.slice();
+          client._cachedNearbyCoins = nearbyCoins.slice();
+        }
+        
         aoiTime += performance.now() - phaseStart;
         
         // === BUILD PHASE ===
@@ -1294,9 +1347,10 @@ export class Room {
   
   /**
    * Build binary frame packet for a client
+   * Optimized to reuse client arrays and minimize allocations
    */
   buildFramePacket(client, selfPlayer, nearbyPlayers, nearbyCoins, events, frame) {
-    const writer = new BinaryWriter(512);
+    const writer = writerPool.acquire();
     const mapSize = this.world.mapSize;
     
     // Header
@@ -1307,13 +1361,18 @@ export class Room {
     writer.writeU8(1); // has self
     this.writePlayerFull(writer, selfPlayer, mapSize);
     
-    // Nearby players (delta)
-    const currentEntities = new Set();
-    const newEntities = [];
-    const updatedEntities = [];
-    const removedEntities = [];
+    // Reuse client arrays to minimize allocations
+    const currentEntities = client._currentEntities;
+    currentEntities.clear();
+    const newEntities = client._newEntities;
+    newEntities.length = 0;
+    const updatedEntities = client._updatedEntities;
+    updatedEntities.length = 0;
+    const removedEntities = client._removedEntities;
+    removedEntities.length = 0;
     
-    for (const p of nearbyPlayers) {
+    for (let i = 0; i < nearbyPlayers.length; i++) {
+      const p = nearbyPlayers[i];
       if (p.id === selfPlayer.id) continue;
       currentEntities.add(p.id);
       
@@ -1334,7 +1393,10 @@ export class Room {
       }
     }
     
+    // Swap sets instead of creating new one
+    const temp = client.lastSeenEntities;
     client.lastSeenEntities = currentEntities;
+    client._currentEntities = temp;
     
     // Write new entities (full)
     writer.writeU8(newEntities.length);
@@ -1363,21 +1425,31 @@ export class Room {
       writer.writeU16(Math.round(coin.y));
     }
     
-    // Write events relevant to this client
-    const relevantEvents = events.filter(e => this.isEventRelevant(e, selfPlayer, AOI_RADIUS));
-    writer.writeU8(Math.min(relevantEvents.length, 255));
-    for (let i = 0; i < Math.min(relevantEvents.length, 255); i++) {
-      this.writeEvent(writer, relevantEvents[i], mapSize);
+    // Write events relevant to this client - avoid filter() allocation
+    let relevantCount = 0;
+    for (let i = 0; i < events.length && relevantCount < 255; i++) {
+      if (this.isEventRelevant(events[i], selfPlayer, AOI_RADIUS)) {
+        relevantCount++;
+      }
+    }
+    writer.writeU8(relevantCount);
+    for (let i = 0, written = 0; i < events.length && written < 255; i++) {
+      if (this.isEventRelevant(events[i], selfPlayer, AOI_RADIUS)) {
+        this.writeEvent(writer, events[i], mapSize);
+        written++;
+      }
     }
     
-    return writer.toArrayBuffer();
+    const result = writer.toArrayBuffer();
+    writerPool.release(writer);
+    return result;
   }
   
   /**
    * Build binary frame packet for a spectator (sees all entities)
    */
   buildSpectatorFramePacket(client, allPlayers, allCoins, events, frame) {
-    const writer = new BinaryWriter(2048); // Larger buffer for full state
+    const writer = writerPool.acquire(); // Pool handles sizing
     const mapSize = this.world.mapSize;
     
     // Header
@@ -1387,7 +1459,7 @@ export class Room {
     // No self player for spectator
     writer.writeU8(0); // has self = false
     
-    // Track entities for delta updates
+    // Track entities for delta updates (spectators don't need optimized tracking)
     const currentEntities = new Set();
     const newEntities = [];
     const updatedEntities = [];
@@ -1449,7 +1521,9 @@ export class Room {
       this.writeEvent(writer, events[i], mapSize);
     }
     
-    return writer.toArrayBuffer();
+    const result = writer.toArrayBuffer();
+    writerPool.release(writer);
+    return result;
   }
   
   /**
@@ -1489,10 +1563,10 @@ export class Room {
       writer.writeU16(quantizePosition(territory[i].y, mapSize));
     }
     
-    // Trail
+    // Trail (U16 count to support longer trails)
     const trail = player.trail || [];
-    writer.writeU8(Math.min(trail.length, 255));
-    for (let i = 0; i < Math.min(trail.length, 255); i++) {
+    writer.writeU16(trail.length);
+    for (let i = 0; i < trail.length; i++) {
       writer.writeU16(quantizePosition(trail[i].x, mapSize));
       writer.writeU16(quantizePosition(trail[i].y, mapSize));
     }
@@ -1548,8 +1622,8 @@ export class Room {
     
     if (dirty & DeltaFlags.TRAIL) {
       const trail = player.trail || [];
-      writer.writeU8(Math.min(trail.length, 255));
-      for (let i = 0; i < Math.min(trail.length, 255); i++) {
+      writer.writeU16(trail.length);
+      for (let i = 0; i < trail.length; i++) {
         writer.writeU16(quantizePosition(trail[i].x, mapSize));
         writer.writeU16(quantizePosition(trail[i].y, mapSize));
       }

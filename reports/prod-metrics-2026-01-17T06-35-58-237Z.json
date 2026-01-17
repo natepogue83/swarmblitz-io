@@ -1,0 +1,30 @@
+{
+  "startTime": "2026-01-17T06:35:58.236Z",
+  "environment": "production",
+  "config": {
+    "botLevels": [
+      300
+    ],
+    "durationPerLevelMs": 120000,
+    "warmupMs": 60000,
+    "wsUrl": "wss://swarmblitz.dev-1dd.workers.dev/room/loadtest",
+    "workerName": "swarmblitz"
+  },
+  "levels": [
+    {
+      "botCount": 300,
+      "startTime": "2026-01-17T06:36:03.240Z",
+      "metrics": [],
+      "errors": [],
+      "aggregate": null,
+      "endTime": "2026-01-17T06:38:23.604Z"
+    }
+  ],
+  "endTime": "2026-01-17T06:38:33.609Z",
+  "status": "complete",
+  "summary": {
+    "levelsCompleted": 0,
+    "totalSamples": 0,
+    "scalingCurve": []
+  }
+}

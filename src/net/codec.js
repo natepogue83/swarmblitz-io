@@ -23,11 +23,20 @@ import {
 
 /**
  * Binary writer helper
+ * Optimized with reset() for pooling and reuse
  */
 class BinaryWriter {
   constructor(initialSize = 256) {
     this.buffer = new ArrayBuffer(initialSize);
     this.view = new DataView(this.buffer);
+    this.offset = 0;
+    this._textEncoder = new TextEncoder(); // Reuse encoder
+  }
+  
+  /**
+   * Reset writer for reuse (pooling optimization)
+   */
+  reset() {
     this.offset = 0;
   }
   
@@ -76,7 +85,7 @@ class BinaryWriter {
   }
   
   writeString(str) {
-    const encoded = new TextEncoder().encode(str);
+    const encoded = this._textEncoder.encode(str);
     this.writeU8(Math.min(encoded.length, 255));
     this.ensureCapacity(encoded.length);
     new Uint8Array(this.buffer, this.offset, encoded.length).set(encoded.slice(0, 255));
@@ -91,6 +100,44 @@ class BinaryWriter {
   
   toArrayBuffer() {
     return this.buffer.slice(0, this.offset);
+  }
+}
+
+/**
+ * BinaryWriter pool for reducing allocations
+ * Writers are acquired, used, and released back to the pool
+ */
+class BinaryWriterPool {
+  constructor(poolSize = 16, initialWriterSize = 512) {
+    this._pool = [];
+    this._initialWriterSize = initialWriterSize;
+    // Pre-populate pool
+    for (let i = 0; i < poolSize; i++) {
+      this._pool.push(new BinaryWriter(initialWriterSize));
+    }
+  }
+  
+  /**
+   * Acquire a writer from the pool (or create new if empty)
+   */
+  acquire() {
+    if (this._pool.length > 0) {
+      const writer = this._pool.pop();
+      writer.reset();
+      return writer;
+    }
+    return new BinaryWriter(this._initialWriterSize);
+  }
+  
+  /**
+   * Release a writer back to the pool
+   */
+  release(writer) {
+    // Only pool writers up to a reasonable size to avoid memory bloat
+    if (writer.buffer.byteLength <= 8192) {
+      writer.reset();
+      this._pool.push(writer);
+    }
   }
 }
 
@@ -267,11 +314,10 @@ function encodePlayerFull(w, p, mapSize) {
     w.writeU16(quantizePosition(territory[i].y, mapSize));
   }
   
-  // Trail
+  // Trail (U16 count to support longer trails)
   const trail = p.trail || [];
-  const trailCount = Math.min(trail.length, Quant.TRAIL_POINTS_MAX);
-  w.writeU8(trailCount);
-  for (let i = 0; i < trailCount; i++) {
+  w.writeU16(trail.length);
+  for (let i = 0; i < trail.length; i++) {
     w.writeU16(quantizePosition(trail[i].x, mapSize));
     w.writeU16(quantizePosition(trail[i].y, mapSize));
   }
@@ -349,8 +395,8 @@ export function encodeFrame(data, mapSize) {
     
     if (delta.flags & DeltaFlags.TRAIL) {
       const trail = delta.trail || [];
-      w.writeU8(Math.min(trail.length, 255));
-      for (let i = 0; i < Math.min(trail.length, 255); i++) {
+      w.writeU16(trail.length);
+      for (let i = 0; i < trail.length; i++) {
         w.writeU16(quantizePosition(trail[i].x, mapSize));
         w.writeU16(quantizePosition(trail[i].y, mapSize));
       }
@@ -617,7 +663,7 @@ function decodePlayerFull(r, mapSize) {
     });
   }
   
-  const trailCount = r.readU8();
+  const trailCount = r.readU16();
   const trail = [];
   for (let i = 0; i < trailCount; i++) {
     trail.push({
@@ -704,7 +750,7 @@ function decodeFrame(r, mapSize) {
     }
     
     if (flags & DeltaFlags.TRAIL) {
-      const count = r.readU8();
+      const count = r.readU16();
       delta.trail = [];
       for (let j = 0; j < count; j++) {
         delta.trail.push({
@@ -795,5 +841,5 @@ function decodePong(r) {
   };
 }
 
-export { BinaryWriter, BinaryReader };
+export { BinaryWriter, BinaryReader, BinaryWriterPool };
 
