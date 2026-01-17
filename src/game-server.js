@@ -918,7 +918,10 @@ function Game(id) {
 		// Stamina boost spawning (near player, outside territory)
 		coinSpawnCooldown -= deltaSeconds;
 		const activePlayer = players.find(p => !p.dead && !p.disconnected) || null;
-		if (coinSpawnCooldown <= 0 && coins.length < consts.MAX_COINS && activePlayer) {
+		// Count only stamina/heal boost orbs (not enemy XP orbs)
+		const boostOrbCount = coins.filter(c => c.type === "stamina" || c.type === "heal").length;
+		const maxBoostOrbs = consts.MAX_BOOST_ORBS ?? 15;
+		if (coinSpawnCooldown <= 0 && boostOrbCount < maxBoostOrbs && activePlayer) {
 			// Try to spawn stamina boost near player but outside their territory
 			const spawnRadius = consts.BOOST_SPAWN_RADIUS || 300;
 			const minDist = consts.BOOST_SPAWN_MIN_DIST || 100;
@@ -956,7 +959,7 @@ function Game(id) {
 				coins.push(newCoin);
 				economyDeltas.coinSpawns.push(newCoin);
 			}
-			coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC;
+			coinSpawnCooldown = consts.BOOST_SPAWN_INTERVAL_SEC ?? 3.0;
 		}
 		
 		const droneUpdateEveryTicks = consts.DRONE_UPDATE_EVERY_TICKS ?? 5;

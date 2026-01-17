@@ -38,8 +38,10 @@ export const consts = {
 	// ===== STAMINA/HEAL BOOST ORBS =====
 	"STAMINA_BOOST_AMOUNT": 20,         // Stamina granted on pickup
 	"HEAL_BOOST_BASE": 20,              // Base heal amount (scaled by minutes+1)
-	"BOOST_SPAWN_RADIUS": 300,          // Spawn distance from player
-	"BOOST_SPAWN_MIN_DIST": 100,        // Minimum spawn distance from player
+	"BOOST_SPAWN_RADIUS": 600,          // Spawn distance from player
+	"BOOST_SPAWN_MIN_DIST": 200,        // Minimum spawn distance from player
+	"BOOST_SPAWN_INTERVAL_SEC": 2.0,    // Seconds between boost orb spawn attempts
+	"MAX_BOOST_ORBS": 40               // Maximum stamina/heal boosts at once
 	
 	// ===== XP VALUES (Easy tuning knobs) =====
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)
