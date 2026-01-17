@@ -52,7 +52,7 @@ export const ENEMY_TYPES = {
 		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
 		radius: 6,
 		maxHp: 5,
-		speed: 155,           // Fast
+		speed: 200,           // Fast
 		contactDamage: 6,
 		xpDropValue: 1,
 		spawnWeight: 60,     // Very common when unlocked
@@ -82,7 +82,7 @@ export const BOSS_TYPES = {
 		// Giant slow boss with massive HP
 		radius: 40,
 		maxHp: 1500,
-		speed: 20,
+		speed: 80,
 		contactDamage: 45,
 		xpDropValue: 50,
 		spawnWeight: 40,
@@ -93,7 +93,7 @@ export const BOSS_TYPES = {
 		// Medium boss that charges repeatedly
 		radius: 28,
 		maxHp: 750,
-		speed: 35,
+		speed: 110,
 		contactDamage: 25,
 		chargeSpeed: 250,
 		chargeCooldown: 2,
@@ -107,7 +107,7 @@ export const BOSS_TYPES = {
 		// Boss that spawns minions
 		radius: 32,
 		maxHp: 1100,
-		speed: 25,
+		speed: 125,
 		contactDamage: 15,
 		summonCooldown: 4,    // Seconds between summons
 		summonCount: 3,       // Enemies spawned per summon
