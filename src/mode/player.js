@@ -809,6 +809,18 @@ let gameMessageText = null;
 let gameMessageUntil = 0;
 let gameMessageStart = 0;
 
+// FPS tracking
+let fpsHistory = [];
+let lastFrameTime = performance.now();
+let currentFPS = 60;
+const MAX_FPS_HISTORY = 120; // Store 120 frames of history (~2 seconds at 60fps)
+
+// DPS tracking
+let damageHistory = []; // Array of { time, damage } entries
+let totalDamage = 0;
+let currentDPS = 0;
+const DPS_WINDOW_SECONDS = 1.0; // Calculate DPS over last 1 second
+
 function updateSize() {
 	let changed = false;
 	if (canvasWidth != window.innerWidth) {
@@ -835,6 +847,11 @@ function reset() {
 	gameMessageText = null;
 	gameMessageUntil = 0;
 	gameMessageStart = 0;
+	
+	// Reset DPS tracking
+	damageHistory = [];
+	totalDamage = 0;
+	currentDPS = 0;
 	
 	// Clear death effects
 	deathParticles.length = 0;
@@ -1218,6 +1235,169 @@ function paintDebugOverlay(ctx) {
 	for (let i = 0; i < lines.length; i++) {
 		ctx.fillText(lines[i], startX, startY + i * 14);
 	}
+	
+	ctx.restore();
+}
+
+function paintFPSDisplay(ctx) {
+	const GRAPH_WIDTH = 200;
+	const GRAPH_HEIGHT = 80;
+	const GRAPH_X = canvasWidth - GRAPH_WIDTH - 10;
+	const GRAPH_Y = canvasHeight - GRAPH_HEIGHT - 10;
+	const PADDING = 8;
+	
+	// Update DPS calculation periodically (clean up old entries)
+	const now = performance.now();
+	const cutoffTime = now - DPS_WINDOW_SECONDS * 1000;
+	while (damageHistory.length > 0 && damageHistory[0].time < cutoffTime) {
+		totalDamage -= damageHistory[0].damage;
+		damageHistory.shift();
+	}
+	if (damageHistory.length > 0) {
+		const timeSpan = (now - damageHistory[0].time) / 1000;
+		currentDPS = timeSpan > 0 ? Math.round(totalDamage / timeSpan) : 0;
+	} else {
+		currentDPS = 0;
+	}
+	
+	ctx.save();
+	
+	// Background
+	ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+	ctx.fillRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT);
+	
+	// Border
+	ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+	ctx.lineWidth = 1;
+	ctx.strokeRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT);
+	
+	// FPS Counter text
+	ctx.font = "bold 18px monospace";
+	ctx.textAlign = "left";
+	ctx.textBaseline = "top";
+	
+	// Color based on FPS
+	let fpsColor = "#00FF00"; // Green
+	if (currentFPS < 30) {
+		fpsColor = "#FF0000"; // Red
+	} else if (currentFPS < 50) {
+		fpsColor = "#FFAA00"; // Orange
+	} else if (currentFPS < 60) {
+		fpsColor = "#FFFF00"; // Yellow
+	}
+	
+	ctx.fillStyle = fpsColor;
+	ctx.fillText(`${currentFPS} FPS`, GRAPH_X + PADDING, GRAPH_Y + PADDING);
+	
+	// Graph area
+	const graphX = GRAPH_X + PADDING;
+	const graphY = GRAPH_Y + PADDING + 22;
+	const graphWidth = GRAPH_WIDTH - PADDING * 2;
+	const graphHeight = GRAPH_HEIGHT - PADDING * 2 - 20;
+	
+	// Draw grid lines
+	ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+	ctx.lineWidth = 1;
+	
+	// Horizontal lines (30, 60 FPS markers)
+	const fps30Y = graphY + graphHeight * (1 - 30 / 120);
+	const fps60Y = graphY + graphHeight * (1 - 60 / 120);
+	
+	ctx.beginPath();
+	ctx.moveTo(graphX, fps30Y);
+	ctx.lineTo(graphX + graphWidth, fps30Y);
+	ctx.stroke();
+	
+	ctx.beginPath();
+	ctx.moveTo(graphX, fps60Y);
+	ctx.lineTo(graphX + graphWidth, fps60Y);
+	ctx.stroke();
+	
+	// Draw FPS graph
+	if (fpsHistory.length > 1) {
+		ctx.strokeStyle = fpsColor;
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		
+		const maxFPS = 120;
+		const stepX = graphWidth / Math.max(1, fpsHistory.length - 1);
+		
+		for (let i = 0; i < fpsHistory.length; i++) {
+			const x = graphX + i * stepX;
+			const fps = fpsHistory[i];
+			const y = graphY + graphHeight * (1 - fps / maxFPS);
+			
+			if (i === 0) {
+				ctx.moveTo(x, y);
+			} else {
+				ctx.lineTo(x, y);
+			}
+		}
+		
+		ctx.stroke();
+		
+		// Fill area under graph
+		ctx.lineTo(graphX + (fpsHistory.length - 1) * stepX, graphY + graphHeight);
+		ctx.lineTo(graphX, graphY + graphHeight);
+		ctx.closePath();
+		ctx.fillStyle = fpsColor + "33"; // Add transparency
+		ctx.fill();
+	}
+	
+	// Min/Max/Avg FPS text
+	if (fpsHistory.length > 0) {
+		const minFPS = Math.min(...fpsHistory);
+		const maxFPS = Math.max(...fpsHistory);
+		const avgFPS = Math.round(fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length);
+		
+		ctx.font = "10px monospace";
+		ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+		ctx.textAlign = "left";
+		ctx.fillText(`Min: ${minFPS} | Max: ${maxFPS} | Avg: ${avgFPS}`, 
+			graphX, graphY + graphHeight + 12);
+	}
+	
+	ctx.restore();
+	
+	// DPS Display (below FPS graph)
+	const DPS_WIDTH = GRAPH_WIDTH;
+	const DPS_HEIGHT = 50;
+	const DPS_X = GRAPH_X;
+	const DPS_Y = GRAPH_Y - DPS_HEIGHT - 5;
+	
+	ctx.save();
+	
+	// Background
+	ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+	ctx.fillRect(DPS_X, DPS_Y, DPS_WIDTH, DPS_HEIGHT);
+	
+	// Border
+	ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+	ctx.lineWidth = 1;
+	ctx.strokeRect(DPS_X, DPS_Y, DPS_WIDTH, DPS_HEIGHT);
+	
+	// DPS Counter text
+	ctx.font = "bold 18px monospace";
+	ctx.textAlign = "left";
+	ctx.textBaseline = "top";
+	
+	// Color based on DPS (green for high, yellow/orange/red for lower)
+	let dpsColor = "#00FF00"; // Green
+	if (currentDPS < 50) {
+		dpsColor = "#FF0000"; // Red
+	} else if (currentDPS < 100) {
+		dpsColor = "#FFAA00"; // Orange
+	} else if (currentDPS < 200) {
+		dpsColor = "#FFFF00"; // Yellow
+	}
+	
+	ctx.fillStyle = dpsColor;
+	ctx.fillText(`${currentDPS} DPS`, DPS_X + PADDING, DPS_Y + PADDING);
+	
+	// Total damage text
+	ctx.font = "12px monospace";
+	ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+	ctx.fillText(`Total: ${Math.round(totalDamage)}`, DPS_X + PADDING, DPS_Y + PADDING + 20);
 	
 	ctx.restore();
 }
@@ -2172,6 +2352,7 @@ function getHoveredDroneCard(mouseX, mouseY) {
 
 // Level up effect is now handled by the levelUp renderer callback
 
+
 function paint(ctx) {
 	ctx.fillStyle = "#e2ebf3";
 	ctx.fillRect(0, 0, canvasWidth, canvasHeight);
@@ -2278,11 +2459,11 @@ function paint(ctx) {
 
 	// ===== LAYER 2: COINS =====
 	const coins = client.getCoins();
+	const t = Date.now() / 1000;
 	for (const coin of coins) {
 		if (coin.type === "boss") {
 			// Boss XP orb - large sparkling golden orb
 			const baseRadius = consts.COIN_RADIUS * 2.2;
-			const t = Date.now() / 1000;
 			const pulse = 0.85 + 0.15 * Math.sin(t * 3 + (coin.id || 0));
 			const orbRadius = baseRadius * pulse;
 			
@@ -2373,6 +2554,7 @@ function paint(ctx) {
 			ctx.beginPath();
 			ctx.arc(coin.x, coin.y, consts.COIN_RADIUS, 0, Math.PI * 2);
 			ctx.fill();
+			ctx.shadowBlur = 0;
 		}
 	}
 	ctx.shadowBlur = 0;
@@ -2484,6 +2666,7 @@ function paint(ctx) {
 	paintBottomXPBar(ctx);
 	paintPlayerStats(ctx);
 	paintDebugOverlay(ctx);
+	paintFPSDisplay(ctx);
 	
 	// Render upgrade selection UI if visible
 	if (upgradeUIVisible) {
@@ -2583,6 +2766,22 @@ function updateDeathStats() {
 }
 
 function paintDoubleBuff() {
+	// Track FPS
+	const now = performance.now();
+	const deltaTime = now - lastFrameTime;
+	if (deltaTime > 0) {
+		currentFPS = Math.round(1000 / deltaTime);
+		// Clamp FPS to reasonable range (0-120)
+		currentFPS = Math.max(0, Math.min(120, currentFPS));
+		
+		// Add to history
+		fpsHistory.push(currentFPS);
+		if (fpsHistory.length > MAX_FPS_HISTORY) {
+			fpsHistory.shift(); // Remove oldest entry
+		}
+	}
+	lastFrameTime = now;
+	
 	paint(offctx);
 	ctx.drawImage(offscreenCanvas, 0, 0);
 }
@@ -4422,9 +4621,22 @@ function renderEnemy(ctx, enemy) {
 	const style = ENEMY_STYLES[type] || ENEMY_STYLES.basic;
 	const isBoss = enemy.isBoss;
 	
-	// Boss aura effect (pulsing outer glow)
-	if (isBoss) {
-		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+	// Get distance for LOD (Level of Detail)
+	const dist = enemy._renderDistance || 0;
+	const isNear = dist < 400; // Within 400 units = full detail
+	const isMedium = dist < 800; // Within 800 units = medium detail
+	
+	// Get density info from context
+	const density = ctx._enemyDensity || {};
+	const isHighDensity = density.isHigh || false;
+	const isVeryHighDensity = density.isVeryHigh || false;
+	
+	// Cache time for this enemy (reuse from paint context if available)
+	const enemyTime = ctx._currentTime || Date.now();
+	
+	// Boss aura effect (pulsing outer glow) - skip when high density
+	if (isBoss && isNear && !isHighDensity) {
+		const pulse = 0.5 + 0.5 * Math.sin(enemyTime / 200);
 		ctx.strokeStyle = `rgba(255, 215, 0, ${0.3 + pulse * 0.4})`; // Golden aura
 		ctx.lineWidth = 4 + pulse * 3;
 		ctx.beginPath();
@@ -4432,18 +4644,20 @@ function renderEnemy(ctx, enemy) {
 		ctx.stroke();
 	}
 	
-	// Charging glow effect
-	if (enemy.isCharging) {
-		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 80);
+	// Charging glow effect - skip when high density
+	if (enemy.isCharging && isNear && !isHighDensity) {
+		const pulse = 0.5 + 0.5 * Math.sin(enemyTime / 80);
 		ctx.shadowBlur = 15 + pulse * 10;
 		ctx.shadowColor = style.color;
 	}
 	
-	// Shadow (larger for bosses)
-	ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
-	ctx.beginPath();
-	ctx.arc(enemy.x + (isBoss ? 4 : 2), enemy.y + (isBoss ? 4 : 2), enemy.radius, 0, Math.PI * 2);
-	ctx.fill();
+	// Shadow (larger for bosses) - skip for distant enemies and high density
+	if (isMedium && !isVeryHighDensity) {
+		ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+		ctx.beginPath();
+		ctx.arc(enemy.x + (isBoss ? 4 : 2), enemy.y + (isBoss ? 4 : 2), enemy.radius, 0, Math.PI * 2);
+		ctx.fill();
+	}
 	
 	// Body
 	ctx.fillStyle = style.color;
@@ -4478,138 +4692,143 @@ function renderEnemy(ctx, enemy) {
 		ctx.strokeRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4);
 	}
 	
-	// Type-specific visuals
-	if (type === 'charger') {
-		// Arrow indicator showing charge direction
-		if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
-			const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
-			if (speed > 0) {
-				const angle = Math.atan2(enemy.vy, enemy.vx);
-				ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
-				ctx.lineWidth = 3;
-				ctx.beginPath();
-				ctx.moveTo(enemy.x, enemy.y);
-				ctx.lineTo(
-					enemy.x + Math.cos(angle) * enemy.radius * 1.5,
-					enemy.y + Math.sin(angle) * enemy.radius * 1.5
-				);
-				ctx.stroke();
+	// Type-specific visuals - only render when near and not high density
+	if (isNear && !isHighDensity) {
+		if (type === 'charger') {
+			// Arrow indicator showing charge direction
+			if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
+				const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
+				if (speed > 0) {
+					const angle = Math.atan2(enemy.vy, enemy.vx);
+					ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+					ctx.lineWidth = 3;
+					ctx.beginPath();
+					ctx.moveTo(enemy.x, enemy.y);
+					ctx.lineTo(
+						enemy.x + Math.cos(angle) * enemy.radius * 1.5,
+						enemy.y + Math.sin(angle) * enemy.radius * 1.5
+					);
+					ctx.stroke();
+				}
 			}
+		} else if (type === 'tank') {
+			// Inner ring for tanks
+			ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+			ctx.lineWidth = 3;
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.6, 0, Math.PI * 2);
+			ctx.stroke();
+		} else if (type === 'swarm') {
+			// Small dot in center for swarm
+			ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.3, 0, Math.PI * 2);
+			ctx.fill();
+		} else if (type === 'sniper') {
+			// Crosshair/scope indicator for sniper
+			ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+			ctx.lineWidth = 2;
+			const crossSize = enemy.radius * 0.7;
+			// Vertical line
+			ctx.beginPath();
+			ctx.moveTo(enemy.x, enemy.y - crossSize);
+			ctx.lineTo(enemy.x, enemy.y + crossSize);
+			ctx.stroke();
+			// Horizontal line
+			ctx.beginPath();
+			ctx.moveTo(enemy.x - crossSize, enemy.y);
+			ctx.lineTo(enemy.x + crossSize, enemy.y);
+			ctx.stroke();
+			// Small center circle
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25, 0, Math.PI * 2);
+			ctx.stroke();
 		}
-	} else if (type === 'tank') {
-		// Inner ring for tanks
-		ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
-		ctx.lineWidth = 3;
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.6, 0, Math.PI * 2);
-		ctx.stroke();
-	} else if (type === 'swarm') {
-		// Small dot in center for swarm
-		ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.3, 0, Math.PI * 2);
-		ctx.fill();
-	} else if (type === 'sniper') {
-		// Crosshair/scope indicator for sniper
-		ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
-		ctx.lineWidth = 2;
-		const crossSize = enemy.radius * 0.7;
-		// Vertical line
-		ctx.beginPath();
-		ctx.moveTo(enemy.x, enemy.y - crossSize);
-		ctx.lineTo(enemy.x, enemy.y + crossSize);
-		ctx.stroke();
-		// Horizontal line
-		ctx.beginPath();
-		ctx.moveTo(enemy.x - crossSize, enemy.y);
-		ctx.lineTo(enemy.x + crossSize, enemy.y);
-		ctx.stroke();
-		// Small center circle
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25, 0, Math.PI * 2);
-		ctx.stroke();
 	}
 	
 	// ===== BOSS-SPECIFIC VISUALS =====
-	if (type === 'titan') {
-		// Multiple concentric rings for titan
-		ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-		ctx.lineWidth = 3;
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.7, 0, Math.PI * 2);
-		ctx.stroke();
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.4, 0, Math.PI * 2);
-		ctx.stroke();
-		// X mark in center
-		ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
-		ctx.lineWidth = 4;
-		const xSize = enemy.radius * 0.25;
-		ctx.beginPath();
-		ctx.moveTo(enemy.x - xSize, enemy.y - xSize);
-		ctx.lineTo(enemy.x + xSize, enemy.y + xSize);
-		ctx.moveTo(enemy.x + xSize, enemy.y - xSize);
-		ctx.lineTo(enemy.x - xSize, enemy.y + xSize);
-		ctx.stroke();
-	} else if (type === 'berserker') {
-		// Aggressive spikes around berserker
-		ctx.strokeStyle = "rgba(255, 100, 100, 0.8)";
-		ctx.lineWidth = 3;
-		const spikeCount = 6;
-		for (let i = 0; i < spikeCount; i++) {
-			const angle = (i / spikeCount) * Math.PI * 2 + Date.now() / 500;
-			const innerR = enemy.radius * 0.8;
-			const outerR = enemy.radius * 1.2;
+	// Only render complex boss visuals when near and not high density
+	if (isNear && isBoss && !isHighDensity) {
+		if (type === 'titan') {
+			// Multiple concentric rings for titan
+			ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+			ctx.lineWidth = 3;
 			ctx.beginPath();
-			ctx.moveTo(
-				enemy.x + Math.cos(angle) * innerR,
-				enemy.y + Math.sin(angle) * innerR
-			);
-			ctx.lineTo(
-				enemy.x + Math.cos(angle) * outerR,
-				enemy.y + Math.sin(angle) * outerR
-			);
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.7, 0, Math.PI * 2);
 			ctx.stroke();
-		}
-		// Charge direction indicator when charging
-		if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
-			const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
-			if (speed > 0) {
-				const angle = Math.atan2(enemy.vy, enemy.vx);
-				ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-				ctx.lineWidth = 5;
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.4, 0, Math.PI * 2);
+			ctx.stroke();
+			// X mark in center
+			ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+			ctx.lineWidth = 4;
+			const xSize = enemy.radius * 0.25;
+			ctx.beginPath();
+			ctx.moveTo(enemy.x - xSize, enemy.y - xSize);
+			ctx.lineTo(enemy.x + xSize, enemy.y + xSize);
+			ctx.moveTo(enemy.x + xSize, enemy.y - xSize);
+			ctx.lineTo(enemy.x - xSize, enemy.y + xSize);
+			ctx.stroke();
+		} else if (type === 'berserker') {
+			// Aggressive spikes around berserker
+			ctx.strokeStyle = "rgba(255, 100, 100, 0.8)";
+			ctx.lineWidth = 3;
+			const spikeCount = 6;
+			for (let i = 0; i < spikeCount; i++) {
+				const angle = (i / spikeCount) * Math.PI * 2 + enemyTime / 500;
+				const innerR = enemy.radius * 0.8;
+				const outerR = enemy.radius * 1.2;
 				ctx.beginPath();
-				ctx.moveTo(enemy.x, enemy.y);
+				ctx.moveTo(
+					enemy.x + Math.cos(angle) * innerR,
+					enemy.y + Math.sin(angle) * innerR
+				);
 				ctx.lineTo(
-					enemy.x + Math.cos(angle) * enemy.radius * 1.8,
-					enemy.y + Math.sin(angle) * enemy.radius * 1.8
+					enemy.x + Math.cos(angle) * outerR,
+					enemy.y + Math.sin(angle) * outerR
 				);
 				ctx.stroke();
 			}
+			// Charge direction indicator when charging
+			if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
+				const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
+				if (speed > 0) {
+					const angle = Math.atan2(enemy.vy, enemy.vx);
+					ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+					ctx.lineWidth = 5;
+					ctx.beginPath();
+					ctx.moveTo(enemy.x, enemy.y);
+					ctx.lineTo(
+						enemy.x + Math.cos(angle) * enemy.radius * 1.8,
+						enemy.y + Math.sin(angle) * enemy.radius * 1.8
+					);
+					ctx.stroke();
+				}
+			}
+		} else if (type === 'summoner') {
+			// Magical runes/circles for summoner
+			const time = enemyTime / 1000;
+			ctx.strokeStyle = "rgba(200, 100, 255, 0.6)";
+			ctx.lineWidth = 2;
+			// Rotating outer ring
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.85, time, time + Math.PI * 1.5);
+			ctx.stroke();
+			// Counter-rotating inner ring
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.5, -time * 1.5, -time * 1.5 + Math.PI);
+			ctx.stroke();
+			// Pulsing center orb
+			const pulse = 0.5 + 0.5 * Math.sin(time * 3);
+			ctx.fillStyle = `rgba(200, 100, 255, ${0.4 + pulse * 0.4})`;
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25 + pulse * 3, 0, Math.PI * 2);
+			ctx.fill();
 		}
-	} else if (type === 'summoner') {
-		// Magical runes/circles for summoner
-		const time = Date.now() / 1000;
-		ctx.strokeStyle = "rgba(200, 100, 255, 0.6)";
-		ctx.lineWidth = 2;
-		// Rotating outer ring
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.85, time, time + Math.PI * 1.5);
-		ctx.stroke();
-		// Counter-rotating inner ring
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.5, -time * 1.5, -time * 1.5 + Math.PI);
-		ctx.stroke();
-		// Pulsing center orb
-		const pulse = 0.5 + 0.5 * Math.sin(time * 3);
-		ctx.fillStyle = `rgba(200, 100, 255, ${0.4 + pulse * 0.4})`;
-		ctx.beginPath();
-		ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25 + pulse * 3, 0, Math.PI * 2);
-		ctx.fill();
 	}
 	
-	// Non-boss enemy HP outline (when enabled)
-	if (!isBoss && showEnemyHealthBars && enemy.hp < enemy.maxHp) {
+	// Non-boss enemy HP outline (when enabled) - only when near
+	if (!isBoss && isNear && showEnemyHealthBars && enemy.hp < enemy.maxHp) {
 		renderEnemyHpOutline(ctx, enemy);
 	}
 	
@@ -4637,9 +4856,75 @@ function renderEnemyHpOutline(ctx, enemy) {
 
 function renderEnemies(ctx) {
 	const enemyList = client.getEnemies();
+	
+	// Calculate viewport bounds for culling (reuse from paint function context)
+	// We need to calculate it here since we don't have direct access to offset/zoom
+	// Get viewport from the current transform context
+	const viewportLeft = offset[0] - consts.BORDER_WIDTH - 150; // Add padding for enemies near edge
+	const viewportRight = offset[0] - consts.BORDER_WIDTH + gameWidth / zoom + 150;
+	const viewportTop = offset[1] - consts.BORDER_WIDTH - 150;
+	const viewportBottom = offset[1] - consts.BORDER_WIDTH + gameHeight / zoom + 150;
+	
+	const playerX = user ? user.x : 0;
+	const playerY = user ? user.y : 0;
+	const NEAR_RADIUS = 400;
+	const NEAR_RADIUS_SQ = NEAR_RADIUS * NEAR_RADIUS;
+	
+	// Count nearby enemies to detect high density
+	let nearbyEnemyCount = 0;
+	let nearbyBossCount = 0;
+	
+	// First pass: count nearby enemies
 	for (const enemy of enemyList) {
+		const enemyRadius = enemy.radius || 10;
+		if (enemy.x + enemyRadius < viewportLeft || enemy.x - enemyRadius > viewportRight || 
+		    enemy.y + enemyRadius < viewportTop || enemy.y - enemyRadius > viewportBottom) {
+			continue;
+		}
+		const dx = enemy.x - playerX;
+		const dy = enemy.y - playerY;
+		const distSq = dx * dx + dy * dy;
+		if (distSq < NEAR_RADIUS_SQ) {
+			nearbyEnemyCount++;
+			if (enemy.isBoss) nearbyBossCount++;
+		}
+	}
+	
+	// Determine rendering quality based on density
+	const HIGH_ENEMY_DENSITY_THRESHOLD = 20; // More than 20 nearby enemies = high density
+	const VERY_HIGH_ENEMY_DENSITY_THRESHOLD = 40; // More than 40 = very high density
+	const isHighEnemyDensity = nearbyEnemyCount > HIGH_ENEMY_DENSITY_THRESHOLD;
+	const isVeryHighEnemyDensity = nearbyEnemyCount > VERY_HIGH_ENEMY_DENSITY_THRESHOLD;
+	
+	// Store density info and cached time for renderEnemy
+	ctx._enemyDensity = {
+		isHigh: isHighEnemyDensity,
+		isVeryHigh: isVeryHighEnemyDensity,
+		nearbyCount: nearbyEnemyCount
+	};
+	ctx._currentTime = Date.now(); // Cache time for all enemies
+	
+	// Render enemies
+	for (const enemy of enemyList) {
+		// Viewport culling: skip enemies outside visible area
+		const enemyRadius = enemy.radius || 10;
+		if (enemy.x + enemyRadius < viewportLeft || enemy.x - enemyRadius > viewportRight || 
+		    enemy.y + enemyRadius < viewportTop || enemy.y - enemyRadius > viewportBottom) {
+			continue;
+		}
+		
+		// Calculate distance from player for LOD
+		const dx = enemy.x - playerX;
+		const dy = enemy.y - playerY;
+		const distSq = dx * dx + dy * dy;
+		const dist = Math.sqrt(distSq);
+		enemy._renderDistance = dist; // Store for use in renderEnemy
+		
 		renderEnemy(ctx, enemy);
 	}
+	
+	// Clean up
+	delete ctx._enemyDensity;
 }
 
 // ===== DRONE RENDERING =====
@@ -5512,6 +5797,28 @@ export function playerWasKilled(killerName, killType) {
 
 // Hitscan visual effect handler (called from game-client)
 export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typeColor, isCrit, isChain, isExplosion) {
+	// Track damage for DPS calculation (only for local player)
+	if (user && ownerId === user.num && damage > 0) {
+		const now = performance.now();
+		damageHistory.push({ time: now, damage: damage });
+		totalDamage += damage;
+		
+		// Remove old entries outside the time window
+		const cutoffTime = now - DPS_WINDOW_SECONDS * 1000;
+		while (damageHistory.length > 0 && damageHistory[0].time < cutoffTime) {
+			totalDamage -= damageHistory[0].damage;
+			damageHistory.shift();
+		}
+		
+		// Calculate current DPS
+		if (damageHistory.length > 0) {
+			const timeSpan = (now - damageHistory[0].time) / 1000;
+			currentDPS = timeSpan > 0 ? Math.round(totalDamage / timeSpan) : 0;
+		} else {
+			currentDPS = 0;
+		}
+	}
+	
 	if (isExplosion) {
 		spawnExplosionEffect(toX, toY);
 		// Show damage number for explosion hits
@@ -5750,6 +6057,19 @@ export function missileRemove(id) {
 const stickyDetonations = [];
 
 export function stickyChargeDetonate(x, y, damage, charges, ownerId) {
+	// Track damage for DPS calculation
+	if (user && ownerId === user.num && damage > 0) {
+		const now = performance.now();
+		damageHistory.push({ time: now, damage: damage });
+		totalDamage += damage;
+		
+		const cutoffTime = now - DPS_WINDOW_SECONDS * 1000;
+		while (damageHistory.length > 0 && damageHistory[0].time < cutoffTime) {
+			totalDamage -= damageHistory[0].damage;
+			damageHistory.shift();
+		}
+	}
+	
 	stickyDetonations.push({
 		x, y, damage, charges,
 		spawnTime: Date.now(),
@@ -5763,6 +6083,34 @@ export function stickyChargeDetonate(x, y, damage, charges, ownerId) {
 const arcBarrageEffects = [];
 
 export function arcBarrageBurst(x, y, radius, playerNum, damage, hitCount, hits = []) {
+	// Track damage for DPS calculation
+	if (user && playerNum === user.num) {
+		const now = performance.now();
+		let totalHitDamage = 0;
+		
+		if (Array.isArray(hits) && hits.length > 0) {
+			for (const hit of hits) {
+				if (!hit) continue;
+				const hitDamage = hit.damage ?? damage;
+				totalHitDamage += hitDamage;
+			}
+		} else {
+			// Fallback to damage * hitCount if hits array not provided
+			totalHitDamage = damage * hitCount;
+		}
+		
+		if (totalHitDamage > 0) {
+			damageHistory.push({ time: now, damage: totalHitDamage });
+			totalDamage += totalHitDamage;
+			
+			const cutoffTime = now - DPS_WINDOW_SECONDS * 1000;
+			while (damageHistory.length > 0 && damageHistory[0].time < cutoffTime) {
+				totalDamage -= damageHistory[0].damage;
+				damageHistory.shift();
+			}
+		}
+	}
+	
 	arcBarrageEffects.push({
 		x, y, radius,
 		spawnTime: Date.now(),
