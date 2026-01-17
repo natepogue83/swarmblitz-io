@@ -1,7 +1,7 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import Enemy from "./core/enemy.js";
 import EnemySpawner, { ENEMY_TYPES, BOSS_TYPES } from "./core/enemy-spawner.js";
-import { ENEMY_SCALING, ENEMY_XP_DROP } from "./core/enemy-knobs.js";
+import { ENEMY_SCALING, ENEMY_XP_DROP, ENEMY_SPAWN_LIMITS } from "./core/enemy-knobs.js";
 import { consts } from "../config.js";
 import { MSG } from "./net/packet.js";
 import { rollUpgradeChoices, selectUpgrade, initPlayerUpgrades, serializeUpgrades, recalculateDerivedStats } from "./core/upgrade-system.js";
@@ -1878,14 +1878,29 @@ function Game(id) {
 			}
 		}
 		
-		const spawnResult = enemySpawner.update(deltaSeconds, activePlayer, mapSize);
-		const enemySpawns = spawnResult.enemies || spawnResult; // Handle both old and new format
-		const bossSpawns = spawnResult.bosses || [];
+	const spawnResult = enemySpawner.update(deltaSeconds, activePlayer, mapSize);
+	const enemySpawns = spawnResult.enemies || spawnResult; // Handle both old and new format
+	const bossSpawns = spawnResult.bosses || [];
+	
+	// Count existing enemies by type (for spawn limit)
+	const enemyCountByType = new Map();
+	for (const enemy of enemies) {
+		if (enemy.isBoss) continue; // Don't count bosses toward regular enemy limit
+		const type = enemy.type || 'basic';
+		enemyCountByType.set(type, (enemyCountByType.get(type) || 0) + 1);
+	}
+	
+	// Spawn regular enemies
+	for (const spawn of enemySpawns) {
+		const typeName = spawn.type || 'basic';
 		
-		// Spawn regular enemies
-		for (const spawn of enemySpawns) {
-			const typeName = spawn.type || 'basic';
-			const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
+		// Check if we've hit the limit for this type
+		const currentCount = enemyCountByType.get(typeName) || 0;
+		if (currentCount >= ENEMY_SPAWN_LIMITS.maxPerType) {
+			continue; // Skip spawning this enemy
+		}
+		
+		const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
 			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
 			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
 			const maxHp = Math.max(1, typeData.maxHp * hpScale);
@@ -1914,17 +1929,34 @@ function Game(id) {
 				enemy.isCharging = false;
 				enemy.chargeTargetX = 0;
 				enemy.chargeTargetY = 0;
-			} else if (typeName === 'sniper') {
-				enemy.preferredDistance = typeData.preferredDistance;
-			}
-			
-			enemies.push(enemy);
+		} else if (typeName === 'sniper') {
+			enemy.preferredDistance = typeData.preferredDistance;
 		}
 		
-		// Spawn bosses
-		for (const spawn of bossSpawns) {
-			const bossType = spawn.type || 'titan';
-			const bossData = BOSS_TYPES[bossType] || BOSS_TYPES.titan;
+		enemies.push(enemy);
+		// Update count for this type
+		enemyCountByType.set(typeName, (enemyCountByType.get(typeName) || 0) + 1);
+	}
+		
+	// Count existing bosses by type (for spawn limit)
+	const bossCountByType = new Map();
+	for (const enemy of enemies) {
+		if (!enemy.isBoss) continue;
+		const type = enemy.type || 'titan';
+		bossCountByType.set(type, (bossCountByType.get(type) || 0) + 1);
+	}
+	
+	// Spawn bosses
+	for (const spawn of bossSpawns) {
+		const bossType = spawn.type || 'titan';
+		
+		// Check if we've hit the limit for this boss type
+		const currentCount = bossCountByType.get(bossType) || 0;
+		if (currentCount >= ENEMY_SPAWN_LIMITS.maxPerType) {
+			continue; // Skip spawning this boss
+		}
+		
+		const bossData = BOSS_TYPES[bossType] || BOSS_TYPES.titan;
 			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
 			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
 			const maxHp = Math.max(1, bossData.maxHp * hpScale);
@@ -1960,15 +1992,17 @@ function Game(id) {
 				boss.summonCount = bossData.summonCount;
 				boss.preferredDistance = bossData.preferredDistance;
 				boss.lastSummonTime = 0;
-			}
-			
-			enemies.push(boss);
-			
-			// Boss spawn alert
-			economyDeltas.gameMessages.push({
-				text: "SwarmBlitz!",
-				duration: 2.5
-			});
+		}
+		
+		enemies.push(boss);
+		// Update count for this boss type
+		bossCountByType.set(bossType, (bossCountByType.get(bossType) || 0) + 1);
+		
+		// Boss spawn alert
+		economyDeltas.gameMessages.push({
+			text: "SwarmBlitz!",
+			duration: 2.5
+		});
 		}
 		
 		if (activePlayer && !activePlayer.dead) {

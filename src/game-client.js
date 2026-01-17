@@ -2,6 +2,7 @@ import { Player, initPlayer, updateFrame, polygonArea } from "./core/index.js";
 import { consts, config } from "../config.js";
 import { MSG, encodePacket, decodePacket } from "./net/packet.js";
 import * as SoundManager from "./sound-manager.js";
+import { createLocalSession } from "./local-session.js";
 
 // Helper to calculate XP needed for a level
 function getXpForLevel(level) {
@@ -20,6 +21,7 @@ let healPacksById = new Map(); // Stores all active heal packs keyed by id (Supp
 let enemies = [];
 let enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 let kills;
+let useLocalSession = false; // Track if using local session vs WebSocket
 
 // Upgrade system state
 let upgradeChoices = null; // Current upgrade choices shown to player
@@ -41,6 +43,16 @@ let lastZoom = 1;
 let mouseSet = false;
 let viewOffset = { x: 0, y: 0 };
 const clientTickRate = config.netTickRate || config.serverTickRate || config.fps || 60;
+
+// Helper to send a message (handles both local and WebSocket mode)
+function sendMessage(type, payload) {
+	if (!socket || socket.readyState !== 1) return;
+	if (useLocalSession) {
+		socket.send([type, payload]);
+	} else {
+		socket.send(encodePacket(type, payload));
+	}
+}
 
 // WASD keyboard control state
 let wasdKeys = { w: false, a: false, s: false, d: false };
@@ -67,20 +79,38 @@ function connectGame(wsUrl, name, callback) {
 	const names = consts.NAMES.split(" ");
 	name = name || [prefixes[Math.floor(Math.random() * prefixes.length)], names[Math.floor(Math.random() * names.length)]].join(" ");
 	
-	socket = new WebSocket(wsUrl);
-	socket.binaryType = "arraybuffer";
+	// Use local session if no wsUrl provided (client-only mode)
+	useLocalSession = !wsUrl;
+	
+	if (useLocalSession) {
+		socket = createLocalSession();
+		console.info("Starting local single-player game...");
+	} else {
+		socket = new WebSocket(wsUrl);
+		socket.binaryType = "arraybuffer";
+	}
 	
 	socket.addEventListener("open", () => {
-		console.info("Connected to server.");
-		socket.send(encodePacket(MSG.HELLO, {
+		console.info(useLocalSession ? "Local session ready." : "Connected to server.");
+		// Send HELLO message
+		sendMessage(MSG.HELLO, {
 			name: name,
 			type: 0,
 			gameid: -1
-		}));
+		});
 	});
 	
 	socket.addEventListener("message", (event) => {
-		const [type, data] = decodePacket(event.data);
+		// Decode message based on session type
+		let type, data;
+		if (useLocalSession) {
+			// LocalSession passes plain objects
+			[type, data] = event.data;
+		} else {
+			// WebSocket uses msgpack
+			[type, data] = decodePacket(event.data);
+		}
+		
 		if (type === MSG.HELLO_ACK) {
 			if (data?.ok) {
 				console.info("Connected to game!");
@@ -123,7 +153,7 @@ function connectGame(wsUrl, name, callback) {
 	});
 	
 	socket.addEventListener("close", () => {
-		console.info("Server has disconnected. Creating new game.");
+		console.info(useLocalSession ? "Local session ended." : "Server has disconnected.");
 		if (!user) return;
 		user.die();
 		dirty = true;
@@ -133,7 +163,7 @@ function connectGame(wsUrl, name, callback) {
 	});
 	
 	socket.addEventListener("error", () => {
-		console.error("WebSocket error");
+		console.error(useLocalSession ? "Local session error" : "WebSocket error");
 	});
 }
 
@@ -305,12 +335,10 @@ function sendTargetAngle() {
 		user.targetAngle = targetAngle;
 	}
 	
-	if (socket.readyState === WebSocket.OPEN) {
-		socket.send(encodePacket(MSG.INPUT, {
-			frame: frame,
-			targetAngle: targetAngle
-		}));
-	}
+	sendMessage(MSG.INPUT, {
+		frame: frame,
+		targetAngle: targetAngle
+	});
 }
 
 function getUser() {
@@ -383,9 +411,7 @@ function processFrame(data) {
 	
 	if (data.frame - 1 !== frame) {
 		console.error("Frames don't match up!");
-		if (socket && socket.readyState === WebSocket.OPEN) {
-			socket.send(encodePacket(MSG.REQUEST));
-		}
+		sendMessage(MSG.REQUEST, null);
 		requesting = data.frame;
 		frameCache.push(data);
 		return;
@@ -859,7 +885,7 @@ function setKeyState(key, pressed) {
 
 // Upgrade system functions
 function selectUpgrade(upgradeId) {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	if (!socket || socket.readyState !== 1) return;
 	if (!upgradeChoices || !gamePaused) return;
 	
 	// Validate the selection is one of the choices
@@ -870,7 +896,7 @@ function selectUpgrade(upgradeId) {
 	}
 	
 	// Send selection to server
-	socket.send(encodePacket(MSG.UPGRADE_PICK, { upgradeId }));
+	sendMessage(MSG.UPGRADE_PICK, { upgradeId });
 	
 	// Clear local state - unpause now, if drone choice follows it will re-pause
 	upgradeChoices = null;
@@ -882,7 +908,7 @@ function selectUpgrade(upgradeId) {
 
 // Drone type selection functions
 function selectDrone(droneTypeId) {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	if (!socket || socket.readyState !== 1) return;
 	if (!droneChoices || !gamePaused) return;
 	
 	// Validate the selection is one of the choices
@@ -893,7 +919,7 @@ function selectDrone(droneTypeId) {
 	}
 	
 	// Send selection to server
-	socket.send(encodePacket(MSG.DRONE_PICK, { droneTypeId }));
+	sendMessage(MSG.DRONE_PICK, { droneTypeId });
 	
 	// Clear local state (server will resume)
 	droneChoices = null;
@@ -919,45 +945,36 @@ function isGamePaused() {
 function setGamePaused(paused) {
 	gamePaused = paused;
 	// Send pause state to server so it stops simulation
-	if (socket && socket.readyState === WebSocket.OPEN) {
-		socket.send(encodePacket(MSG.PAUSE, { paused }));
-	}
+	sendMessage(MSG.PAUSE, { paused });
 }
 
 // ===== DEV CONSOLE COMMANDS =====
 function devGiveXP(amount) {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'giveXP', amount }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'giveXP', amount });
 }
 
 function devSetLevel(level) {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'setLevel', level }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'setLevel', level });
 }
 
 function devGiveUpgrade(upgradeId) {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'giveUpgrade', upgradeId }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'giveUpgrade', upgradeId });
 }
 
 function devHeal() {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'heal' }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'heal' });
 }
 
 function devGodMode() {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'godMode' }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'godMode' });
 }
 
 function devAddDrone(droneTypeId) {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'addDrone', droneTypeId }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'addDrone', droneTypeId });
 }
 
 function devClearDrones() {
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
-	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'clearDrones' }));
+	sendMessage(MSG.DEV_CMD, { cmd: 'clearDrones' });
 }
 
 // Export stuff

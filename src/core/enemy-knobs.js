@@ -137,6 +137,16 @@ export const ENEMY_SPAWN_RATE = {
 };
 
 // ============================================================================
+// SPAWN LIMITS
+// ============================================================================
+
+export const ENEMY_SPAWN_LIMITS = {
+	// Maximum number of enemies of each type that can be alive at once.
+	// Prevents performance issues from excessive enemy buildup.
+	maxPerType: 50
+};
+
+// ============================================================================
 // TIME-BASED ENEMY SCALING
 // ============================================================================
 

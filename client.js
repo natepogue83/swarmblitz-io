@@ -2,7 +2,6 @@ import jquery from "jquery";
 import * as client from "./src/game-client";
 import * as playerRenderer from "./src/mode/player";
 import * as SoundManager from "./src/sound-manager.js";
-import { MSG, encodePacket, decodePacket } from "./src/net/packet.js";
 
 const $ = jquery;
 
@@ -24,8 +23,8 @@ function run() {
 	SoundManager.stopMenuMusic();
 	
 	client.setRenderer(playerRenderer);
-	const wsUrl = getWsUrl();
-	client.connectGame(wsUrl, $("#name").val(), (success, msg) => {
+	// Use local session (no wsUrl = client-only mode)
+	client.connectGame(null, $("#name").val(), (success, msg) => {
 		if (success) {
 			$("#main-ui").fadeIn(1000);
 			$("#begin, #wasted").fadeOut(1000);
@@ -40,6 +39,7 @@ function run() {
 	});
 }
 
+// Kept for potential future multiplayer mode
 function getWsUrl() {
 	const protocol = location.protocol === "https:" ? "wss" : "ws";
 	return `${protocol}://${location.host}/ws`;
@@ -63,33 +63,14 @@ $(() => {
 	document.addEventListener("click", initOnInteraction);
 	document.addEventListener("keydown", initOnInteraction);
 	
-	(() => {
-		const wsUrl = getWsUrl();
-		const socket = new WebSocket(wsUrl);
-		socket.binaryType = "arraybuffer";
-		
-		socket.addEventListener("open", () => {
-			socket.send(encodePacket(MSG.PING));
-		});
-		
-		socket.addEventListener("message", (event) => {
-			const [type] = decodePacket(event.data);
-			if (type === MSG.PONG) {
-				socket.close();
-				err.text("All done, have fun!");
-				$("#name").on("keypress", evt => {
-					if (evt.key === "Enter") run();
-				});
-				$(".start").removeAttr("disabled").on("click", evt => {
-					run();
-				});
-			}
-		});
-		
-		socket.addEventListener("error", () => {
-			err.text("Cannot connect with server. This probably is due to misconfigured proxy server. (Try using a different browser)");
-		});
-	})();
+	// Local single-player mode - no server ping needed
+	err.text("Ready to play!");
+	$("#name").on("keypress", evt => {
+		if (evt.key === "Enter") run();
+	});
+	$(".start").removeAttr("disabled").on("click", evt => {
+		run();
+	});
 });
 
 // Mouse-based controls are now handled in src/mode/player.js

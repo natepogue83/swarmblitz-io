@@ -1,13 +1,14 @@
 # SwarmBlitz.io
 
-A multiplayer territory-capture game inspired by Paper.io 2, featuring free movement and mouse-based controls.
+A single-player territory-capture game inspired by Paper.io 2, featuring free movement, mouse-based controls, and PvE combat with drones and upgrades.
 
 ## Features
 
 - **Free Movement**: Smooth, continuous movement using mouse controls (not grid-based)
 - **Territory Capture**: Claim territory by making loops back to your base
-- **Multiplayer**: Real-time multiplayer with Socket.io
-- **Bots**: AI opponents to play against
+- **Client-Only Gameplay**: Runs entirely in the browser with local simulation for maximum performance
+- **PvE Combat**: Fight waves of enemies with your drone swarm
+- **Progression System**: Level up, unlock upgrades, and build your perfect drone loadout
 
 ## Screenshots
 
@@ -29,11 +30,13 @@ npm install
 ## Running the Game
 
 ```bash
-# Build and start the server
+# Build and start the local server (for hosting files only)
 npm start
 ```
 
 Then open your browser to `http://localhost:8083`
+
+The game runs entirely client-side in your browser - the server only hosts static files. All gameplay simulation happens locally for optimal performance.
 
 ## How to Play
 
@@ -46,10 +49,11 @@ Then open your browser to `http://localhost:8083`
 ## Configuration
 
 Edit `config.js` to customize:
-- `port`: Server port (default: 8083)
-- `bots`: Number of AI bots
+- `port`: Static file server port (default: 8083)
 - `GRID_COUNT`: Map size
 - `SPEED`: Player movement speed
+- `serverTickRate`: Simulation tick rate (default: 60 fps)
+- Enemy spawn rates, drone stats, and more
 
 **Note: Run `npm run build` after editing config.js**
 
@@ -59,9 +63,14 @@ Edit `config.js` to customize:
 # Build client bundle
 npm run build
 
-# Start server
+# Start local file server
 node server.js
+
+# Or use dev mode with auto-rebuild
+npm run dev
 ```
+
+The game logic runs entirely in the browser via `src/local-session.js`, which creates an in-memory game instance without any network communication.
 
 ## Credits
 
