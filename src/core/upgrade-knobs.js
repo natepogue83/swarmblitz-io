@@ -11,8 +11,8 @@
 
 export const RARITY_WEIGHTS = {
 	basic: 60,          // 60% chance for basic upgrades
-	rare: 32,           // 32% chance for rare upgrades
-	legendary: 8        // 8% chance for legendary upgrades
+	rare: 35,           // 32% chance for rare upgrades
+	legendary: 5        // 8% chance for legendary upgrades
 };
 
 export const RARITY_LIMITS = {
@@ -20,7 +20,7 @@ export const RARITY_LIMITS = {
 };
 
 export const RARITY_COLORS = {
-	basic: '#9E9E9E',      // Gray
+	basic: '#249f33',      // Gray
 	rare: '#2196F3',       // Blue  
 	legendary: '#FFD700'   // Gold
 };
@@ -42,11 +42,11 @@ export const PROC_COEFFICIENTS = {
 	default: 1.0,
 	rapidChainHit: 0.25,
 	explosiveRounds: 0.25,
-	chainLightning: 0.35,
+	chainLightning: 0.25,
 	arcBarrage: 0.25,
-	heatseekerDrones: 0.45,
-	stickyCharge: 0.25,
-	stickyChargeSplash: 0.15
+	heatseekerDrones: 0.35,
+	stickyCharge: 0.05,
+	stickyChargeSplash: 0.05
 };
 
 // ============================================================================
@@ -68,7 +68,7 @@ export const VITALITY = {
 };
 
 export const SWIFT_FEET = {
-	speedPerStack: 0.08,        // +8% move speed per stack (with diminishing returns)
+	speedPerStack: 0.10,        // +10% move speed per stack (with diminishing returns)
 	usesDiminishing: true
 };
 
@@ -77,12 +77,12 @@ export const ENDURANCE = {
 };
 
 export const QUICK_RECOVERY = {
-	staminaRegenPerStack: 0.30  // +30% stamina regen per stack
+	staminaRegenPerStack: 1  // +1000% stamina regen per stack
 };
 
 export const MULTISHOT = {
 	projectilesPerStack: 1,     // +1 projectile per stack
-	projectileDelayMs: 60       // Stagger extra shots for visual clarity
+	projectileDelayMs: 80       // Stagger extra shots for visual clarity
 };
 
 export const CRITICAL_STRIKE = {
@@ -91,13 +91,13 @@ export const CRITICAL_STRIKE = {
 };
 
 export const LIFE_STEAL = {
-	lifeStealPerStack: 0.001,   // +0.1% HP on hit per stack (with diminishing returns)
+	lifeStealPerStack: 0.0015,   // +0.15% HP on hit per stack (with diminishing returns)
 	usesDiminishing: true
 };
 
 export const SCAVENGER = {
 	pickupRadiusBonus: 1.0,     // +100% pickup radius
-	doubleDropChance: 0.10,     // 10% chance for double enemy drops
+	doubleDropChance: 0.20,     // 20% chance for double enemy drops
 	maxStacks: 1
 };
 
@@ -116,9 +116,10 @@ export const CRIT_DAMAGE = {
 };
 
 export const FOCUSED_FIRE = {
-	damagePerHitOnSameTarget: 0.05,  // +5% damage per consecutive hit on same target
-	maxStacks: 8,                     // Cap at +40% bonus
-	decayTime: 2.0                    // Stacks decay after 2s without hitting target
+	damagePerHitOnSameTarget: 0.10,  // +10% damage per consecutive hit on same target
+	maxStacks: 8,                     // Cap at +80% bonus
+	decayTime: 2.0,                    // Stacks decay after 2s without hitting target
+	usesDiminishing: true
 };
 
 export const PRECISION_ROUNDS = {
@@ -138,13 +139,13 @@ export const SECOND_WIND = {
 };
 
 export const MARATHON = {
-	staminaDrainReduction: 0.40,    // 40% slower stamina drain outside territory
+	staminaDrainReduction: 0.20,    // 20% slower stamina drain outside territory
 	maxStacks: 1
 };
 
 export const SOUL_COLLECTOR = {
 	killsPerHpBonus: 20,            // +1 max HP per 20 kills
-	maxBonusHp: 50,                 // Cap at +50 HP
+	maxBonusHp: 60,                 // Cap at +60 HP
 	maxStacks: 1
 };
 
@@ -168,24 +169,23 @@ export const TERRITORIAL = {
 
 export const THORNS = {
 	reflectPercent: 0.75,           // Reflect 75% of damage taken back to attacker
-	maxStacks: 1
 };
 
 export const LAST_STAND = {
 	hpThreshold: 0.25,              // Activates below 25% HP
-	damageReduction: 0.50,          // Take 50% less damage when active
+	damageReduction: 0.40,          // Take 40% less damage when active
 	maxStacks: 1
 };
 
 export const ADRENALINE = {
-	speedBonus: 0.15,               // +15% move speed when triggered
+	speedBonus: 0.20,               // +20% move speed when triggered
 	durationSeconds: 3,             // 3 second duration
 	maxStacks: 1
 };
 
 export const MOMENTUM = {
 	speedPerSecond: 0.15,           // +15% move speed per second outside territory
-	maxSpeedBonus: 0.40,            // Cap at +40% bonus
+	maxSpeedBonus: 0.45,            // Cap at +45% bonus
 	maxStacks: 1
 };
 
@@ -193,27 +193,25 @@ export const MOMENTUM = {
 export const STICKY_CHARGES = {
 	chargesPerHit: 1,               // Apply 1 charge per hit
 	maxChargesPerEnemy: 5,          // Max 5 charges on single enemy
-	detonationDelay: 1.5,           // Detonate after 1.5 seconds
-	damagePerCharge: 0.20,          // Each charge deals 20% of original hit damage
+	detonationDelay: .5,           // Detonate after 5 seconds
+	damagePerCharge: 0.10,          // Each charge deals 10% of original hit damage
 	explosionRadius: 50,            // 50 pixel explosion radius
 	maxStacks: 1
 };
 
 export const MISSILE_POD = {
-	procChance: 0.15,               // 15% chance to fire missile on hit
-	missileDamagePercent: 0.50,     // Missile deals 50% of hit damage
+	procChance: 0.10,               // 10% chance to fire missile on hit
+	missileDamagePercent: 0.40,     // Missile deals 40% of hit damage
 	missileSpeed: 300,              // Missile speed in pixels/sec
 	missileRadius: 5,               // Missile collision/visual size
-	missileLifetime: 3.0,           // Missile expires after 3 seconds
-	maxStacks: 1
+	missileLifetime: 2.0,           // Missile expires after 3 seconds
 };
 
 export const HEATSEEKER_DRONES = {
 	droneCount: 2,                  // 2 passive drones
-	attackRange: 150,               // Drones attack enemies within 150 pixels
-	attackCooldown: 0.8,            // Attack every 0.8 seconds
+	attackRange: 250,               // Drones attack enemies within 250 pixels
+	attackCooldown: 0.5,            // Attack every 0.5 seconds
 	damagePercent: 0.15,            // Each attack deals 15% of player's base damage
-	maxStacks: 1
 };
 
 // ============================================================================
@@ -223,53 +221,49 @@ export const HEATSEEKER_DRONES = {
 export const GLASS_CANNON = {
 	damageBonus: 1.0,               // +100% damage
 	maxHpPenalty: 0.50,             // -50% max HP
-	sizeScaleMult: 0.85,            // 15% smaller
-	maxStacks: 1
+	sizeScaleMult: 0.70,            // 30% smaller
 };
 
 export const JUGGERNAUT = {
 	maxHpBonus: 1.0,                // +100% max HP
 	speedPenalty: 0.25,             // -25% move speed
 	sizeScaleMult: 1.25,            // 25% bigger
-	maxStacks: 1
 };
 
 export const EXECUTE = {
-	hpThreshold: 0.15,              // Instant kill enemies below 15% HP
+	hpThreshold: 0.20,              // Instant kill enemies below 20% HP
 	maxStacks: 1
 };
 
 export const EXPLOSIVE_ROUNDS = {
-	explosionDamagePercent: 0.40,   // 40% damage to nearby enemies
+	explosionDamagePercent: 0.20,   // 40% damage to nearby enemies
 	explosionRadius: 60,            // 60 pixel radius
 	maxStacks: 1
 };
 
 export const PHASE_SHIFT = {
-	cooldownSeconds: 8,             // First hit every 8 seconds deals no damage
+	cooldownSeconds: 3,             // First hit every 3 seconds deals no damage
 	maxStacks: 1
 };
 
 export const VAMPIRE = {
-	healOnKillPercent: 0.08,        // Heal 8% max HP on kill
+	healOnKillPercent: 0.05,        // Heal 5% max HP on kill
 	disablesPassiveRegen: true,     // No passive HP regeneration
 	maxStacks: 1
 };
 
 export const CHAIN_LIGHTNING = {
 	bounceCount: 2,                 // Bounces to 2 nearby enemies
-	bounceDamagePercent: 0.60,      // 60% damage per bounce
-	bounceRange: 150,               // 150 pixel bounce range
-	maxStacks: 1
+	bounceDamagePercent: 0.20,      // 20% damage per bounce
+	bounceRange: 175,               // 150 pixel bounce range
 };
 
 // NEW LEGENDARY UPGRADES
 export const ARC_BARRAGE = {
-	burstInterval: 2.5,             // Burst every 2.5 seconds
-	burstRadius: 120,               // 120 pixel radius around player
-	burstDamagePercent: 0.30,       // 30% of player's base damage per burst
-	maxEnemiesHit: 8,               // Max 8 enemies per burst
-	maxStacks: 1
+	burstInterval: 2,             // Burst every 2 seconds
+	burstRadius: 350,               // 350 pixel radius around player
+	burstDamagePercent: 3,       // 400% of player's base damage per burst
+	maxEnemiesHit: 20,               // Max 20 enemies per burst
 };
 
 export const OVERCHARGE_CORE = {

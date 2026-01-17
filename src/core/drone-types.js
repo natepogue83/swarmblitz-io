@@ -34,9 +34,9 @@
 export const ATTACK_TYPES = {
 	bullet: { name: 'Bullet', duration: 0.15, width: 4, isHitscan: false },
 	laser: { name: 'Laser', duration: 0.06, width: 2, isHitscan: true },
-	railgun: { name: 'Railgun', duration: 0.4, width: 8, isHitscan: false },
-	plasma: { name: 'Plasma', duration: 0.2, width: 12, isHitscan: false },
-	pulse: { name: 'Pulse', duration: 0.25, width: 6, isHitscan: false }
+	railgun: { name: 'Railgun', duration: 0.5, width: 8, isHitscan: false },
+	plasma: { name: 'Plasma', duration: 0.4, width: 12, isHitscan: false },
+	pulse: { name: 'Pulse', duration: 0.3, width: 6, isHitscan: false }
 };
 
 export const DRONE_TYPES = [
@@ -49,8 +49,8 @@ export const DRONE_TYPES = [
 		damageMult: 1.25,
 		cooldownMult: 1.00,       // ~0.5s base cooldown
 		rangeMult: 1.00,
-		orbitRadiusMult: 1.00,
-		orbitSpeedMult: 1.00,
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'bullet',
 		isHitscan: false,
 		projectileSpeed: 400,     // pixels per second
@@ -60,9 +60,9 @@ export const DRONE_TYPES = [
 		procCoefficient: 1.0,
 		// PASSIVE: Ramps damage on same target
 		rampsTargetDamage: true,
-		rampDamagePerStack: 0.15,   // +15% damage per stack
-		rampMaxStacks: 5,           // Max 5 stacks (+75% damage)
-		rampDecayTime: 1.5          // Stacks decay after 1.5s without hitting target
+		rampDamagePerStack: 0.25,   // +15% damage per stack
+		rampMaxStacks: 6,           // Max 5 stacks (+75% damage)
+		rampDecayTime: 2          // Stacks decay after 1.5s without hitting target
 	},
 	{
 		id: 'rapid',
@@ -70,18 +70,18 @@ export const DRONE_TYPES = [
 		description: 'Hitscan laser beams. Hits splash to nearby enemies for 15% damage.',
 		color: '#4ECDC4',
 		opacity: 0.8,             // Slightly transparent lasers
-		damageMult: 0.35,         // Much lower damage per hit
+		damageMult: 0.4,         // Much lower damage per hit
 		cooldownMult: 0.4,       // Very fast fire rate (~8 shots/sec)
-		rangeMult: 0.85,
-		orbitRadiusMult: 1.00,
-		orbitSpeedMult: 1.00,
+		rangeMult: 0.90,
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'laser',
 		isHitscan: true,          // Instant hit
 		projectileSpeed: 0,
 		projectileLifetime: 0,
 		pierceCount: 0,
-		projectileSize: 2,
-		procCoefficient: 0.6,
+		projectileSize: .25,
+		procCoefficient: 0.5,
 		// PASSIVE: Chain hits nearby enemies
 		chainHitsNearby: true,
 		chainHitPercent: 0.15,      // 15% of original damage
@@ -93,21 +93,21 @@ export const DRONE_TYPES = [
 		description: 'Heavy railgun. Damage increases with each enemy pierced.',
 		color: '#9B59B6',
 		opacity: 1.0,             // Full opacity for heavy shots
-		damageMult: 2.50,         // High damage per shot
+		damageMult: 1.5,         // High damage per shot
 		cooldownMult: 2.50,       // Very slow fire (~0.8 shots/sec)
-		rangeMult: 3,             // Extra long range
-		orbitRadiusMult: 1,
-		orbitSpeedMult: 1,
+		rangeMult: 2.5,             // Extra long range
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'railgun',
 		isHitscan: false,
-		projectileSpeed: 600,     // Fast projectile
+		projectileSpeed: 500,     // Fast projectile
 		projectileLifetime: 0,
-		pierceCount: 15,           // Pierce through 3 enemies
-		projectileSize: 12,
+		pierceCount: 10,           // Pierce through 3 enemies
+		projectileSize: 15,
 		procCoefficient: 1.0,
 		// PASSIVE: Pierce damage scaling
 		pierceDamageScaling: true,
-		pierceDamageBonusPerEnemy: 0.25  // +25% damage per enemy already pierced
+		pierceDamageBonusPerEnemy: 0.10  // +10% damage per enemy already pierced
 	},
 	{
 		id: 'guardian',
@@ -115,41 +115,41 @@ export const DRONE_TYPES = [
 		description: 'Slow plasma orbs. Sucks in nearby enemies like a black hole.',
 		color: '#3498DB',
 		opacity: 0.3,            // Slightly glowy/transparent plasma
-		damageMult: 1.2,         // High damage
+		damageMult: 1.6,         // High damage
 		cooldownMult: 2.5,       // Slow fire rate
 		rangeMult: 1.2,           // Short range
-		orbitRadiusMult: 1,
-		orbitSpeedMult: 1,
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'plasma',
 		isHitscan: false,
 		projectileSpeed: 100,     // Slow, chunky projectile
 		projectileLifetime: 2,
 		pierceCount: 10,
-		projectileSize: 18,
+		projectileSize: 14,
 		procCoefficient: 0.8,
 		// PASSIVE: Black hole pull
 		blackHolePull: true,
-		blackHolePullRadius: 160,    // Radius of pull effect
-		blackHolePullStrength: 150  // Pull strength (pixels per second)
+		blackHolePullRadius: 100,    // Radius of pull effect
+		blackHolePullStrength: 70  // Pull strength (pixels per second)
 	},
 	{
 		id: 'skirmisher',
 		name: 'Skirmisher',
-		description: 'Fast bullets. Fire rate ramps up to 2x while shooting.',
+		description: 'Fast bullets that pierce 1 enemy. Fire rate ramps up to 2x while shooting.',
 		color: '#F39C12',
 		opacity: 1.0,             // Full opacity
-		damageMult: 0.70,
+		damageMult: 0.75,
 		cooldownMult: 0.55,       // Fast fire rate
 		rangeMult: 1.00,
-		orbitRadiusMult: 1,
-		orbitSpeedMult: 1,
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'bullet',
 		isHitscan: false,
-		projectileSpeed: 550,     // Fast projectiles
+		projectileSpeed: 300,     // Fast projectiles
 		projectileLifetime: 0,
-		pierceCount: 0,
-		projectileSize: 3,
-		procCoefficient: 0.8,
+		pierceCount: 1,
+		projectileSize: 5,
+		procCoefficient: 0.7,
 		// PASSIVE: Ramping fire rate
 		rampsFireRate: true,
 		fireRateRampMax: 2.0,       // Max 2x fire rate
@@ -161,19 +161,19 @@ export const DRONE_TYPES = [
 		name: 'Support',
 		description: 'Pulse beams that slow enemies. Drops heal packs on projectile death.',
 		color: '#2ECC71',
-		opacity: 0.2,             // More transparent pulse effect
+		opacity: 0.4,             // More transparent pulse effect
 		damageMult: 0.65,
-		cooldownMult: 3,
+		cooldownMult: 1.75,
 		rangeMult: 1.30,          // Long range support
-		orbitRadiusMult: 1,
-		orbitSpeedMult: 1,
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'pulse',
 		isHitscan: false,          // Not hitscan - projectile
 		projectileSpeed: 150,      // Moderate speed projectile
-		projectileLifetime: 2,
+		projectileLifetime: 3,
 		pierceCount: 8,
-		projectileSize: 10,
-		procCoefficient: 0.7,
+		projectileSize: 15,
+		procCoefficient: 0.9,
 		appliesSlow: true,        // Special: applies slow debuff
 		slowAmount: 0.60,         // 60% slow
 		slowDuration: 1.5,        // Slow lasts 1.5 seconds
@@ -189,17 +189,17 @@ export const DRONE_TYPES = [
 		description: 'Tiny hitscan lasers. Applies stacking bleed damage over time.',
 		color: '#E74C3C',
 		opacity: 0.6,             // More transparent for swarm effect
-		damageMult: 0.1,         // Very low damage per hit
-		cooldownMult: 0.15,       // Extremely fast (~13 shots/sec)
-		rangeMult: 0.75,          // Shorter range
-		orbitRadiusMult: 1,
-		orbitSpeedMult: 1,
+		damageMult: 0.125,         // Very low damage per hit
+		cooldownMult: 0.10,       // Extremely fast (~13 shots/sec)
+		rangeMult: 0.85,          // Shorter range
+		orbitRadiusMult: .8,
+		orbitSpeedMult: .8,
 		attackType: 'laser',
 		isHitscan: true,          // Instant hit
 		projectileSpeed: 0,
 		projectileLifetime: 0,
 		pierceCount: 0,
-		projectileSize: 1,
+		projectileSize: 1.25,
 		procCoefficient: 0.4,
 		// PASSIVE: Stacking bleed
 		appliesBleed: true,
@@ -370,9 +370,9 @@ export function applyDroneType(drone, typeId, baseStats) {
 	// PASSIVE: Swarm - Stacking bleed
 	if (type.appliesBleed) {
 		drone.appliesBleed = true;
-		drone.bleedDamagePerStack = type.bleedDamagePerStack ?? 1;
+		drone.bleedDamagePerStack = type.bleedDamagePerStack ?? 2;
 		drone.bleedDuration = type.bleedDuration ?? 2.0;
-		drone.bleedMaxStacks = type.bleedMaxStacks ?? 10;
+		drone.bleedMaxStacks = type.bleedMaxStacks ?? 50;
 	}
 	
 	// Apply multipliers to base stats

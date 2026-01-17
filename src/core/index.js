@@ -138,6 +138,7 @@ export function updateFrame(players, dead, notifyKill, deltaSeconds = 1 / 60) {
 	const adead = dead instanceof Array ? dead : [];
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 	// deltaSeconds defaults to 1/60 for legacy callers
+	const territoryShrinkRate = consts.TERRITORY_SHRINK_IN_TERRITORY_PER_SEC || 0;
 
 	// Track which players captured territory this frame
 	const capturedThisFrame = [];
@@ -154,6 +155,22 @@ export function updateFrame(players, dead, notifyKill, deltaSeconds = 1 / 60) {
 		const newArea = polygonArea(player.territory);
 		if (newArea > prevArea + 100) { // Significant capture (not just floating point noise)
 			capturedThisFrame.push(player);
+		}
+
+		if (territoryShrinkRate > 0 && player.territory && player.territory.length >= 3) {
+			const inTerritory = player.isInOwnTerritory();
+			if (inTerritory) {
+				const scale = Math.max(0, 1 - territoryShrinkRate * deltaSeconds);
+				if (scale < 1) {
+					const anchorX = player.x;
+					const anchorY = player.y;
+					for (const point of player.territory) {
+						point.x = anchorX + (point.x - anchorX) * scale;
+						point.y = anchorY + (point.y - anchorY) * scale;
+					}
+					player._territoryDirty = true;
+				}
+			}
 		}
 		
 		if (player.dead) {

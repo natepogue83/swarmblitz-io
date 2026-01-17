@@ -46,13 +46,13 @@ export const consts = {
 	
 	// ===== TRAIL SPEED BUFF =====
 	// When players leave their territory, they gain speed over time (risk/reward)
-	"TRAIL_SPEED_BUFF_MAX": 1.4,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
-	"TRAIL_SPEED_BUFF_RAMP_TIME": 5,  // Seconds to reach max speed buff
+	"TRAIL_SPEED_BUFF_MAX": 1.2,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
+	"TRAIL_SPEED_BUFF_RAMP_TIME": 2,  // Seconds to reach max speed buff
 	"TRAIL_SPEED_BUFF_EASE": 2,       // Easing exponent (1 = linear, 2 = quadratic ease-in, higher = slower start)
 	
 	// ===== XP / LEVELING SYSTEM =====
 	"XP_BASE_PER_LEVEL": 35,         // Base XP needed to level up (level 1 → 2)
-	"XP_GROWTH_RATE": 1.25,          // Exponential growth rate per level
+	"XP_GROWTH_RATE": 1.18,          // Exponential growth rate per level
 	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
 	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (5%)
@@ -60,30 +60,31 @@ export const consts = {
 	
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)
-	"PLAYER_MAX_HP": 100,
+	"PLAYER_MAX_HP": 50,
 	"HP_PER_LEVEL": 10,                  // Max HP gained per level up
 	"PLAYER_HP_REGEN_IN_TERRITORY": 10,  // HP per second when in own territory (fast regen)
 	"TERRITORY_DAMAGE_REDUCTION": 0.2,   // Damage reduction when in own territory (0.5 = 50% less damage)
+	"TERRITORY_SHRINK_IN_TERRITORY_PER_SEC": 0.05, // Territory shrink rate when inside (1% per sec)
 	
 	// ===== STAMINA SYSTEM =====
 	// Stamina drains when outside territory; HP drains when stamina is empty
 	"PLAYER_MAX_STAMINA": 100,              // Maximum stamina
-	"STAMINA_DRAIN_OUTSIDE_PER_SEC": 12,    // Stamina drain rate outside territory (~10 sec to empty)
-	"STAMINA_HP_DRAIN_PER_SEC": 20,          // HP drain rate when stamina is empty
+	"STAMINA_DRAIN_OUTSIDE_PER_SEC": 15,    // Stamina drain rate outside territory (~10 sec to empty)
+	"STAMINA_HP_DRAIN_PER_SEC": 40,          // HP drain rate when stamina is empty
 	"STAMINA_REGEN_INSIDE_PER_SEC": 75,     // Stamina regen rate inside territory
 	"EXHAUSTED_RECOVER_THRESHOLD": 20,      // Stamina needed to recover from exhausted state
 	
 	// ===== DRONE SYSTEM =====
 	// Note: Drones are now granted automatically via leveling
 	// Drones use hitscan - instant damage when they fire
-	"MAX_DRONES": 5,                 // Maximum drones per player (effectively level cap)
+	"MAX_DRONES": 9,                 // Maximum drones per player (effectively level cap)
 	"DRONE_LEVEL_INTERVAL": 4,        // Gain 1 drone every N levels
-	"DRONE_ORBIT_RADIUS": 55,         // Distance from player center
+	"DRONE_ORBIT_RADIUS": 45,         // Distance from player center
 	"DRONE_ORBIT_SPEED": 2,         // Radians per second (orbit rotation speed)
-	"DRONE_RADIUS": 10,               // Visual/collision radius
+	"DRONE_RADIUS": 12,               // Visual/collision radius
 	"DRONE_DAMAGE": 25,               // Damage for first drone (hitscan)
 	"DRONE_DAMAGE_EXTRA_MULT": 1,   // Damage multiplier for 2nd drone (relative to 1st)
-	"DRONE_DAMAGE_DECAY_FACTOR": 1,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
+	"DRONE_DAMAGE_DECAY_FACTOR": .95,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
 	"DRONE_RANGE": 158,               // Targeting range (reduced 30% from 225)
 	"DRONE_COOLDOWN": .5,             // Seconds between shots
 	"DRONE_UPDATE_EVERY_TICKS": 1,    // Throttle drone updates sent to clients (1 = every tick)
@@ -105,7 +106,7 @@ export const consts = {
 	// Reduces bandwidth from O(N²) to O(N×K) where K = avg nearby players
 	// AOI radius is now DYNAMIC based on each player's viewport size
 	"AOI_MIN_RADIUS": 400,           // Minimum AOI radius (for very small windows)
-	"AOI_BUFFER": 300,               // Extra buffer beyond viewport edge (ensures off-screen spawn)
-	"AOI_HYSTERESIS": 200,           // Extra buffer before removing from AOI (prevents flicker)
+	"AOI_BUFFER": 900,               // Extra buffer beyond viewport edge (ensures off-screen spawn)
+	"AOI_HYSTERESIS": 900,           // Extra buffer before removing from AOI (prevents flicker)
 	"AOI_GRID_SIZE": 200             // Spatial grid cell size for efficient queries
 };

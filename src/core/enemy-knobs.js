@@ -18,7 +18,7 @@ export const ENEMY_TYPES = {
 		maxHp: 20,
 		speed: 55,
 		contactDamage: 8,
-		xpDropValue: 1,
+		xpDropValue: 3,
 		spawnWeight: 50,     // Higher = more common
 		color: "rgba(200, 60, 60, 0.9)",
 		outline: "rgba(90, 20, 20, 0.9)"
@@ -32,7 +32,7 @@ export const ENEMY_TYPES = {
 		chargeSpeed: 200,    // Speed when charging
 		chargeCooldown: 3,   // Seconds between charges
 		chargeDistance: 180, // Distance to trigger charge
-		xpDropValue: 2,
+		xpDropValue: 4,
 		spawnWeight: 30,
 		color: "rgba(255, 140, 0, 0.9)",
 		outline: "rgba(140, 70, 0, 0.9)"
@@ -43,7 +43,7 @@ export const ENEMY_TYPES = {
 		maxHp: 120,
 		speed: 30,           // Very slow
 		contactDamage: 20,
-		xpDropValue: 4,
+		xpDropValue: 10,
 		spawnWeight: 15,
 		color: "rgba(100, 100, 180, 0.9)",
 		outline: "rgba(40, 40, 100, 0.9)"
@@ -51,8 +51,8 @@ export const ENEMY_TYPES = {
 	swarm: {
 		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
 		radius: 6,
-		maxHp: 10,
-		speed: 85,           // Fast
+		maxHp: 5,
+		speed: 105,           // Fast
 		contactDamage: 6,
 		xpDropValue: 1,
 		spawnWeight: 60,     // Very common when unlocked
@@ -83,7 +83,7 @@ export const BOSS_TYPES = {
 		radius: 40,
 		maxHp: 1500,
 		speed: 20,
-		contactDamage: 35,
+		contactDamage: 45,
 		xpDropValue: 50,
 		spawnWeight: 40,
 		color: "rgba(80, 80, 80, 0.95)",
@@ -133,7 +133,7 @@ export const ENEMY_XP_DROP = {
 
 export const ENEMY_SPAWN_RATE = {
 	// Global multiplier for enemy spawns. 1 = default, >1 = more spawns.
-	multiplier: 1
+	multiplier: .7
 };
 
 // ============================================================================
@@ -149,13 +149,13 @@ export const ENEMY_SCALING = {
 	hp: {
 		enabled: true,
 		startTime: 0,
-		perMinute: .4,
+		perMinute: .2,
 		maxMult: 100.0
 	},
 	damage: {
 		enabled: true,
 		startTime: 0,
-		perMinute: 0.15,
+		perMinute: 0.2,
 		maxMult: 10.0
 	}
 };
