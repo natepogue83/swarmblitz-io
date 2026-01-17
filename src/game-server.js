@@ -3308,7 +3308,8 @@ function Game(id) {
 			const inTerritory = p.territory && p.territory.length >= 3 &&
 				pointInPolygon({ x: p.x, y: p.y }, p.territory);
 			if (inTerritory && coins.length > 0) {
-				const pullSpeed = (consts.SPEED || 4) * 0.4; // 40% of base movement speed (per frame)
+				const maxPullSpeed = (consts.SPEED || 4) * (consts.XP_ORB_PULL_SPEED_MULT ?? 0.4);
+				const pullAccel = maxPullSpeed * (consts.XP_ORB_PULL_ACCEL_MULT ?? 1.0);
 				for (const coin of coins) {
 					if (coin.type !== "enemy" && coin.type !== "boss") continue;
 					if (!pointInPolygon({ x: coin.x, y: coin.y }, p.territory)) continue;
@@ -3318,7 +3319,8 @@ function Game(id) {
 					const dist = Math.hypot(dx, dy);
 					if (dist <= 0.01) continue;
 					
-					const maxStep = pullSpeed * frameScale;
+					coin.pullSpeed = Math.min(maxPullSpeed, (coin.pullSpeed || 0) + pullAccel * deltaSeconds);
+					const maxStep = coin.pullSpeed * frameScale;
 					const step = Math.min(maxStep, dist);
 					const nx = dx / dist;
 					const ny = dy / dist;

@@ -237,7 +237,7 @@ export const EXECUTE = {
 
 export const EXPLOSIVE_ROUNDS = {
 	explosionDamagePercent: 0.20,   // 40% damage to nearby enemies
-	explosionRadius: 60,            // 60 pixel radius
+	explosionRadius: 75,            // 75 pixel radius
 	maxStacks: 1
 };
 
@@ -247,7 +247,7 @@ export const PHASE_SHIFT = {
 };
 
 export const VAMPIRE = {
-	healOnKillPercent: 0.05,        // Heal 5% max HP on kill
+	healOnKillPercent: 0.005,        // Heal .5% max HP on kill
 	disablesPassiveRegen: true,     // No passive HP regeneration
 	maxStacks: 1
 };

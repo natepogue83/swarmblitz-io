@@ -47,7 +47,7 @@ export const DRONE_TYPES = [
 		color: '#FF6B6B',
 		opacity: 1.0,             // Full opacity
 		damageMult: 1.25,
-		cooldownMult: 1.25,       // ~0.5s base cooldown
+		cooldownMult: .75,       // ~0.5s base cooldown
 		rangeMult: 1.25,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
@@ -70,7 +70,7 @@ export const DRONE_TYPES = [
 		description: 'Hitscan laser beams. Hits splash to nearby enemies for 25% damage.',
 		color: '#4ECDC4',
 		opacity: 0.8,             // Slightly transparent lasers
-		damageMult: 0.425,         // Much lower damage per hit
+		damageMult: 0.45,         // Much lower damage per hit
 		cooldownMult: 0.35,       // Very fast fire rate (~8 shots/sec)
 		rangeMult: 0.90,
 		orbitRadiusMult: .8,
@@ -94,7 +94,7 @@ export const DRONE_TYPES = [
 		color: '#9B59B6',
 		opacity: 1.0,             // Full opacity for heavy shots
 		damageMult: 2,         // High damage per shot
-		cooldownMult: 2.50,       // Very slow fire (~0.8 shots/sec)
+		cooldownMult: 2.75,       // Very slow fire (~0.8 shots/sec)
 		rangeMult: 2.5,             // Extra long range
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
@@ -102,7 +102,7 @@ export const DRONE_TYPES = [
 		isHitscan: false,
 		projectileSpeed: 500,     // Fast projectile
 		projectileLifetime: 0,
-		pierceCount: 10,           // Pierce through 3 enemies
+		pierceCount: 8,           // Pierce through 3 enemies
 		projectileSize: 15,
 		procCoefficient: 1.0,
 		// PASSIVE: Pierce damage scaling
@@ -189,7 +189,7 @@ export const DRONE_TYPES = [
 		description: 'Tiny hitscan lasers. Applies stacking bleed damage over time.',
 		color: '#E74C3C',
 		opacity: 0.6,             // More transparent for swarm effect
-		damageMult: 0.11,         // Very low damage per hit
+		damageMult: 0.10,         // Very low damage per hit
 		cooldownMult: 0.10,       // Extremely fast (~13 shots/sec)
 		rangeMult: 0.85,          // Shorter range
 		orbitRadiusMult: .8,

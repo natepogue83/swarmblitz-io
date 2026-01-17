@@ -32,6 +32,8 @@ export const consts = {
 	"MAX_COINS": 200,
 	"COIN_SPAWN_INTERVAL_SEC": 2.5,
 	"COIN_RADIUS": 8,
+	"XP_ORB_PULL_SPEED_MULT": 0.8,   // Enemy XP orb pull speed in territory
+	"XP_ORB_PULL_ACCEL_MULT": 1.2,   // Accel rate toward max pull speed
 	
 	// ===== XP VALUES (Easy tuning knobs) =====
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)

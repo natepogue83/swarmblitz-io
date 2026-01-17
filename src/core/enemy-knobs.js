@@ -159,7 +159,7 @@ export const ENEMY_SCALING = {
 	hp: {
 		enabled: true,
 		startTime: 0,
-		perMinute: .2,
+		perMinute: .35,
 		maxMult: 100.0
 	},
 	damage: {
