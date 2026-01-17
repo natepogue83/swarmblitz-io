@@ -5496,8 +5496,11 @@ export function momentumStart(playerNum) {
 
 // Player kill handler (called from game-client when local player gets a kill)
 export function playerKill(killerNum, victimNum, victimName, killType) {
-	// Play kill sound
-	if (soundInitialized) {
+	// Play kill sound (player kills) or lighter enemy death sound
+	if (!soundInitialized) return;
+	if (killType === "enemy") {
+		SoundManager.playEnemyDeathSound(victimName);
+	} else {
 		SoundManager.playKillSound();
 	}
 }

@@ -419,6 +419,27 @@ function Game(id) {
 	const enemySpawner = new EnemySpawner();
 	let enemyKills = 0;
 	let runTime = 0;
+	const enemyLifetimeSeconds = consts.ENEMY_LIFETIME_SECONDS ?? 15;
+
+	function markEnemyHit(enemy) {
+		if (!enemy || enemy.isBoss) return;
+		enemy.lastDamagedAt = runTime;
+	}
+
+	function applyEnemyScaling(enemy) {
+		if (!enemy) return;
+		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+		const baseMaxHp = enemy.baseMaxHp ?? enemy.maxHp ?? 1;
+		const baseDamage = enemy.baseContactDamage ?? enemy.contactDamage ?? 0;
+		const newMaxHp = Math.max(1, baseMaxHp * hpScale);
+		if (enemy.maxHp !== newMaxHp) {
+			const hpRatio = enemy.maxHp > 0 ? (enemy.hp / enemy.maxHp) : 1;
+			enemy.maxHp = newMaxHp;
+			enemy.hp = Math.max(0, Math.min(newMaxHp, hpRatio * newMaxHp));
+		}
+		enemy.contactDamage = baseDamage * damageScale;
+	}
 	
 	// Upgrade system pause state
 	let gamePaused = false;
@@ -1384,6 +1405,7 @@ function Game(id) {
 						// Execute: Enemies below threshold HP are instantly killed
 						if (ownerStats.hasExecute && enemy.hp > 0 && enemy.hp < enemy.maxHp * UPGRADE_KNOBS.EXECUTE.hpThreshold) {
 							enemy.hp = 0;
+							markEnemyHit(enemy);
 							handleEnemyDeath(enemy, owner);
 							if (proj.piercedEnemies.size > proj.pierceCount) {
 								hitSomething = true;
@@ -1392,7 +1414,7 @@ function Game(id) {
 						}
 						
 						// Calculate damage with Hunter bonus
-						let finalDamage = proj.damage;
+						let finalDamage = proj.damage * (ownerStats.damageMult || 1.0);
 						if (ownerStats.hasHunter && enemy.hp < enemy.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
 							finalDamage *= (1 + UPGRADE_KNOBS.HUNTER.damageBonus);
 						}
@@ -1453,8 +1475,9 @@ function Game(id) {
 							const originX = proj.originX ?? owner.x;
 							const originY = proj.originY ?? owner.y;
 							const dist = Math.hypot(enemy.x - originX, enemy.y - originY);
-							const minDist = UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus;
-							const maxDist = UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus;
+							const rangeCap = Math.max(1, proj.maxRange || UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus);
+							const minDist = Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus, rangeCap);
+							const maxDist = Math.max(minDist + 1, Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus, rangeCap));
 							if (dist > minDist) {
 								const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
 								const prBonus = 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
@@ -1464,6 +1487,7 @@ function Game(id) {
 						
 						enemy.hp -= finalDamage;
 						if (enemy.hp < 0) enemy.hp = 0;
+						markEnemyHit(enemy);
 						
 						// Track total damage for Support heal pack
 						proj.totalDamageDealt = (proj.totalDamageDealt || 0) + finalDamage;
@@ -1696,6 +1720,7 @@ function Game(id) {
 					const totalDamage = charge.baseDamage * UPGRADE_KNOBS.STICKY_CHARGES.damagePerCharge * charge.charges;
 					enemy.hp -= totalDamage;
 					if (enemy.hp < 0) enemy.hp = 0;
+					markEnemyHit(enemy);
 					
 					// Find owner for kill credit
 					const owner = players.find(p => p.num === charge.ownerId);
@@ -1720,6 +1745,7 @@ function Game(id) {
 						if (dist < explosionRadius) {
 							const aoeDamage = totalDamage * 0.5; // 50% of direct damage to nearby
 							nearbyEnemy.hp -= aoeDamage;
+							markEnemyHit(nearbyEnemy);
 							const splashProcCoeff = PROC_COEFFICIENTS.stickyChargeSplash ?? 0.15;
 							tryMissilePodProc(owner, nearbyEnemy, aoeDamage, procOrigin, splashProcCoeff, economyDeltas);
 							if (nearbyEnemy.hp <= 0 && owner) {
@@ -1797,6 +1823,7 @@ function Game(id) {
 						// Hit!
 						enemy.hp -= missile.damage;
 						if (enemy.hp < 0) enemy.hp = 0;
+						markEnemyHit(enemy);
 						
 						const owner = players.find(p => p.num === missile.ownerId);
 						
@@ -1919,6 +1946,9 @@ function Game(id) {
 				contactDamage: contactDamage,
 				xpDropValue: xpDropValue
 			});
+			enemy.baseMaxHp = typeData.maxHp;
+			enemy.baseContactDamage = typeData.contactDamage;
+			enemy.lastDamagedAt = runTime;
 			
 			// Type-specific properties
 			if (typeName === 'charger') {
@@ -1975,6 +2005,8 @@ function Game(id) {
 				contactDamage: contactDamage,
 				xpDropValue: xpDropValue
 			});
+			boss.baseMaxHp = bossData.maxHp;
+			boss.baseContactDamage = bossData.contactDamage;
 			
 			boss.isBoss = true;
 			
@@ -2010,6 +2042,16 @@ function Game(id) {
 			const hitCooldown = 0.35;
 			for (const enemy of enemies) {
 				if (enemy.dead) continue;
+				applyEnemyScaling(enemy);
+				if (!enemy.isBoss) {
+					if (enemy.lastDamagedAt === undefined) {
+						enemy.lastDamagedAt = runTime;
+					}
+					if (runTime - enemy.lastDamagedAt >= enemyLifetimeSeconds) {
+						enemy.dead = true;
+						continue;
+					}
+				}
 				
 				const dx = activePlayer.x - enemy.x;
 				const dy = activePlayer.y - enemy.y;
@@ -2117,6 +2159,9 @@ function Game(id) {
 									contactDamage: minionContactDamage,
 									xpDropValue: xpDropValue
 								});
+								minion.baseMaxHp = ENEMY_TYPES.swarm.maxHp;
+								minion.baseContactDamage = ENEMY_TYPES.swarm.contactDamage;
+								minion.lastDamagedAt = runTime;
 								enemies.push(minion);
 							}
 						}
@@ -2165,6 +2210,7 @@ function Game(id) {
 						const bleedDamage = enemy.bleedStacks * (enemy.bleedDamagePerStack || 1);
 						enemy.hp -= bleedDamage;
 						if (enemy.hp < 0) enemy.hp = 0;
+						markEnemyHit(enemy);
 						
 						// Visual feedback for bleed tick (subtle red flash)
 						economyDeltas.hitscanEvents.push({
@@ -2252,6 +2298,7 @@ function Game(id) {
 					if (playerStats.thornsMult > 0) {
 						const reflectDamage = damage * playerStats.thornsMult;
 						enemy.hp -= reflectDamage;
+						markEnemyHit(enemy);
 						if (enemy.hp <= 0) {
 							handleEnemyDeath(enemy, activePlayer);
 						}
@@ -2541,6 +2588,7 @@ function Game(id) {
 						if (dist < burstRadius) {
 							enemy.hp -= burstDamage;
 							if (enemy.hp < 0) enemy.hp = 0;
+							markEnemyHit(enemy);
 							hitCount++;
 							hits.push({
 								x: enemy.x,
@@ -2594,6 +2642,7 @@ function Game(id) {
 						const target = targets[i].enemy;
 						target.hp -= droneDamage;
 						if (target.hp < 0) target.hp = 0;
+						markEnemyHit(target);
 						
 						tryMissilePodProc(p, target, droneDamage, { x: p.x, y: p.y }, procCoeff, economyDeltas);
 						
@@ -2729,8 +2778,8 @@ function Game(id) {
 						baseDmg = baseDamage * extraMult * Math.pow(decayFactor, droneIndex - 1);
 					}
 					
-					// Apply damage multiplier from upgrades AND drone type
-					let damage = baseDmg * damageMult * droneDamageMult;
+					// Apply drone type multiplier (player damage multiplier applied on hit)
+					let damage = baseDmg * droneDamageMult;
 					
 					// Hunter: Bonus damage vs enemies below threshold HP
 					if (stats.hasHunter && target.hp < target.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
@@ -2878,7 +2927,7 @@ function Game(id) {
 			}
 			
 			// PASSIVE: Assault - Ramp damage on same target
-			let finalDamage = damage;
+			let finalDamage = damage * (stats.damageMult || 1.0);
 			if (droneType.rampsTargetDamage) {
 				if (!assaultRampStacks.has(player.num)) {
 					assaultRampStacks.set(player.num, new Map());
@@ -2931,8 +2980,9 @@ function Game(id) {
 				const fromX = originOverride ? originOverride.x : drone.x;
 				const fromY = originOverride ? originOverride.y : drone.y;
 				const dist = Math.hypot(target.x - fromX, target.y - fromY);
-				const minDist = UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus;
-				const maxDist = UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus;
+				const rangeCap = Math.max(1, drone.range * (player.sizeScale || 1.0));
+				const minDist = Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus, rangeCap);
+				const maxDist = Math.max(minDist + 1, Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus, rangeCap));
 				if (dist > minDist) {
 					const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
 					const prBonus = 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
@@ -2943,6 +2993,7 @@ function Game(id) {
 			// Apply damage
 			target.hp -= finalDamage;
 			if (target.hp < 0) target.hp = 0;
+			markEnemyHit(target);
 			
 			// Life on hit (with internal cooldown)
 			if (lifeOnHitPct > 0 && player.lifeOnHitCooldown <= 0) {
@@ -3007,6 +3058,7 @@ function Game(id) {
 					if (dist < chainRadius) {
 						nearbyEnemy.hp -= chainDamage;
 						if (nearbyEnemy.hp < 0) nearbyEnemy.hp = 0;
+						markEnemyHit(nearbyEnemy);
 						
 						// Visual feedback for chain hit
 						deltas.hitscanEvents.push({
@@ -3055,6 +3107,7 @@ function Game(id) {
 					const dist = Math.hypot(nearbyEnemy.x - target.x, nearbyEnemy.y - target.y);
 					if (dist < explosionRadius) {
 						nearbyEnemy.hp -= explosionDamage;
+						markEnemyHit(nearbyEnemy);
 						if (nearbyEnemy.hp <= 0) {
 							handleEnemyDeath(nearbyEnemy, player);
 						}
@@ -3088,6 +3141,7 @@ function Game(id) {
 					hitEnemies.add(nextTarget.id);
 					nextTarget.hp -= chainDamage;
 					if (nextTarget.hp < 0) nextTarget.hp = 0;
+					markEnemyHit(nextTarget);
 					
 					deltas.hitscanEvents.push({
 						fromX: chainTarget.x,

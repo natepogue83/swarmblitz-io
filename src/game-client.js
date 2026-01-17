@@ -909,7 +909,7 @@ function selectUpgrade(upgradeId) {
 // Drone type selection functions
 function selectDrone(droneTypeId) {
 	if (!socket || socket.readyState !== 1) return;
-	if (!droneChoices || !gamePaused) return;
+	if (!droneChoices || droneChoices.length === 0) return;
 	
 	// Validate the selection is one of the choices
 	const validChoice = droneChoices.find(c => c.id === droneTypeId);

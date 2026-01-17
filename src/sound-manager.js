@@ -22,29 +22,30 @@ const settings = {
         playerFuse: 1.0,     // Your fuse when snipped
         enemyFuse: 0.7,      // Enemy fuse when you snip them
         capture: 1.0,        // Territory capture sound
-        levelUp: 0.8,        // Level up fanfare
+        levelUp: 0.5,        // Level up fanfare
         death: 2.0,          // Death explosion
         kill: 2.0,           // Kill sound (when you kill someone)
-        coinPickup: 1.0,     // XP orb pickup
+        enemyDeath: 0.45,    // Enemy death pop (lighter, lower volume)
+        coinPickup: .1,     // XP orb pickup
         hit: 1.5,            // Taking damage
         trailing: 0.4,       // Legacy (unused)
-        speedRush: 0.5,      // Speed rush sound (plays at 10%+ speed buff)
-        momentum: 0.6,       // Momentum start cue
+        speedRush: 0.3,      // Speed rush sound (plays at 10%+ speed buff)
+        momentum: 0.4,       // Momentum start cue
         
         // Per-attack-type fire sounds (drone shoots)
         // Lower for spammy weapons, higher for impactful slow weapons
-        bullet_fire: 0.30,   // Assault/Skirmisher - moderate, common
-        laser_fire: 0.18,    // Rapid/Swarm - low, very frequent
-        railgun_fire: 0.55,  // Sniper - high, slow and heavy
-        plasma_fire: 0.40,   // Guardian - medium-high, slow chunky
-        pulse_fire: 0.25,    // Support - moderate, slow
+        bullet_fire: 0.20,   // Assault/Skirmisher - moderate, common
+        laser_fire: 0.12,    // Rapid/Swarm - low, very frequent
+        railgun_fire: 0.35,  // Sniper - high, slow and heavy
+        plasma_fire: 0.20,   // Guardian - medium-high, slow chunky
+        pulse_fire: 0.15,    // Support - moderate, slow
         
         // Per-attack-type impact sounds (projectile hits)
-        bullet_impact: 0.25,
-        laser_impact: 0.12,  // Very quiet - lots of these
-        railgun_impact: 0.50,
-        plasma_impact: 0.40,
-        pulse_impact: 0.28
+        bullet_impact: 0.18,
+        laser_impact: 0.08,  // Very quiet - lots of these
+        railgun_impact: 0.30,
+        plasma_impact: 0.30,
+        pulse_impact: 0.18
     }
 };
 
@@ -77,7 +78,8 @@ const voiceLimiter = {
         capture:     { maxVoices: 2, minInterval: 150 },
         levelUp:     { maxVoices: 1, minInterval: 800 },   // Only one at a time
         kill:        { maxVoices: 2, minInterval: 150 },   // Important feedback
-        death:       { maxVoices: 2, minInterval: 300 }
+        death:       { maxVoices: 2, minInterval: 300 },
+        enemyDeath:  { maxVoices: 3, minInterval: 90 }
     }
 };
 
@@ -1610,6 +1612,80 @@ export function playKillSound() {
     });
 }
 
+// ===== ENEMY DEATH SOUND =====
+// Short, varied "pop" for enemy deaths (lightweight + rate-limited)
+export function playEnemyDeathSound(enemyType = "enemy") {
+    if (!initialized || !settings.enabled) return;
+    if (settings.volumes.enemyDeath <= 0) return;
+    if (!canPlaySound('enemyDeath')) return;
+    resume();
+    markSoundStarted('enemyDeath', 0.25);
+    
+    const vol = settings.volumes.enemyDeath;
+    const now = audioContext.currentTime;
+    const key = String(enemyType || "enemy");
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+        hash = (hash * 31 + key.charCodeAt(i)) % 1000;
+    }
+    const variant = hash % 3;
+    const baseFreq = 160 + (hash % 140);
+    const waveTypes = ['triangle', 'sawtooth', 'square'];
+    
+    // === Layer 1: Short tonal pop ===
+    const pop = audioContext.createOscillator();
+    const popGain = audioContext.createGain();
+    const popFilter = audioContext.createBiquadFilter();
+    
+    pop.type = waveTypes[variant];
+    pop.frequency.setValueAtTime(baseFreq, now);
+    pop.frequency.exponentialRampToValueAtTime(Math.max(60, baseFreq * 0.45), now + 0.18);
+    
+    popFilter.type = 'lowpass';
+    popFilter.frequency.setValueAtTime(1400 + variant * 300, now);
+    
+    popGain.gain.setValueAtTime(0.16 * settings.sfxVolume * vol, now);
+    popGain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    
+    pop.connect(popFilter);
+    popFilter.connect(popGain);
+    popGain.connect(masterGain);
+    
+    pop.start(now);
+    pop.stop(now + 0.2);
+    
+    // === Layer 2: Light noise fizz (varies by enemy type) ===
+    const fizzDuration = 0.08 + (variant * 0.02);
+    const fizzSize = audioContext.sampleRate * fizzDuration;
+    const fizzBuffer = audioContext.createBuffer(1, fizzSize, audioContext.sampleRate);
+    const fizzData = fizzBuffer.getChannelData(0);
+    for (let i = 0; i < fizzSize; i++) {
+        const t = i / audioContext.sampleRate;
+        const decay = Math.exp(-t * 25);
+        const rough = Math.random() * 2 - 1;
+        fizzData[i] = rough * decay * 0.6;
+    }
+    
+    const fizz = audioContext.createBufferSource();
+    fizz.buffer = fizzBuffer;
+    
+    const fizzGain = audioContext.createGain();
+    const fizzFilter = audioContext.createBiquadFilter();
+    
+    fizzFilter.type = 'highpass';
+    fizzFilter.frequency.setValueAtTime(1200 + variant * 400, now);
+    
+    fizzGain.gain.setValueAtTime(0.08 * settings.sfxVolume * vol, now);
+    fizzGain.gain.exponentialRampToValueAtTime(0.01, now + fizzDuration);
+    
+    fizz.connect(fizzFilter);
+    fizzFilter.connect(fizzGain);
+    fizzGain.connect(masterGain);
+    
+    fizz.start(now);
+    fizz.stop(now + fizzDuration);
+}
+
 // ===== HIT SOUND =====
 // When player takes damage
 
@@ -2430,6 +2506,7 @@ export default {
     playDeathSound,
     playCoinPickup,
     playKillSound,
+    playEnemyDeathSound,
     playHitSound,
     playMomentumSound,
     startFuseSound,

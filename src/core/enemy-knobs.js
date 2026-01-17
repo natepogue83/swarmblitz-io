@@ -15,8 +15,8 @@ export const ENEMY_TYPES = {
 	basic: {
 		unlockTime: 0,       // Available from start
 		radius: 10,
-		maxHp: 20,
-		speed: 55,
+		maxHp: 25,
+		speed: 75,
 		contactDamage: 8,
 		xpDropValue: 3,
 		spawnWeight: 50,     // Higher = more common
@@ -26,8 +26,8 @@ export const ENEMY_TYPES = {
 	charger: {
 		unlockTime: 15,      // Unlocks at 15 seconds
 		radius: 12,
-		maxHp: 25,
-		speed: 45,           // Base speed (slower), but charges fast
+		maxHp: 30,
+		speed: 55,           // Base speed (slower), but charges fast
 		contactDamage: 15,
 		chargeSpeed: 200,    // Speed when charging
 		chargeCooldown: 3,   // Seconds between charges
@@ -41,7 +41,7 @@ export const ENEMY_TYPES = {
 		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
 		radius: 18,
 		maxHp: 120,
-		speed: 30,           // Very slow
+		speed: 55,           // Very slow
 		contactDamage: 20,
 		xpDropValue: 10,
 		spawnWeight: 15,
@@ -52,7 +52,7 @@ export const ENEMY_TYPES = {
 		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
 		radius: 6,
 		maxHp: 5,
-		speed: 105,           // Fast
+		speed: 155,           // Fast
 		contactDamage: 6,
 		xpDropValue: 1,
 		spawnWeight: 60,     // Very common when unlocked
@@ -63,7 +63,7 @@ export const ENEMY_TYPES = {
 		unlockTime: 90,      // Unlocks at 90 seconds (60+30)
 		radius: 9,
 		maxHp: 20,
-		speed: 40,           // Moves to maintain distance
+		speed: 60,           // Moves to maintain distance
 		contactDamage: 5,
 		preferredDistance: 200,  // Distance it tries to maintain from player
 		xpDropValue: 10,
