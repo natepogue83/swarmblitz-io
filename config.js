@@ -62,15 +62,15 @@ export const consts = {
 	// Player HP (for drone combat)
 	"PLAYER_MAX_HP": 50,
 	"HP_PER_LEVEL": 10,                  // Max HP gained per level up
-	"PLAYER_HP_REGEN_IN_TERRITORY": 10,  // HP per second when in own territory (fast regen)
-	"TERRITORY_DAMAGE_REDUCTION": 0.2,   // Damage reduction when in own territory (0.5 = 50% less damage)
-	"TERRITORY_SHRINK_IN_TERRITORY_PER_SEC": 0.05, // Territory shrink rate when inside (1% per sec)
+	"PLAYER_HP_REGEN_IN_TERRITORY": 15,  // HP per second when in own territory (fast regen)
+	"TERRITORY_DAMAGE_REDUCTION": 0.30,   // Damage reduction when in own territory (0.5 = 50% less damage)
+	"TERRITORY_SHRINK_IN_TERRITORY_PER_SEC": 0.005, // Territory shrink rate when inside (1% per sec)
 	
 	// ===== STAMINA SYSTEM =====
 	// Stamina drains when outside territory; HP drains when stamina is empty
 	"PLAYER_MAX_STAMINA": 100,              // Maximum stamina
 	"STAMINA_DRAIN_OUTSIDE_PER_SEC": 15,    // Stamina drain rate outside territory (~10 sec to empty)
-	"STAMINA_HP_DRAIN_PER_SEC": 40,          // HP drain rate when stamina is empty
+	"STAMINA_HP_DRAIN_PER_SEC": 25,          // HP drain rate when stamina is empty
 	"STAMINA_REGEN_INSIDE_PER_SEC": 75,     // Stamina regen rate inside territory
 	"EXHAUSTED_RECOVER_THRESHOLD": 20,      // Stamina needed to recover from exhausted state
 	
@@ -91,7 +91,7 @@ export const consts = {
 	
 	// ===== ENEMY SPAWN BOOST =====
 	"ENEMY_SPAWN_BOOST_DURATION": 15, // Seconds of boosted spawns after a boss spawns
-	"ENEMY_SPAWN_BOOST_MULT": 0.6,    // Spawn interval multiplier during boost (lower = faster)
+	"ENEMY_SPAWN_BOOST_MULT": 0.4,    // Spawn interval multiplier during boost (lower = faster)
 	
 	// ===== HEAL PACKS (Support drone passive) =====
 	"HEAL_PACK_LIFETIME": 20,         // Seconds before heal pack disappears

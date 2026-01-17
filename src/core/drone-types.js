@@ -47,31 +47,31 @@ export const DRONE_TYPES = [
 		color: '#FF6B6B',
 		opacity: 1.0,             // Full opacity
 		damageMult: 1.25,
-		cooldownMult: 1.00,       // ~0.5s base cooldown
-		rangeMult: 1.00,
+		cooldownMult: 1.25,       // ~0.5s base cooldown
+		rangeMult: 1.25,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
 		attackType: 'bullet',
 		isHitscan: false,
-		projectileSpeed: 400,     // pixels per second
+		projectileSpeed: 600,     // pixels per second
 		projectileLifetime: 0,    // seconds (0 = use range-based lifetime)
 		pierceCount: 0,
 		projectileSize: 4,
 		procCoefficient: 1.0,
 		// PASSIVE: Ramps damage on same target
 		rampsTargetDamage: true,
-		rampDamagePerStack: 0.25,   // +15% damage per stack
+		rampDamagePerStack: 0.25,   // +25% damage per stack
 		rampMaxStacks: 6,           // Max 5 stacks (+75% damage)
 		rampDecayTime: 2          // Stacks decay after 1.5s without hitting target
 	},
 	{
 		id: 'rapid',
 		name: 'Rapid',
-		description: 'Hitscan laser beams. Hits splash to nearby enemies for 15% damage.',
+		description: 'Hitscan laser beams. Hits splash to nearby enemies for 25% damage.',
 		color: '#4ECDC4',
 		opacity: 0.8,             // Slightly transparent lasers
-		damageMult: 0.4,         // Much lower damage per hit
-		cooldownMult: 0.4,       // Very fast fire rate (~8 shots/sec)
+		damageMult: 0.425,         // Much lower damage per hit
+		cooldownMult: 0.35,       // Very fast fire rate (~8 shots/sec)
 		rangeMult: 0.90,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
@@ -84,7 +84,7 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.5,
 		// PASSIVE: Chain hits nearby enemies
 		chainHitsNearby: true,
-		chainHitPercent: 0.15,      // 15% of original damage
+		chainHitPercent: 0.20,      // 15% of original damage
 		chainHitRadius: 60          // Radius to splash damage
 	},
 	{
@@ -93,7 +93,7 @@ export const DRONE_TYPES = [
 		description: 'Heavy railgun. Damage increases with each enemy pierced.',
 		color: '#9B59B6',
 		opacity: 1.0,             // Full opacity for heavy shots
-		damageMult: 1.5,         // High damage per shot
+		damageMult: 2,         // High damage per shot
 		cooldownMult: 2.50,       // Very slow fire (~0.8 shots/sec)
 		rangeMult: 2.5,             // Extra long range
 		orbitRadiusMult: .8,
@@ -138,8 +138,8 @@ export const DRONE_TYPES = [
 		description: 'Fast bullets that pierce 1 enemy. Fire rate ramps up to 2x while shooting.',
 		color: '#F39C12',
 		opacity: 1.0,             // Full opacity
-		damageMult: 0.75,
-		cooldownMult: 0.55,       // Fast fire rate
+		damageMult: 0.3,
+		cooldownMult: 0.45,       // Fast fire rate
 		rangeMult: 1.00,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
@@ -162,8 +162,8 @@ export const DRONE_TYPES = [
 		description: 'Pulse beams that slow enemies. Drops heal packs on projectile death.',
 		color: '#2ECC71',
 		opacity: 0.4,             // More transparent pulse effect
-		damageMult: 0.65,
-		cooldownMult: 1.75,
+		damageMult: 1,
+		cooldownMult: 1.5,
 		rangeMult: 1.30,          // Long range support
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
@@ -189,7 +189,7 @@ export const DRONE_TYPES = [
 		description: 'Tiny hitscan lasers. Applies stacking bleed damage over time.',
 		color: '#E74C3C',
 		opacity: 0.6,             // More transparent for swarm effect
-		damageMult: 0.125,         // Very low damage per hit
+		damageMult: 0.11,         // Very low damage per hit
 		cooldownMult: 0.10,       // Extremely fast (~13 shots/sec)
 		rangeMult: 0.85,          // Shorter range
 		orbitRadiusMult: .8,
@@ -203,9 +203,9 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.4,
 		// PASSIVE: Stacking bleed
 		appliesBleed: true,
-		bleedDamagePerStack: 1,     // 1 damage per second per stack
-		bleedDuration: 2.0,         // Each stack lasts 2 seconds (refreshed on hit)
-		bleedMaxStacks: 10          // Max 10 stacks (10 DPS)
+		bleedDamagePerStack: 2,     // 1 damage per second per stack
+		bleedDuration: 5.0,         // Each stack lasts 2 seconds (refreshed on hit)
+		bleedMaxStacks: 50          // Max 10 stacks (10 DPS)
 	}
 ];
 

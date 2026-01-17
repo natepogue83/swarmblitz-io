@@ -2541,7 +2541,7 @@ function Game(id) {
 					p.heatseekerCooldown = UPGRADE_KNOBS.HEATSEEKER_DRONES.attackCooldown;
 					const range = UPGRADE_KNOBS.HEATSEEKER_DRONES.attackRange;
 					const baseDamage = consts.DRONE_DAMAGE || 10;
-					const droneDamage = baseDamage * stats.damageMult * UPGRADE_KNOBS.HEATSEEKER_DRONES.damagePercent;
+					const droneDamage = baseDamage * damageMult * UPGRADE_KNOBS.HEATSEEKER_DRONES.damagePercent;
 					const droneCount = UPGRADE_KNOBS.HEATSEEKER_DRONES.droneCount;
 					const procCoeff = PROC_COEFFICIENTS.heatseekerDrones ?? 0.45;
 					
@@ -2813,6 +2813,35 @@ function Game(id) {
 			const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
 			const baseProcCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
 			const procOrigin = originOverride ? originOverride : { x: drone.x, y: drone.y };
+
+			// Execute: Enemies below threshold HP are instantly killed (hitscan)
+			if (stats.hasExecute && target.hp > 0) {
+				const executeThreshold = (target.maxHp || target.hp) * UPGRADE_KNOBS.EXECUTE.hpThreshold;
+				if (target.hp < executeThreshold) {
+					const executeDamage = target.hp;
+					target.hp = 0;
+
+					// Use override position if provided (for first drone), otherwise use drone position
+					const fromX = originOverride ? originOverride.x : drone.x;
+					const fromY = originOverride ? originOverride.y : drone.y;
+					deltas.hitscanEvents.push({
+						fromX: fromX,
+						fromY: fromY,
+						toX: target.x,
+						toY: target.y,
+						ownerId: player.num,
+						targetEnemyId: target.id,
+						damage: executeDamage,
+						remainingHp: target.hp,
+						isCrit: false,
+						attackType: drone.attackType || 'bullet',
+						typeColor: drone.typeColor || '#FF6B6B'
+					});
+
+					handleEnemyDeath(target, player);
+					return;
+				}
+			}
 			
 			// PASSIVE: Assault - Ramp damage on same target
 			let finalDamage = damage;
