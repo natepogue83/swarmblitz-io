@@ -2,24 +2,31 @@ import jquery from "jquery";
 import { Color } from "../core";
 import * as client from "../game-client";
 import { consts } from "../../config.js";
+import { ENEMY_TYPES, BOSS_TYPES } from "../core/enemy-knobs.js";
 import { UPGRADE_ICONS, UPGRADES_BY_ID, UPGRADES_BY_RARITY } from "../core/upgrades.js";
 import * as SoundManager from "../sound-manager.js";
 
 // Drone rendering constants
 const DRONE_VISUAL_RADIUS = consts.DRONE_RADIUS || 10;
 
-// Enemy type colors and styles
-const ENEMY_STYLES = {
-	basic:   { color: "rgba(200, 60, 60, 0.9)",  outline: "rgba(90, 20, 20, 0.9)" },     // Red - basic
-	charger: { color: "rgba(255, 140, 0, 0.9)",  outline: "rgba(140, 70, 0, 0.9)" },     // Orange - charges at player
-	tank:    { color: "rgba(100, 100, 180, 0.9)", outline: "rgba(40, 40, 100, 0.9)" },   // Blue - slow, high HP
-	swarm:   { color: "rgba(150, 220, 80, 0.9)", outline: "rgba(70, 120, 30, 0.9)" },    // Green - small, fast, groups
-	sniper:  { color: "rgba(180, 60, 180, 0.9)", outline: "rgba(90, 20, 90, 0.9)" },     // Purple - keeps distance
-	// Boss types
-	titan:     { color: "rgba(80, 80, 80, 0.95)",   outline: "rgba(40, 40, 40, 0.95)" },   // Dark gray - giant slow boss
-	berserker: { color: "rgba(220, 50, 50, 0.95)",  outline: "rgba(120, 20, 20, 0.95)" },  // Deep red - charging boss
-	summoner:  { color: "rgba(100, 50, 150, 0.95)", outline: "rgba(50, 20, 80, 0.95)" }    // Dark purple - spawns minions
-};
+// Enemy type colors and styles (shared with server data)
+const ENEMY_STYLES = {};
+for (const [id, data] of Object.entries(ENEMY_TYPES)) {
+	if (data.color) {
+		ENEMY_STYLES[id] = {
+			color: data.color,
+			outline: data.outline || data.color
+		};
+	}
+}
+for (const [id, data] of Object.entries(BOSS_TYPES)) {
+	if (data.color) {
+		ENEMY_STYLES[id] = {
+			color: data.color,
+			outline: data.outline || data.color
+		};
+	}
+}
 
 const SHADOW_OFFSET = 5;
 const ANIMATE_FRAMES = 24;

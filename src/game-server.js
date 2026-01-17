@@ -5,7 +5,7 @@ import { ENEMY_SCALING, ENEMY_XP_DROP } from "./core/enemy-knobs.js";
 import { consts } from "../config.js";
 import { MSG } from "./net/packet.js";
 import { rollUpgradeChoices, selectUpgrade, initPlayerUpgrades, serializeUpgrades, recalculateDerivedStats } from "./core/upgrade-system.js";
-import { rollDroneChoices, getDroneType, getDefaultDroneType, applyDroneType, DRONE_TYPES_BY_ID } from "./core/drone-types.js";
+import { rollDroneChoices, getDroneType, getDefaultDroneType, applyDroneType, DRONE_TYPES_BY_ID, DRONE_TYPES } from "./core/drone-types.js";
 import * as UPGRADE_KNOBS from "./core/upgrade-knobs.js";
 
 // Debug logging (keep off by default for performance)
@@ -13,6 +13,73 @@ const DEBUG_LEVELING_LOGS = false;
 const DEBUG_HITSCAN_LOGS = false;
 const DEBUG_KILL_REWARD_LOGS = false;
 const PROC_COEFFICIENTS = UPGRADE_KNOBS.PROC_COEFFICIENTS || { default: 1.0 };
+
+const PLAYER_COLOR_MIN_DISTANCE = 65;
+const PROJECTILE_COLORS = [
+	'#FF4500', // missiles
+	'#FF9F1C', // explosive rounds
+	'#00BFFF', // chain lightning
+	'#8B0000', // bleed
+	'#FF6600', // sticky charges
+	'#00FFFF', // arc barrage
+	'#00FF88'  // heatseeker drone hits
+];
+
+function parseColorToRgb(color) {
+	if (!color) return null;
+	if (color instanceof Color) {
+		return parseColorToRgb(color.rgbString());
+	}
+	if (typeof color !== 'string') return null;
+	if (color.startsWith('#')) {
+		let hex = color.slice(1);
+		if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+		if (hex.length !== 6) return null;
+		const r = parseInt(hex.slice(0, 2), 16);
+		const g = parseInt(hex.slice(2, 4), 16);
+		const b = parseInt(hex.slice(4, 6), 16);
+		if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
+		return [r, g, b];
+	}
+	const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+	if (!match) return null;
+	return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
+}
+
+function colorDistance(a, b) {
+	const dr = a[0] - b[0];
+	const dg = a[1] - b[1];
+	const db = a[2] - b[2];
+	return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+const FORBIDDEN_PLAYER_COLOR_RGBS = (() => {
+	const colors = [];
+	for (const type of DRONE_TYPES) {
+		if (type.color) colors.push(type.color);
+	}
+	for (const data of Object.values(ENEMY_TYPES)) {
+		if (data.color) colors.push(data.color);
+		if (data.outline) colors.push(data.outline);
+	}
+	for (const data of Object.values(BOSS_TYPES)) {
+		if (data.color) colors.push(data.color);
+		if (data.outline) colors.push(data.outline);
+	}
+	colors.push(...PROJECTILE_COLORS);
+	return colors.map(parseColorToRgb).filter(Boolean);
+})();
+
+function isPlayerColorTooSimilar(color) {
+	const rgb = parseColorToRgb(color);
+	if (!rgb) return false;
+	for (const forbidden of FORBIDDEN_PLAYER_COLOR_RGBS) {
+		if (colorDistance(rgb, forbidden) < PLAYER_COLOR_MIN_DISTANCE) {
+			return true;
+		}
+	}
+	return false;
+}
 
 function createEconomyDeltas() {
 	return {
@@ -302,7 +369,11 @@ function updateDronePositions(player, deltaSeconds) {
 }
 
 function Game(id) {
-	const possColors = Color.possColors();
+	let possColors = Color.possColors();
+	const filteredColors = possColors.filter(color => !isPlayerColorTooSimilar(color));
+	if (filteredColors.length > 0) {
+		possColors = filteredColors;
+	}
 	let nextInd = 0;
 	const players = [];
 	let frame = 0;

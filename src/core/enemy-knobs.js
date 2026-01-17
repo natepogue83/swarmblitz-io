@@ -19,7 +19,9 @@ export const ENEMY_TYPES = {
 		speed: 55,
 		contactDamage: 8,
 		xpDropValue: 1,
-		spawnWeight: 50      // Higher = more common
+		spawnWeight: 50,     // Higher = more common
+		color: "rgba(200, 60, 60, 0.9)",
+		outline: "rgba(90, 20, 20, 0.9)"
 	},
 	charger: {
 		unlockTime: 15,      // Unlocks at 15 seconds
@@ -31,7 +33,9 @@ export const ENEMY_TYPES = {
 		chargeCooldown: 3,   // Seconds between charges
 		chargeDistance: 180, // Distance to trigger charge
 		xpDropValue: 2,
-		spawnWeight: 30
+		spawnWeight: 30,
+		color: "rgba(255, 140, 0, 0.9)",
+		outline: "rgba(140, 70, 0, 0.9)"
 	},
 	tank: {
 		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
@@ -40,7 +44,9 @@ export const ENEMY_TYPES = {
 		speed: 30,           // Very slow
 		contactDamage: 20,
 		xpDropValue: 4,
-		spawnWeight: 15
+		spawnWeight: 15,
+		color: "rgba(100, 100, 180, 0.9)",
+		outline: "rgba(40, 40, 100, 0.9)"
 	},
 	swarm: {
 		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
@@ -49,7 +55,9 @@ export const ENEMY_TYPES = {
 		speed: 85,           // Fast
 		contactDamage: 6,
 		xpDropValue: 1,
-		spawnWeight: 60      // Very common when unlocked
+		spawnWeight: 60,     // Very common when unlocked
+		color: "rgba(150, 220, 80, 0.9)",
+		outline: "rgba(70, 120, 30, 0.9)"
 	},
 	sniper: {
 		unlockTime: 90,      // Unlocks at 90 seconds (60+30)
@@ -59,7 +67,9 @@ export const ENEMY_TYPES = {
 		contactDamage: 5,
 		preferredDistance: 200,  // Distance it tries to maintain from player
 		xpDropValue: 10,
-		spawnWeight: 20
+		spawnWeight: 20,
+		color: "rgba(180, 60, 180, 0.9)",
+		outline: "rgba(90, 20, 90, 0.9)"
 	}
 };
 
@@ -75,7 +85,9 @@ export const BOSS_TYPES = {
 		speed: 20,
 		contactDamage: 35,
 		xpDropValue: 50,
-		spawnWeight: 40
+		spawnWeight: 40,
+		color: "rgba(80, 80, 80, 0.95)",
+		outline: "rgba(40, 40, 40, 0.95)"
 	},
 	berserker: {
 		// Medium boss that charges repeatedly
@@ -87,7 +99,9 @@ export const BOSS_TYPES = {
 		chargeCooldown: 2,
 		chargeDistance: 250,
 		xpDropValue: 50,
-		spawnWeight: 35
+		spawnWeight: 35,
+		color: "rgba(220, 50, 50, 0.95)",
+		outline: "rgba(120, 20, 20, 0.95)"
 	},
 	summoner: {
 		// Boss that spawns minions
@@ -99,7 +113,9 @@ export const BOSS_TYPES = {
 		summonCount: 3,       // Enemies spawned per summon
 		preferredDistance: 300, // Tries to stay away
 		xpDropValue: 50,
-		spawnWeight: 25
+		spawnWeight: 25,
+		color: "rgba(100, 50, 150, 0.95)",
+		outline: "rgba(50, 20, 80, 0.95)"
 	}
 };
 
