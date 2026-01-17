@@ -30,10 +30,10 @@ export const consts = {
 	"PREFIXES": "Angry Baby Crazy Diligent Excited Fat Greedy Hungry Interesting Japanese Kind Little Magic Naïve Old Powerful Quiet Rich Superman THU Undefined Valuable Wifeless Xiangbuchulai Young Zombie",
 	"NAMES": "Alice Bob Carol Dave Eve Francis Grace Hans Isabella Jason Kate Louis Margaret Nathan Olivia Paul Queen Richard Susan Thomas Uma Vivian Winnie Xander Yasmine Zach",
 	"MAX_COINS": 200,
-	"COIN_SPAWN_INTERVAL_SEC": 2.5,
+	"COIN_SPAWN_INTERVAL_SEC": 0.5,
 	"COIN_RADIUS": 8,
-	"XP_ORB_PULL_SPEED_MULT": 0.8,   // Enemy XP orb pull speed in territory
-	"XP_ORB_PULL_ACCEL_MULT": 1.2,   // Accel rate toward max pull speed
+	"XP_ORB_PULL_SPEED_MULT": 1.2,   // Enemy XP orb pull speed in territory
+	"XP_ORB_PULL_ACCEL_MULT": 1.25,   // Accel rate toward max pull speed
 	
 	// ===== XP VALUES (Easy tuning knobs) =====
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)

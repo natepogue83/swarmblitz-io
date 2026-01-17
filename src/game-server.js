@@ -192,7 +192,19 @@ function getEnemyScalingMultiplier(runTimeSeconds, scaling) {
 	const elapsed = Math.max(0, runTimeSeconds - startTime);
 	const minutes = elapsed / 60;
 	const perMinute = scaling.perMinute || 0;
-	const mult = 1 + minutes * perMinute;
+	
+	let exponent = scaling.exponent ?? 1.5;
+	
+	// Apply late-game ramp if configured
+	const ramp = ENEMY_SCALING.lateGameRamp;
+	if (ramp && ramp.enabled && minutes > ramp.startMinute) {
+		const extra = (minutes - ramp.startMinute) * (ramp.exponentRampPerMinute || 0);
+		exponent += extra;
+	}
+	
+	const linearMult = 1 + minutes * perMinute;
+	const mult = Math.pow(linearMult, exponent);
+	
 	if (scaling.maxMult !== undefined) {
 		return Math.min(scaling.maxMult, mult);
 	}
@@ -419,6 +431,7 @@ function Game(id) {
 	const enemySpawner = new EnemySpawner();
 	let enemyKills = 0;
 	let runTime = 0;
+	let timeSpeedMultiplier = 1; // Dev tool: speeds up runTime without affecting simulation
 	const enemyLifetimeSeconds = consts.ENEMY_LIFETIME_SECONDS ?? 15;
 
 	function markEnemyHit(enemy) {
@@ -604,6 +617,9 @@ function Game(id) {
 
 	function getEnemyStats() {
 		const bossCount = enemies.filter(e => e.isBoss).length;
+		const hpMult = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+		const dmgMult = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+		const basicEnemyBaseHp = ENEMY_TYPES.basic?.maxHp || 30;
 		return {
 			runTime,
 			spawnInterval: enemySpawner.spawnInterval,
@@ -612,7 +628,12 @@ function Game(id) {
 			unlockedTypes: enemySpawner.getUnlockedTypes(),
 			bossCount,
 			bossInterval: enemySpawner.getBossInterval(),
-			nextBossIn: Math.max(0, enemySpawner.nextBossAt - runTime)
+			nextBossIn: Math.max(0, enemySpawner.nextBossAt - runTime),
+			// Scaling debug info
+			hpMult,
+			dmgMult,
+			timeSpeed: timeSpeedMultiplier,
+			sampleSpawnHp: Math.round(basicEnemyBaseHp * hpMult)
 		};
 	}
 	
@@ -882,6 +903,18 @@ function Game(id) {
 				console.log(`[DEV] ${player.name} cleared all drones`);
 				break;
 			}
+			
+			case 'setTimeSpeed': {
+				// Set the time speed multiplier (affects runTime for enemy scaling/spawning, not simulation)
+				const multiplier = parseFloat(payload.multiplier);
+				if (isFinite(multiplier) && multiplier >= 0.25 && multiplier <= 20) {
+					timeSpeedMultiplier = multiplier;
+					console.log(`[DEV] ${player.name} set time speed to ${multiplier}x`);
+				} else {
+					console.warn(`[DEV] Invalid time speed multiplier: ${payload.multiplier}`);
+				}
+				break;
+			}
 		}
 	};
 	
@@ -1016,7 +1049,7 @@ function Game(id) {
 
 	function update(economyDeltas, deltaSeconds, shouldSendDroneUpdates) {
 		const dead = [];
-		runTime += deltaSeconds;
+		runTime += deltaSeconds * timeSpeedMultiplier;
 		
 		const activePlayer = players.find(p => !p.dead && !p.disconnected) || null;
 		const frameScale = deltaSeconds / (1 / 60);

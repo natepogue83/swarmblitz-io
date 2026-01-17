@@ -977,6 +977,10 @@ function devClearDrones() {
 	sendMessage(MSG.DEV_CMD, { cmd: 'clearDrones' });
 }
 
+function devSetTimeSpeed(multiplier) {
+	sendMessage(MSG.DEV_CMD, { cmd: 'setTimeSpeed', multiplier });
+}
+
 // Export stuff
 export { 
 	connectGame, 
@@ -1012,7 +1016,8 @@ export {
 	devHeal,
 	devGodMode,
 	devAddDrone,
-	devClearDrones
+	devClearDrones,
+	devSetTimeSpeed
 };
 
 export const allowAnimation = {

@@ -152,21 +152,29 @@ export const ENEMY_SPAWN_LIMITS = {
 
 export const ENEMY_SCALING = {
 	// Applies to new spawns based on run time (in seconds).
-	// Multiplier = 1 + (minutesSinceStart * perMinute), clamped to maxMult.
-	// Baseline: keep pace with player power growth without runaway stats.
-	// Example: after 10 minutes, hp = 1 + (10 * 0.18) = 2.8x (clamped).
-	// Damage is intentionally slower to reduce sudden difficulty spikes.
+	// Multiplier = (1 + minutesSinceStart * perMinute) ^ exponent, clamped to maxMult.
+	// Exponential curve (^1.7) for aggressive late-game scaling.
+	// Example: after 10 min with perMinute=0.25, linear=3.5, actual=3.5^1.7 ≈ 8.4x
+	// Damage is slightly slower but still aggressive (^1.6).
 	hp: {
 		enabled: true,
 		startTime: 0,
-		perMinute: .35,
-		maxMult: 100.0
+		perMinute: 0.64,
+		exponent: 1.6,
+		maxMult: 9001.0
 	},
 	damage: {
 		enabled: true,
 		startTime: 0,
-		perMinute: 0.2,
-		maxMult: 10.0
+		perMinute: 0.15,
+		exponent: 1.6,
+		maxMult: 30.0
+	},
+	// Extra "late-game ramp" that kicks in after a certain time
+	lateGameRamp: {
+		enabled: true,
+		startMinute: 2,
+		exponentRampPerMinute: 0.05 // Adds to the exponent every minute after startMinute
 	}
 };
 
