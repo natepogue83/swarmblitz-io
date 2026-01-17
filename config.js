@@ -32,46 +32,74 @@ export const consts = {
 	"MAX_COINS": 200,
 	"COIN_SPAWN_INTERVAL_SEC": 2.5,
 	"COIN_RADIUS": 8,
-	"COIN_VALUE": 5,
+	
+	// ===== XP VALUES (Easy tuning knobs) =====
+	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)
+	"ENEMY_XP_DROP_VALUE": 3,          // XP from picking up enemy death drops (red orbs)
+	"TERRITORY_XP_PER_AREA": 0.00018,  // XP gained per unit of area captured (territory)
+	
+	// ===== DEATH XP TRANSFER =====
 	"COIN_DROP_PERCENT": 0.15,         // Percentage of XP dropped as loot on death
 	"KILLER_XP_PERCENT": 0.15,         // Percentage of XP transferred directly to killer
 	"COIN_DROP_MIN": 10,               // Minimum XP dropped on death (even if broke)
 	"KILLER_XP_MIN": 20,               // Minimum XP given to killer
-	"COINS_PER_AREA_UNIT": 0.00025,
 	
 	// ===== TRAIL SPEED BUFF =====
 	// When players leave their territory, they gain speed over time (risk/reward)
-	"TRAIL_SPEED_BUFF_MAX": 1.6,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
-	"TRAIL_SPEED_BUFF_RAMP_TIME": 8,  // Seconds to reach max speed buff
+	"TRAIL_SPEED_BUFF_MAX": 1.4,        // Maximum speed multiplier when trailing (1.5 = 50% faster)
+	"TRAIL_SPEED_BUFF_RAMP_TIME": 5,  // Seconds to reach max speed buff
 	"TRAIL_SPEED_BUFF_EASE": 2,       // Easing exponent (1 = linear, 2 = quadratic ease-in, higher = slower start)
 	
 	// ===== XP / LEVELING SYSTEM =====
-	"XP_BASE_PER_LEVEL": 10,         // Base XP needed to level up (level 1 → 2)
+	"XP_BASE_PER_LEVEL": 25,         // Base XP needed to level up (level 1 → 2)
 	"XP_INCREMENT_PER_LEVEL": 15,    // XP cost increases by this * level each level
 	// Formula: XP needed for level L = BASE + (L-1) * INCREMENT
 	// Level 1→2: 50, Level 2→3: 65, Level 3→4: 80, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.04,  // Size increase per level (5%)
-	"PLAYER_SIZE_SCALE_MAX": 1.75,     // Maximum size multiplier
+	"PLAYER_SIZE_SCALE_MAX": 2.5,     // Maximum size multiplier
 	
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)
 	"PLAYER_MAX_HP": 100,
-	"PLAYER_HP_REGEN_IN_TERRITORY": 30,  // SHP per second when in own territory (fast regen)
+	"HP_PER_LEVEL": 10,                  // Max HP gained per level up
+	"PLAYER_HP_REGEN_IN_TERRITORY": 10,  // HP per second when in own territory (fast regen)
 	"TERRITORY_DAMAGE_REDUCTION": 0.2,   // Damage reduction when in own territory (0.5 = 50% less damage)
 	
+	// ===== STAMINA SYSTEM =====
+	// Stamina drains when outside territory; HP drains when stamina is empty
+	"PLAYER_MAX_STAMINA": 100,              // Maximum stamina
+	"STAMINA_DRAIN_OUTSIDE_PER_SEC": 12,    // Stamina drain rate outside territory (~10 sec to empty)
+	"STAMINA_HP_DRAIN_PER_SEC": 20,          // HP drain rate when stamina is empty
+	"STAMINA_REGEN_INSIDE_PER_SEC": 75,     // Stamina regen rate inside territory
+	"EXHAUSTED_RECOVER_THRESHOLD": 20,      // Stamina needed to recover from exhausted state
+	
 	// ===== DRONE SYSTEM =====
-	// Note: Drones are now granted automatically via leveling (1 per level)
+	// Note: Drones are now granted automatically via leveling
 	// Drones use hitscan - instant damage when they fire
-	"MAX_DRONES": 10,                 // Maximum drones per player (effectively level cap)
+	"MAX_DRONES": 5,                 // Maximum drones per player (effectively level cap)
+	"DRONE_LEVEL_INTERVAL": 4,        // Gain 1 drone every N levels
 	"DRONE_ORBIT_RADIUS": 55,         // Distance from player center
 	"DRONE_ORBIT_SPEED": 2,         // Radians per second (orbit rotation speed)
 	"DRONE_RADIUS": 10,               // Visual/collision radius
-	"DRONE_DAMAGE": 5,               // Damage for first drone (hitscan)
-	"DRONE_DAMAGE_EXTRA_MULT": 0.5,   // Damage multiplier for 2nd drone (relative to 1st)
-	"DRONE_DAMAGE_DECAY_FACTOR": 0.75,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
+	"DRONE_DAMAGE": 25,               // Damage for first drone (hitscan)
+	"DRONE_DAMAGE_EXTRA_MULT": 1,   // Damage multiplier for 2nd drone (relative to 1st)
+	"DRONE_DAMAGE_DECAY_FACTOR": 1,  // Damage multiplier for each drone after the 2nd (e.g., 0.8 = 20% reduction per drone)
 	"DRONE_RANGE": 158,               // Targeting range (reduced 30% from 225)
-	"DRONE_COOLDOWN": .1,             // Seconds between shots
+	"DRONE_COOLDOWN": .5,             // Seconds between shots
 	"DRONE_UPDATE_EVERY_TICKS": 1,    // Throttle drone updates sent to clients (1 = every tick)
+	
+	// ===== ENEMY SPAWN BOOST =====
+	"ENEMY_SPAWN_BOOST_DURATION": 15, // Seconds of boosted spawns after a boss spawns
+	"ENEMY_SPAWN_BOOST_MULT": 0.6,    // Spawn interval multiplier during boost (lower = faster)
+	
+	// ===== HEAL PACKS (Support drone passive) =====
+	"HEAL_PACK_LIFETIME": 20,         // Seconds before heal pack disappears
+	"HEAL_PACK_BLINK_TIME": 5,        // Seconds before disappearing when pack starts blinking
+	"HEAL_PACK_RADIUS": 12,           // Pickup radius for heal packs
+	
+	// ===== ENEMY STATUS EFFECTS =====
+	"SLOW_DURATION_DEFAULT": 1.5,     // Default slow duration in seconds
+	"BLEED_TICK_RATE": 0.25,          // Bleed ticks every 0.25 seconds (4 times per second)
 	
 	// ===== AREA OF INTEREST (AOI) OPTIMIZATION =====
 	// Reduces bandwidth from O(N²) to O(N×K) where K = avg nearby players

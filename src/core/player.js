@@ -1,6 +1,7 @@
 import Color from "./color.js";
 import { consts } from "../../config.js";
 import polygonClipping from "polygon-clipping";
+import * as UPGRADE_KNOBS from "./upgrade-knobs.js";
 
 export const PLAYER_RADIUS = 15;
 const TRAIL_MIN_DIST = 10;
@@ -267,6 +268,10 @@ export default function Player(sdata) {
 	this.hp = sdata.hp ?? (consts.PLAYER_MAX_HP || 100);
 	this.maxHp = sdata.maxHp ?? (consts.PLAYER_MAX_HP || 100);
 	
+	// Stamina system (drains outside territory, HP drains when empty)
+	this.stamina = sdata.stamina ?? (consts.PLAYER_MAX_STAMINA || 100);
+	this.maxStamina = sdata.maxStamina ?? (consts.PLAYER_MAX_STAMINA || 100);
+	
 	// Territory and trail
 	this.territory = sdata.territory || [];
 	this.trail = new Trail(this);
@@ -343,7 +348,18 @@ Player.prototype.move = function(deltaSeconds) {
 	
 	// Apply speed buff to movement
 	// Include upgrade moveSpeedMult if available
-	const upgradeSpeedMult = (this.derivedStats && this.derivedStats.moveSpeedMult) || 1.0;
+	let upgradeSpeedMult = (this.derivedStats && this.derivedStats.moveSpeedMult) || 1.0;
+	
+	// Adrenaline Rush: Bonus move speed when recently hit
+	if (this.adrenalineTimer > 0) {
+		upgradeSpeedMult += UPGRADE_KNOBS.ADRENALINE.speedBonus;
+	}
+	
+	// Momentum: Bonus speed per second outside territory
+	if (this.momentumStacks > 0) {
+		upgradeSpeedMult += this.momentumStacks * UPGRADE_KNOBS.MOMENTUM.speedPerSecond;
+	}
+	
 	const speedMultiplier = this.currentSpeedBuff * upgradeSpeedMult;
 
 	// Move in current direction
@@ -1285,7 +1301,10 @@ Player.prototype.die = function() {
 Player.prototype.updateSizeScale = function() {
 	const sizeScalePerLevel = consts.PLAYER_SIZE_SCALE_PER_LEVEL ?? 0.05;
 	const sizeScaleMax = consts.PLAYER_SIZE_SCALE_MAX ?? 1.6;
-	this.sizeScale = Math.min(sizeScaleMax, Math.max(1.0, 1.0 + (this.level - 1) * sizeScalePerLevel));
+	const baseScale = Math.min(sizeScaleMax, Math.max(1.0, 1.0 + (this.level - 1) * sizeScalePerLevel));
+	const sizeScaleMult = (this.derivedStats && this.derivedStats.sizeScaleMult) || 1.0;
+	const maxScale = sizeScaleMax * Math.max(1.0, sizeScaleMult);
+	this.sizeScale = Math.min(maxScale, Math.max(0.6, baseScale * sizeScaleMult));
 };
 
 // Get the player's effective collision radius (used by server for collisions)
@@ -1364,6 +1383,8 @@ Player.prototype.renderBody = function(ctx, fade, skipTrail) {
 	
 	// Check if in own territory for gold glow effect
 	const inOwnTerritory = this.isInOwnTerritory();
+	const stats = this.derivedStats || {};
+	const now = Date.now();
 	
 	// Render player body
 	if (this.isSnipped) {
@@ -1415,6 +1436,59 @@ Player.prototype.renderBody = function(ctx, fade, skipTrail) {
 		ctx.fill();
 	}
 	
+	// Territorial: subtle red glow when in territory
+	if (stats.hasTerritorial && inOwnTerritory && !this.isSnipped) {
+		ctx.save();
+		ctx.shadowColor = 'rgba(255, 80, 80, 0.6)';
+		ctx.shadowBlur = 10;
+		ctx.strokeStyle = 'rgba(255, 80, 80, 0.35)';
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, scaledRadius + 2, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.restore();
+	}
+	
+	// Phase Shift: brief gold flash when effect triggers
+	if (this.phaseShiftFlashUntil && now < this.phaseShiftFlashUntil) {
+		const flash = (this.phaseShiftFlashUntil - now) / 500;
+		ctx.save();
+		ctx.shadowColor = 'rgba(255, 215, 0, 0.9)';
+		ctx.shadowBlur = 18 * flash;
+		ctx.strokeStyle = `rgba(255, 215, 0, ${0.6 * flash})`;
+		ctx.lineWidth = 3;
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, scaledRadius + 6, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.restore();
+	}
+	
+	// Adrenaline: cyan glow + speed streaks while active
+	if (this.adrenalineGlowUntil && now < this.adrenalineGlowUntil) {
+		const glow = (this.adrenalineGlowUntil - now) / (UPGRADE_KNOBS.ADRENALINE.durationSeconds * 1000);
+		ctx.save();
+		ctx.shadowColor = 'rgba(0, 200, 255, 0.7)';
+		ctx.shadowBlur = 14 * glow;
+		ctx.strokeStyle = `rgba(0, 200, 255, ${0.5 * glow})`;
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, scaledRadius + 4, 0, Math.PI * 2);
+		ctx.stroke();
+		
+		// Speed streaks
+		ctx.strokeStyle = `rgba(0, 220, 255, ${0.35 * glow})`;
+		for (let i = 0; i < 6; i++) {
+			const angle = (Math.PI * 2 * i) / 6 + (now / 300);
+			const inner = scaledRadius + 6;
+			const outer = scaledRadius + 14;
+			ctx.beginPath();
+			ctx.moveTo(this.x + Math.cos(angle) * inner, this.y + Math.sin(angle) * inner);
+			ctx.lineTo(this.x + Math.cos(angle) * outer, this.y + Math.sin(angle) * outer);
+			ctx.stroke();
+		}
+		ctx.restore();
+	}
+	
 	// Snipped glow ring
 	if (this.isSnipped) {
 		const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 100 * 6);
@@ -1425,13 +1499,91 @@ Player.prototype.renderBody = function(ctx, fade, skipTrail) {
 		ctx.stroke();
 	}
 	
-	// Direction indicator
-	const indicatorX = this.x + Math.cos(this.angle) * scaledRadius * 0.6;
-	const indicatorY = this.y + Math.sin(this.angle) * scaledRadius * 0.6;
-	ctx.fillStyle = this.lightBaseColor.deriveAlpha(fade * snipAlpha).rgbString();
+	// Marathon: headband accessory
+	if (stats.hasMarathon && !this.isSnipped) {
+		ctx.save();
+		ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+		ctx.lineWidth = Math.max(2, scaledRadius * 0.15);
+		ctx.beginPath();
+		ctx.arc(this.x, this.y - scaledRadius * 0.25, scaledRadius * 0.9, Math.PI * 1.1, Math.PI * 1.9);
+		ctx.stroke();
+		ctx.restore();
+	}
+	
+	// Vampire: small fangs
+	if (stats.hasVampire && !this.isSnipped) {
+		ctx.save();
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+		const fangWidth = scaledRadius * 0.15;
+		const fangHeight = scaledRadius * 0.2;
+		const fangY = this.y + scaledRadius * 0.35;
+		ctx.beginPath();
+		ctx.moveTo(this.x - fangWidth, fangY);
+		ctx.lineTo(this.x - fangWidth * 0.4, fangY + fangHeight);
+		ctx.lineTo(this.x, fangY);
+		ctx.closePath();
+		ctx.fill();
+		
+		ctx.beginPath();
+		ctx.moveTo(this.x + fangWidth, fangY);
+		ctx.lineTo(this.x + fangWidth * 0.4, fangY + fangHeight);
+		ctx.lineTo(this.x, fangY);
+		ctx.closePath();
+		ctx.fill();
+		ctx.restore();
+	}
+	
+	// Direction indicator - positioned inside the player, pointing towards aim direction
+	// Use targetAngle (where player is aiming) instead of angle (movement direction)
+	const aimAngle = this.targetAngle !== undefined ? this.targetAngle : this.angle;
+	const indicatorX = this.x + Math.cos(aimAngle) * scaledRadius * 0.6;
+	const indicatorY = this.y + Math.sin(aimAngle) * scaledRadius * 0.6;
+	
+	// Shooting animation - pulsate and flash when firing
+	const SHOT_ANIM_DURATION = 150; // ms
+	const timeSinceShot = this.lastShotTime ? Date.now() - this.lastShotTime : Infinity;
+	const shotProgress = Math.min(1, timeSinceShot / SHOT_ANIM_DURATION);
+	const isShooting = shotProgress < 1;
+	
+	// Base indicator size
+	let indicatorSize = scaledRadius * 0.3;
+	let indicatorAlpha = fade * snipAlpha;
+	
+	if (isShooting) {
+		// Expand then contract (quick pop)
+		const expandT = 1 - Math.pow(shotProgress, 0.5); // Fast start, slow end
+		indicatorSize *= 1 + expandT * 0.6; // Expand up to 60%
+		
+		// Flash brighter
+		indicatorAlpha = Math.min(1, indicatorAlpha + expandT * 0.5);
+		
+		// Draw outer glow ring when shooting
+		ctx.save();
+		const glowAlpha = expandT * 0.7;
+		ctx.shadowBlur = 12 * expandT;
+		ctx.shadowColor = this.baseColor.deriveAlpha(glowAlpha).rgbString();
+		ctx.strokeStyle = this.lightBaseColor.deriveAlpha(glowAlpha * fade).rgbString();
+		ctx.lineWidth = 2 + expandT * 2;
+		ctx.beginPath();
+		ctx.arc(indicatorX, indicatorY, indicatorSize + 4 * expandT, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.restore();
+	}
+	
+	// Draw the main indicator dot
+	ctx.fillStyle = this.lightBaseColor.deriveAlpha(indicatorAlpha).rgbString();
 	ctx.beginPath();
-	ctx.arc(indicatorX, indicatorY, scaledRadius * 0.3, 0, Math.PI * 2);
+	ctx.arc(indicatorX, indicatorY, indicatorSize, 0, Math.PI * 2);
 	ctx.fill();
+	
+	// Add bright center when shooting
+	if (isShooting) {
+		const centerAlpha = (1 - shotProgress) * 0.9 * fade;
+		ctx.fillStyle = `rgba(255, 255, 255, ${centerAlpha})`;
+		ctx.beginPath();
+		ctx.arc(indicatorX, indicatorY, indicatorSize * 0.5, 0, Math.PI * 2);
+		ctx.fill();
+	}
 	
 	// Render name (with "SNIPPED!" indicator)
 	ctx.fillStyle = this.shadowColor.deriveAlpha(fade).rgbString();
@@ -1477,6 +1629,11 @@ Player.prototype.serialData = function() {
 		snipElapsed: this.snipElapsed,
 		hp: this.hp,
 		maxHp: this.maxHp,
+		// Stamina
+		stamina: this.stamina,
+		maxStamina: this.maxStamina,
+		// Derived stats from upgrades
+		derivedStats: this.derivedStats || null,
 		// Speed buff state
 		trailStartTime: this.trailStartTime,
 		currentSpeedBuff: this.currentSpeedBuff

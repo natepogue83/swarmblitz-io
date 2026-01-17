@@ -179,27 +179,13 @@ wss.on("connection", (ws) => {
 		
 		if (type === MSG.HELLO) {
 			const name = payload?.name;
-			const viewport = payload?.viewport;
-			const isGod = !!payload?.god;
-			
-			if (isGod) {
-				const result = game.addGod(ws.client);
-				if (result.ok) {
-					ws.god = result.god;
-					sendPacket(ws, MSG.HELLO_ACK, { ok: true });
-					game.sendFullStateToGod(ws.god);
-				} else {
-					sendPacket(ws, MSG.HELLO_ACK, { ok: false, error: "Unable to join as god." });
-				}
-				return;
-			}
 			
 			if (name && name.length > 32) {
 				sendPacket(ws, MSG.HELLO_ACK, { ok: false, error: "Your name is too long!" });
 				return;
 			}
 			
-			const result = game.addPlayer(ws.client, name, viewport);
+			const result = game.addPlayer(ws.client, name);
 			if (!result.ok) {
 				sendPacket(ws, MSG.HELLO_ACK, { ok: false, error: result.error || "Unable to join." });
 				return;
@@ -208,11 +194,6 @@ wss.on("connection", (ws) => {
 			ws.player = result.player;
 			sendPacket(ws, MSG.HELLO_ACK, { ok: true });
 			game.sendFullState(ws.player);
-			return;
-		}
-		
-		if (type === MSG.VIEWPORT && ws.player) {
-			game.updateViewport(ws.player, payload);
 			return;
 		}
 		
@@ -229,9 +210,30 @@ wss.on("connection", (ws) => {
 			return;
 		}
 		
+		if (type === MSG.DRONE_PICK && ws.player) {
+			const droneTypeId = payload?.droneTypeId;
+			if (droneTypeId) {
+				game.handleDronePick(ws.player, droneTypeId);
+			}
+			return;
+		}
+		
+		if (type === MSG.PAUSE && ws.player) {
+			const paused = payload?.paused;
+			if (paused !== undefined) {
+				game.handlePause(ws.player, paused);
+			}
+			return;
+		}
+		
+		if (type === MSG.DEV_CMD && ws.player) {
+			// Dev commands for testing (only in dev mode)
+			game.handleDevCommand(ws.player, payload);
+			return;
+		}
+		
 		if (type === MSG.REQUEST) {
 			if (ws.player) game.sendFullState(ws.player);
-			if (ws.god) game.sendFullStateToGod(ws.god);
 		}
 	});
 	

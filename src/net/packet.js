@@ -7,12 +7,15 @@ export const MSG = {
 	FRAME: 4,
 	INPUT: 5,
 	REQUEST: 6,
-	VIEWPORT: 7,
 	PING: 8,
 	PONG: 9,
 	DEAD: 10,
 	UPGRADE_OFFER: 11,   // Server -> Client: 3 upgrade choices
-	UPGRADE_PICK: 12     // Client -> Server: selected upgrade ID
+	UPGRADE_PICK: 12,    // Client -> Server: selected upgrade ID
+	DRONE_OFFER: 13,     // Server -> Client: 3 drone type choices
+	DRONE_PICK: 14,      // Client -> Server: selected drone type ID
+	PAUSE: 15,           // Client -> Server: pause/unpause game (for settings menu)
+	DEV_CMD: 16          // Client -> Server: dev console command (give xp, upgrades, etc.)
 };
 
 export function encodePacket(type, payload) {

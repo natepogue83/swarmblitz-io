@@ -1,6 +1,5 @@
 import jquery from "jquery";
 import * as client from "./src/game-client";
-import godRenderer from "./src/mode/god";
 import * as playerRenderer from "./src/mode/player";
 import * as SoundManager from "./src/sound-manager.js";
 import { MSG, encodePacket, decodePacket } from "./src/net/packet.js";
@@ -20,11 +19,11 @@ function initMenuSound() {
 	}
 }
 
-function run(flag) {
+function run() {
 	// Stop menu music when starting the game
 	SoundManager.stopMenuMusic();
 	
-	client.setRenderer(flag ? godRenderer : playerRenderer);
+	client.setRenderer(playerRenderer);
 	const wsUrl = getWsUrl();
 	client.connectGame(wsUrl, $("#name").val(), (success, msg) => {
 		if (success) {
@@ -38,7 +37,7 @@ function run(flag) {
 				SoundManager.startMenuMusic();
 			}
 		}
-	}, flag);
+	});
 }
 
 function getWsUrl() {
@@ -83,9 +82,6 @@ $(() => {
 				});
 				$(".start").removeAttr("disabled").on("click", evt => {
 					run();
-				});
-				$(".spectate").removeAttr("disabled").click(evt => {
-					run(true);
 				});
 			}
 		});

@@ -1,57 +1,105 @@
 import { Color, Player, initPlayer, updateFrame, polygonArea, pointInPolygon, PLAYER_RADIUS } from "./core/index.js";
 import Enemy from "./core/enemy.js";
 import EnemySpawner, { ENEMY_TYPES, BOSS_TYPES } from "./core/enemy-spawner.js";
+import { ENEMY_SCALING, ENEMY_XP_DROP } from "./core/enemy-knobs.js";
 import { consts } from "../config.js";
 import { MSG } from "./net/packet.js";
-import { rollUpgradeChoices, selectUpgrade, initPlayerUpgrades, serializeUpgrades } from "./core/upgrade-system.js";
+import { rollUpgradeChoices, selectUpgrade, initPlayerUpgrades, serializeUpgrades, recalculateDerivedStats } from "./core/upgrade-system.js";
+import { rollDroneChoices, getDroneType, getDefaultDroneType, applyDroneType, DRONE_TYPES_BY_ID } from "./core/drone-types.js";
+import * as UPGRADE_KNOBS from "./core/upgrade-knobs.js";
 
 // Debug logging (keep off by default for performance)
 const DEBUG_LEVELING_LOGS = false;
 const DEBUG_HITSCAN_LOGS = false;
 const DEBUG_KILL_REWARD_LOGS = false;
-
-// ===== AREA OF INTEREST (AOI) OPTIMIZATION =====
-// Instead of sending all player data to everyone, each player only receives
-// data about players within their AOI radius. This reduces O(N²) to O(N×K).
-// AOI radius is now DYNAMIC based on each player's viewport size
-const AOI_MIN_RADIUS = consts.AOI_MIN_RADIUS ?? 400;   // Minimum AOI radius
-const AOI_BUFFER = consts.AOI_BUFFER ?? 150;           // Extra buffer beyond viewport (spawn off-screen)
-const AOI_HYSTERESIS = consts.AOI_HYSTERESIS ?? 100;   // Extra buffer before removing from AOI (prevents flicker)
-const GRID_CELL_SIZE = consts.AOI_GRID_SIZE ?? 200;    // Spatial grid cell size
-
-// Calculate AOI radius for a player based on their viewport
-function calculateAOIRadius(viewport) {
-	if (!viewport || !viewport.width || !viewport.height) {
-		return AOI_MIN_RADIUS;
-	}
-	// Use the diagonal of the viewport plus buffer to ensure nothing pops in on screen
-	// diagonal = sqrt(width² + height²) / 2 (half because player is centered)
-	const halfDiagonal = Math.sqrt(viewport.width * viewport.width + viewport.height * viewport.height) / 2;
-	return Math.max(AOI_MIN_RADIUS, halfDiagonal + AOI_BUFFER);
-}
+const PROC_COEFFICIENTS = UPGRADE_KNOBS.PROC_COEFFICIENTS || { default: 1.0 };
 
 function createEconomyDeltas() {
 	return {
 		coinSpawns: [],
 		coinRemovals: [],
+		coinUpdates: [],
+		gameMessages: [],
 		xpUpdates: [],
 		levelUps: [],
 		hitscanEvents: [],
 		captureEvents: [],
 		droneUpdates: [],
-		killEvents: []
+		killEvents: [],
+		projectileSpawns: [],
+		projectileUpdates: [],
+		projectileRemovals: [],
+		phaseShiftEvents: [],
+		adrenalineEvents: [],
+		momentumEvents: [],
+		missileSpawns: [],
+		missileUpdates: [],
+		missileRemovals: [],
+		stickyChargeDetonations: [],
+		arcBarrageBursts: []
 	};
 }
 
 function mergeEconomyDeltas(target, source) {
 	target.coinSpawns.push(...source.coinSpawns);
 	target.coinRemovals.push(...source.coinRemovals);
+	target.coinUpdates.push(...source.coinUpdates);
+	target.gameMessages.push(...source.gameMessages);
 	target.xpUpdates.push(...source.xpUpdates);
 	target.levelUps.push(...source.levelUps);
+	target.projectileSpawns.push(...source.projectileSpawns);
+	target.projectileUpdates.push(...source.projectileUpdates);
+	target.projectileRemovals.push(...source.projectileRemovals);
 	target.hitscanEvents.push(...source.hitscanEvents);
 	target.captureEvents.push(...source.captureEvents);
 	target.droneUpdates.push(...source.droneUpdates);
 	target.killEvents.push(...source.killEvents);
+	target.phaseShiftEvents.push(...source.phaseShiftEvents);
+	target.adrenalineEvents.push(...source.adrenalineEvents);
+	target.momentumEvents.push(...source.momentumEvents);
+	target.missileSpawns.push(...source.missileSpawns);
+	target.missileUpdates.push(...source.missileUpdates);
+	target.missileRemovals.push(...source.missileRemovals);
+	target.stickyChargeDetonations.push(...source.stickyChargeDetonations);
+	target.arcBarrageBursts.push(...source.arcBarrageBursts);
+}
+
+function rollProcChance(baseChance, procCoefficient) {
+	if (!baseChance || baseChance <= 0) return false;
+	if (!procCoefficient || procCoefficient <= 0) return false;
+	const chance = Math.min(1, baseChance * procCoefficient);
+	return Math.random() < chance;
+}
+
+// ===== COLOR HELPER =====
+// Convert HSL Color object to hex string
+function colorToHex(color) {
+	// HSL to RGB conversion
+	const h = color.hue, s = color.sat, l = color.lum;
+	let r, g, b;
+	if (s === 0) {
+		r = g = b = l;
+	} else {
+		const hue2rgb = (p, q, t) => {
+			if (t < 0) t += 1;
+			if (t > 1) t -= 1;
+			if (t < 1/6) return p + (q - p) * 6 * t;
+			if (t < 1/2) return q;
+			if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+			return p;
+		};
+		const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+		const p = 2 * l - q;
+		r = hue2rgb(p, q, h + 1/3);
+		g = hue2rgb(p, q, h);
+		b = hue2rgb(p, q, h - 1/3);
+	}
+	// Convert to hex
+	const toHex = (v) => {
+		const hex = Math.round(v * 255).toString(16);
+		return hex.length === 1 ? '0' + hex : hex;
+	};
+	return '#' + toHex(r) + toHex(g) + toHex(b);
 }
 
 // ===== XP HELPER =====
@@ -60,6 +108,28 @@ function getXpForLevel(level) {
 	const base = consts.XP_BASE_PER_LEVEL || 50;
 	const increment = consts.XP_INCREMENT_PER_LEVEL || 15;
 	return base + (level - 1) * increment;
+}
+
+// Calculate drone count based on level (1 drone at level 1, +1 at levels 4, 8, 12, etc.)
+function getDroneCountForLevel(level) {
+	const maxDrones = consts.MAX_DRONES || 50;
+	const interval = consts.DRONE_LEVEL_INTERVAL || 4;
+	// Formula: 1 drone at start, +1 drone at each interval (4, 8, 12, etc.)
+	const count = 1 + Math.floor(level / interval);
+	return Math.max(1, Math.min(maxDrones, count));
+}
+
+function getEnemyScalingMultiplier(runTimeSeconds, scaling) {
+	if (!scaling || !scaling.enabled) return 1;
+	const startTime = scaling.startTime || 0;
+	const elapsed = Math.max(0, runTimeSeconds - startTime);
+	const minutes = elapsed / 60;
+	const perMinute = scaling.perMinute || 0;
+	const mult = 1 + minutes * perMinute;
+	if (scaling.maxMult !== undefined) {
+		return Math.min(scaling.maxMult, mult);
+	}
+	return mult;
 }
 
 // ===== DRONE SYSTEM =====
@@ -71,8 +141,16 @@ let nextDroneId = 0;
  * @param {number} ownerId - Player number who owns this drone
  * @param {number} orbitAngleOffset - Starting angle offset for orbit
  * @param {number} droneIndex - Index of this drone (0 = first drone, 1+ = additional)
+ * @param {string} typeId - The drone type ID (defaults to 'assault')
  */
-function createDrone(ownerId, orbitAngleOffset, droneIndex) {
+function createDrone(ownerId, orbitAngleOffset, droneIndex, typeId = 'assault') {
+	// Get drone type for multipliers
+	const droneType = getDroneType(typeId) || getDefaultDroneType();
+	
+	// Base stats from config
+	const baseRange = consts.DRONE_RANGE || 200;
+	const baseOrbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
+	
 	// First drone does full damage, additional drones do reduced damage
 	const baseDamage = consts.DRONE_DAMAGE || 10;
 	const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
@@ -84,13 +162,28 @@ function createDrone(ownerId, orbitAngleOffset, droneIndex) {
 		x: 0,
 		y: 0,
 		damage: damage,
-		range: consts.DRONE_RANGE || 200,
+		range: baseRange * droneType.rangeMult,
 		cooldownRemaining: 0,
-		orbitRadius: consts.DRONE_ORBIT_RADIUS || 55,
+		orbitRadius: baseOrbitRadius * droneType.orbitRadiusMult,
 		orbitAngleOffset,           // Starting offset for this drone (evenly spaced)
 		currentOrbitAngle: orbitAngleOffset,  // Current angle (animated)
 		targetId: null,
-		droneIndex: droneIndex      // Track which drone this is for damage calculation
+		droneIndex: droneIndex,     // Track which drone this is for damage calculation
+		// Drone type info
+		typeId: droneType.id,
+		typeName: droneType.name,
+		typeColor: droneType.color,
+		attackType: droneType.attackType || 'bullet',
+		damageMult: droneType.damageMult,
+		cooldownMult: droneType.cooldownMult,
+		rangeMult: droneType.rangeMult,
+		orbitRadiusMult: droneType.orbitRadiusMult,
+		orbitSpeedMult: droneType.orbitSpeedMult,
+		// Weapon properties
+		isHitscan: droneType.isHitscan ?? false,
+		projectileSpeed: droneType.projectileSpeed || 400,
+		pierceCount: droneType.pierceCount || 0,
+		projectileSize: droneType.projectileSize || 4
 	};
 }
 
@@ -98,18 +191,30 @@ function createDrone(ownerId, orbitAngleOffset, droneIndex) {
  * Rebuild drone array with evenly spaced orbit offsets.
  * Preserves cooldown of existing drones where possible.
  * First drone does full damage, additional drones do reduced damage.
+ * Uses player.droneTypes array to determine type for each drone slot.
  */
 function rebuildDronesArray(player, count) {
 	const oldDrones = player.drones || [];
 	const newDrones = [];
 	
+	// Ensure droneTypes array exists and has default for slot 0
+	if (!player.droneTypes) {
+		player.droneTypes = ['assault']; // First drone is always Assault by default
+	}
+	
 	const baseDamage = consts.DRONE_DAMAGE || 10;
 	const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
+	const baseRange = consts.DRONE_RANGE || 200;
+	const baseOrbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
 	
 	for (let i = 0; i < count; i++) {
 		const offset = (i * Math.PI * 2) / count;
 		// First drone (index 0) does full damage, rest do reduced
 		const damage = i === 0 ? baseDamage : extraDamage;
+		
+		// Get type for this slot (default to assault if not set)
+		const typeId = player.droneTypes[i] || 'assault';
+		const droneType = getDroneType(typeId) || getDefaultDroneType();
 		
 		// Try to reuse existing drone data (preserve cooldown)
 		if (i < oldDrones.length) {
@@ -119,10 +224,29 @@ function rebuildDronesArray(player, count) {
 			old.currentOrbitAngle = offset;
 			old.droneIndex = i;
 			old.damage = damage;  // Update damage based on new position
+			
+			// Update type info (in case type was changed)
+			old.typeId = droneType.id;
+			old.typeName = droneType.name;
+			old.typeColor = droneType.color;
+			old.attackType = droneType.attackType || 'bullet';
+			old.damageMult = droneType.damageMult;
+			old.cooldownMult = droneType.cooldownMult;
+			old.rangeMult = droneType.rangeMult;
+			old.orbitRadiusMult = droneType.orbitRadiusMult;
+			old.orbitSpeedMult = droneType.orbitSpeedMult;
+			old.range = baseRange * droneType.rangeMult;
+			old.orbitRadius = baseOrbitRadius * droneType.orbitRadiusMult;
+			// Weapon properties
+			old.isHitscan = droneType.isHitscan ?? false;
+			old.projectileSpeed = droneType.projectileSpeed || 400;
+			old.pierceCount = droneType.pierceCount || 0;
+			old.projectileSize = droneType.projectileSize || 4;
+			
 			newDrones.push(old);
 		} else {
-			// Create new drone with proper index
-			newDrones.push(createDrone(player.num, offset, i));
+			// Create new drone with proper index and type
+			newDrones.push(createDrone(player.num, offset, i, typeId));
 		}
 	}
 	
@@ -133,6 +257,14 @@ function rebuildDronesArray(player, count) {
 	// orbit update, clients will see a one-frame "blip" at the map origin. Initialize
 	// positions immediately so drones always spawn at the correct orbit location.
 	updateDronePositions(player, 0);
+	
+	// Debug: verify drones are created with valid positions
+	if (newDrones.length > 0) {
+		console.log(`[DRONE] Created ${newDrones.length} drones for player at (${player.x?.toFixed(0)}, ${player.y?.toFixed(0)})`);
+		for (const d of newDrones) {
+			console.log(`  - Drone ${d.id}: type=${d.typeId}, pos=(${d.x?.toFixed(0)}, ${d.y?.toFixed(0)})`);
+		}
+	}
 }
 
 /**
@@ -143,9 +275,13 @@ function rebuildDronesArray(player, count) {
 function updateDronePositions(player, deltaSeconds) {
 	if (!player.drones) return;
 	
-	const orbitSpeed = consts.DRONE_ORBIT_SPEED || 1.5; // radians per second
+	const baseOrbitSpeed = consts.DRONE_ORBIT_SPEED || 1.5; // radians per second
+	const playerSizeScale = player.sizeScale || 1.0;
 	
 	for (const drone of player.drones) {
+		// Apply drone type's orbit speed multiplier
+		const orbitSpeed = baseOrbitSpeed * (drone.orbitSpeedMult || 1.0);
+		
 		// Continuously rotate the drone's orbit angle
 		drone.currentOrbitAngle += orbitSpeed * deltaSeconds;
 		
@@ -154,110 +290,14 @@ function updateDronePositions(player, deltaSeconds) {
 			drone.currentOrbitAngle -= Math.PI * 2;
 		}
 		
+		// Scale orbit radius with player size
+		const scaledOrbitRadius = drone.orbitRadius * playerSizeScale;
+		
 		// Calculate position based on player center and current orbit angle
-		drone.x = player.x + Math.cos(drone.currentOrbitAngle) * drone.orbitRadius;
-		drone.y = player.y + Math.sin(drone.currentOrbitAngle) * drone.orbitRadius;
+		drone.x = player.x + Math.cos(drone.currentOrbitAngle) * scaledOrbitRadius;
+		drone.y = player.y + Math.sin(drone.currentOrbitAngle) * scaledOrbitRadius;
 		drone.ownerId = player.num;
-	}
-}
-
-// ===== SPATIAL GRID =====
-// Efficiently find nearby players without checking every player
-class SpatialGrid {
-	constructor(mapSize, cellSize) {
-		this.cellSize = cellSize;
-		this.gridWidth = Math.ceil(mapSize / cellSize);
-		this.cells = new Map();  // Map of "x,y" -> Set of players
-	}
-	
-	_cellKey(x, y) {
-		const cx = Math.floor(x / this.cellSize);
-		const cy = Math.floor(y / this.cellSize);
-		return `${cx},${cy}`;
-	}
-	
-	_cellCoords(x, y) {
-		return {
-			cx: Math.floor(x / this.cellSize),
-			cy: Math.floor(y / this.cellSize)
-		};
-	}
-	
-	insert(player) {
-		const key = this._cellKey(player.x, player.y);
-		if (!this.cells.has(key)) {
-			this.cells.set(key, new Set());
-		}
-		this.cells.get(key).add(player);
-		player._gridCell = key;
-	}
-	
-	remove(player) {
-		if (player._gridCell && this.cells.has(player._gridCell)) {
-			this.cells.get(player._gridCell).delete(player);
-		}
-		player._gridCell = null;
-	}
-	
-	update(player) {
-		const newKey = this._cellKey(player.x, player.y);
-		if (player._gridCell !== newKey) {
-			this.remove(player);
-			this.insert(player);
-		}
-	}
-	
-	// Get all players within radius of a point
-	getNearby(x, y, radius) {
-		const nearby = [];
-		const cellRadius = Math.ceil(radius / this.cellSize);
-		const { cx, cy } = this._cellCoords(x, y);
-		
-		for (let dx = -cellRadius; dx <= cellRadius; dx++) {
-			for (let dy = -cellRadius; dy <= cellRadius; dy++) {
-				const key = `${cx + dx},${cy + dy}`;
-				const cell = this.cells.get(key);
-				if (cell) {
-					for (const player of cell) {
-						const dist = Math.hypot(player.x - x, player.y - y);
-						if (dist <= radius) {
-							nearby.push(player);
-						}
-					}
-				}
-			}
-		}
-		return nearby;
-	}
-	
-	// Get all players within radius, including a buffer zone
-	getNearbyWithBuffer(x, y, radius, buffer) {
-		const nearby = [];
-		const inBuffer = [];
-		const cellRadius = Math.ceil((radius + buffer) / this.cellSize);
-		const { cx, cy } = this._cellCoords(x, y);
-		
-		for (let dx = -cellRadius; dx <= cellRadius; dx++) {
-			for (let dy = -cellRadius; dy <= cellRadius; dy++) {
-				const key = `${cx + dx},${cy + dy}`;
-				const cell = this.cells.get(key);
-				if (cell) {
-					for (const player of cell) {
-						const dist = Math.hypot(player.x - x, player.y - y);
-						if (dist <= radius) {
-							nearby.push(player);
-						} else if (dist <= radius + buffer) {
-							inBuffer.push(player);
-						}
-					}
-				}
-			}
-		}
-		return { nearby, inBuffer };
-	}
-	
-	clear() {
-		this.cells.clear();
+		drone.ownerSizeScale = playerSizeScale; // Pass size scale to client for rendering
 	}
 }
 
@@ -265,15 +305,37 @@ function Game(id) {
 	const possColors = Color.possColors();
 	let nextInd = 0;
 	const players = [];
-	const gods = [];
 	let frame = 0;
 	let simFrame = 0;
 	let pendingDeltas = createEconomyDeltas();
 	const mapSize = consts.GRID_COUNT * consts.CELL_WIDTH;
 	
-	// Spatial grid for efficient nearby queries
-	const spatialGrid = new SpatialGrid(mapSize, GRID_CELL_SIZE);
-	const coinGrid = new SpatialGrid(mapSize, GRID_CELL_SIZE);
+	// ===== PROJECTILE SYSTEM (variables) =====
+	const projectiles = [];
+	const pendingProjectileSpawns = [];
+	let nextProjectileId = 1;
+	// NOTE: createProjectile() and updateProjectiles() are defined below after handleEnemyDeath
+	
+	// ===== HEAL PACK SYSTEM (Support drone passive) =====
+	const healPacks = [];
+	let nextHealPackId = 1;
+	
+	// ===== ASSAULT RAMP DAMAGE TRACKING =====
+	// Map: ownerId -> Map<enemyId -> { stacks, lastHitTime }>
+	const assaultRampStacks = new Map();
+	
+	// ===== FOCUSED FIRE TRACKING =====
+	// Map: ownerId -> { targetId, stacks, lastHitTime }
+	const focusedFireStacks = new Map();
+	
+	// ===== STICKY CHARGES SYSTEM =====
+	// Array of { enemyId, ownerId, charges, detonationTime, baseDamage }
+	const stickyCharges = [];
+	
+	// ===== MISSILE POD SYSTEM =====
+	// Array of { x, y, vx, vy, ownerId, damage, lifetime, targetId }
+	const missiles = [];
+	let nextMissileId = 1;
 	
 	// XP pickups (world pickups - renamed from coins)
 	let coins = [];  // Still called "coins" internally for pickup entities
@@ -290,18 +352,23 @@ function Game(id) {
 	// Upgrade system pause state
 	let gamePaused = false;
 	let pendingUpgradeOffer = null; // { playerNum, choices: [...] }
+	let pendingDroneOffer = null;   // { playerNum, droneIndex, choices: [...] }
 
 	this.id = id;
 	
 	// Reset game state for new run (called when player joins/restarts)
 	function resetGameState() {
+		// Clear projectiles
+		projectiles.length = 0;
+		pendingProjectileSpawns.length = 0;
+		nextProjectileId = 1;
+		
 		// Clear all enemies
 		enemies.length = 0;
 		nextEnemyId = 0;
 		
 		// Clear all coins/XP pickups
 		coins.length = 0;
-		coinGrid.clear();
 		nextCoinId = 0;
 		coinSpawnCooldown = 0;
 		
@@ -315,11 +382,18 @@ function Game(id) {
 		// Reset pause state
 		gamePaused = false;
 		pendingUpgradeOffer = null;
+		pendingDroneOffer = null;
+		
+		// Clear new upgrade systems
+		focusedFireStacks.clear();
+		stickyCharges.length = 0;
+		missiles.length = 0;
+		nextMissileId = 1;
 		
 		console.log(`[${new Date()}] Game state reset for new run.`);
 	}
 	
-	this.addPlayer = (client, name, viewport) => {
+	this.addPlayer = (client, name) => {
 		if (players.length >= 1) {
 			return { ok: false, error: "Singleplayer only." };
 		}
@@ -355,29 +429,21 @@ function Game(id) {
 		p.xp = 0;
 		p.updateSizeScale();
 		
-		// Drone system - drones = level (start with 1)
-		p.droneCount = p.level;
-		p.drones = [];
-		rebuildDronesArray(p, p.droneCount);
-		
 		// Initialize upgrade system
 		initPlayerUpgrades(p);
-		
-		// AOI tracking - which players this player knows about
-		p.knownPlayers = new Set();  // Set of player nums this client has received
-		p.knownCoins = new Set();    // Set of coin IDs this client has received
-		
-		// Viewport-based AOI - calculate radius based on client's screen size
-		p.viewport = viewport || { width: 800, height: 600 };
-		p.aoiRadius = calculateAOIRadius(p.viewport);
 		
 		players.push(p);
 		nextInd++;
 		initPlayer(p);
 		p._territoryDirty = true;
 		
-		// Add to spatial grid
-		spatialGrid.insert(p);
+		// Drone system - drones scale with level interval (start with 1)
+		// First drone is always Assault type by default
+		// NOTE: Must be AFTER initPlayer so player has a valid position for drone orbit calculation
+		p.droneTypes = ['assault'];
+		p.droneCount = getDroneCountForLevel(p.level);
+		p.drones = [];
+		rebuildDronesArray(p, p.droneCount);
 		
 		if (p.name.indexOf("[BOT]") == -1) {
 			console.log(`[${new Date()}] ${p.name || "Unnamed"} (${p.num}) joined.`);
@@ -399,6 +465,7 @@ function Game(id) {
 		
 		// Drone data
 		data.droneCount = player.droneCount || 1;
+		data.droneTypes = player.droneTypes || ['assault'];
 		data.drones = (player.drones || []).map(d => ({
 			id: d.id,
 			ownerId: d.ownerId,
@@ -406,7 +473,12 @@ function Game(id) {
 			y: d.y,
 			hp: d.hp,
 			maxHp: d.maxHp,
-			targetId: d.targetId
+			targetId: d.targetId,
+			// Drone type info
+			typeId: d.typeId || 'assault',
+			typeName: d.typeName || 'Assault',
+			typeColor: d.typeColor || '#FF6B6B',
+			attackType: d.attackType || 'bullet'
 		}));
 		
 		return data;
@@ -438,17 +510,6 @@ function Game(id) {
 		return data;
 	}
 
-	function getEnemiesForPlayer(player) {
-		const aoiRadius = player.aoiRadius || calculateAOIRadius(player.viewport);
-		const maxDist = aoiRadius + AOI_BUFFER;
-		const maxDistSq = maxDist * maxDist;
-		return enemies.filter(enemy => {
-			const dx = enemy.x - player.x;
-			const dy = enemy.y - player.y;
-			return dx * dx + dy * dy <= maxDistSq;
-		});
-	}
-
 	function getEnemyStats() {
 		const bossCount = enemies.filter(e => e.isBoss).length;
 		return {
@@ -463,23 +524,6 @@ function Game(id) {
 		};
 	}
 	
-	this.addGod = client => {
-		const g = {
-			client,
-			frame,
-			isGod: true  // Gods see everything (for spectating)
-		};
-		gods.push(g);
-		return { ok: true, god: g };
-	};
-
-	this.updateViewport = (player, viewport) => {
-		if (viewport && typeof viewport.width === "number" && typeof viewport.height === "number") {
-			player.viewport = viewport;
-			player.aoiRadius = calculateAOIRadius(viewport);
-		}
-	};
-
 	this.handleInput = (player, data) => {
 		if (!data) return { ok: false, error: "No data supplied." };
 		if (data.targetAngle !== undefined) {
@@ -495,7 +539,6 @@ function Game(id) {
 	this.handleDisconnect = player => {
 		player.die();
 		player.disconnected = true;
-		spatialGrid.remove(player);
 		if (player.name.indexOf("[BOT]") == -1) {
 			console.log(`[${new Date()}] ${player.name || "Unnamed"} (${player.num}) left.`);
 		}
@@ -522,8 +565,17 @@ function Game(id) {
 			console.log(`[UPGRADE] ${player.name} selected ${validChoice.name} (now ${newStacks} stacks)`);
 		}
 		
-		// Clear the pending offer and resume game
+		// Clear the pending upgrade offer
 		pendingUpgradeOffer = null;
+		
+		// Check if there's a pending drone unlock - if so, show drone choice
+		if (checkPendingDroneUnlock(player)) {
+			// Game stays paused, drone offer sent
+			player._forceXpUpdate = true;
+			return { ok: true, upgradeId, newStacks, pendingDroneChoice: true };
+		}
+		
+		// No pending drone - resume game
 		gamePaused = false;
 		
 		// Force an XP update to sync derived stats
@@ -532,46 +584,225 @@ function Game(id) {
 		return { ok: true, upgradeId, newStacks };
 	};
 	
+	this.handleDronePick = (player, droneTypeId) => {
+		// Validate that this player has a pending drone offer
+		if (!gamePaused || !pendingDroneOffer || pendingDroneOffer.playerNum !== player.num) {
+			console.warn(`[DRONE] Invalid drone pick from ${player.name} - no pending offer`);
+			return { ok: false, error: "No pending drone offer." };
+		}
+		
+		// Validate that the drone type is one of the offered choices
+		const validChoice = pendingDroneOffer.choices.find(c => c.id === droneTypeId);
+		if (!validChoice) {
+			console.warn(`[DRONE] Invalid drone pick from ${player.name} - ${droneTypeId} not in choices`);
+			return { ok: false, error: "Invalid drone type selection." };
+		}
+		
+		const newDroneIndex = pendingDroneOffer.droneIndex;
+		
+		// Add the chosen type to player's droneTypes array
+		if (!player.droneTypes) {
+			player.droneTypes = ['assault'];
+		}
+		// Ensure array is long enough
+		while (player.droneTypes.length <= newDroneIndex) {
+			player.droneTypes.push('assault'); // Fill gaps with assault
+		}
+		player.droneTypes[newDroneIndex] = droneTypeId;
+		
+		// Now actually add the drone
+		player.droneCount = player._pendingDroneUnlock;
+		player._pendingDroneUnlock = null;
+		rebuildDronesArray(player, player.droneCount);
+		
+		if (DEBUG_LEVELING_LOGS) {
+			console.log(`[DRONE] ${player.name} selected ${validChoice.name} drone for slot ${newDroneIndex}`);
+		}
+		
+		// Clear the pending offer and resume game
+		pendingDroneOffer = null;
+		gamePaused = false;
+		
+		// Force an XP update to sync new drone
+		player._forceXpUpdate = true;
+		
+		return { ok: true, droneTypeId, droneIndex: newDroneIndex };
+	};
+	
+	// Handle pause request from client (for settings menu)
+	this.handlePause = (player, paused) => {
+		// Only allow pause if no upgrade/drone selection is pending
+		if (pendingUpgradeOffer || pendingDroneOffer) {
+			return; // Can't override upgrade/drone selection pause
+		}
+		gamePaused = !!paused;
+	};
+	
+	// Handle dev commands for testing/debugging
+	this.handleDevCommand = (player, payload) => {
+		if (!payload || !payload.cmd) return;
+		
+		const cmd = payload.cmd;
+		console.log(`[DEV] Player ${player.name} executed: ${cmd}`, payload);
+		
+		switch (cmd) {
+			case 'giveXP': {
+				// Give XP to the player
+				const amount = parseInt(payload.amount) || 100;
+				player.xp = (player.xp || 0) + amount;
+				
+				// Check for level ups
+				const xpPerLevel = consts.XP_PER_LEVEL || 100;
+				while (player.xp >= xpPerLevel) {
+					player.xp -= xpPerLevel;
+					player.level = (player.level || 1) + 1;
+					player.updateSizeScale();
+					
+					// Add a drone for the new level
+					if (!player.droneTypes) player.droneTypes = ['assault'];
+					rebuildDronesArray(player, player.level);
+					
+					console.log(`[DEV] ${player.name} leveled up to ${player.level}!`);
+				}
+				// Force client update
+				player._forceXpUpdate = true;
+				break;
+			}
+			
+			case 'setLevel': {
+				// Set player level directly
+				const level = Math.max(1, parseInt(payload.level) || 1);
+				player.level = level;
+				player.xp = 0;
+				player.updateSizeScale();
+				
+				// Recalculate max HP based on level (base HP + 10 per level above 1)
+				const baseMaxHp = consts.PLAYER_MAX_HP || 100;
+				const hpPerLevel = consts.HP_PER_LEVEL || 10;
+				const stats = player.derivedStats || {};
+				const flatMaxHp = stats.flatMaxHp || 0;
+				const maxHpMult = stats.maxHpMult || 1.0;
+				player.maxHp = ((baseMaxHp + (level - 1) * hpPerLevel) + flatMaxHp) * maxHpMult;
+				player.hp = player.maxHp; // Full heal on level set
+				
+				// Rebuild drones for new level
+				if (!player.droneTypes) player.droneTypes = ['assault'];
+				rebuildDronesArray(player, player.level);
+				
+				// Force client update
+				player._forceXpUpdate = true;
+				console.log(`[DEV] ${player.name} set to level ${level} (maxHp: ${player.maxHp})`);
+				break;
+			}
+			
+			case 'giveUpgrade': {
+				// Give a specific upgrade
+				const upgradeId = payload.upgradeId;
+				if (upgradeId) {
+					const newStacks = selectUpgrade(player, upgradeId);
+					// Force client update (upgrades affect derived stats which affect HP/etc)
+					player._forceXpUpdate = true;
+					console.log(`[DEV] ${player.name} got upgrade ${upgradeId} (now ${newStacks} stacks)`);
+				}
+				break;
+			}
+			
+			case 'heal': {
+				// Full heal - recalculate max HP based on level
+				const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+				const hpPerLevel = consts.HP_PER_LEVEL || 10;
+				const stats = player.derivedStats || {};
+				const flatMaxHp = stats.flatMaxHp || 0;
+				const maxHpMult = stats.maxHpMult || 1.0;
+				const level = player.level || 1;
+				player.maxHp = ((baseMaxHp + (level - 1) * hpPerLevel) + flatMaxHp) * maxHpMult;
+				player.hp = player.maxHp;
+				player.stamina = player.maxStamina || 100;
+				player.isExhausted = false;
+				player.exhaustedTime = 0;
+				// Force client update
+				player._forceXpUpdate = true;
+				console.log(`[DEV] ${player.name} healed to full (maxHp: ${player.maxHp})`);
+				break;
+			}
+			
+			case 'godMode': {
+				// Toggle god mode (massive HP)
+				player.godMode = !player.godMode;
+				if (player.godMode) {
+					player.hp = 999999;
+					player.maxHp = 999999;
+					player.stamina = 999999;
+					player.maxStamina = 999999;
+				} else {
+					// Reset to normal - recalculate based on level
+					recalculateDerivedStats(player);
+					const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+					const hpPerLevel = consts.HP_PER_LEVEL || 10;
+					const level = player.level || 1;
+					const stats = player.derivedStats || {};
+					player.maxHp = ((baseMaxHp + (level - 1) * hpPerLevel) + (stats.flatMaxHp || 0)) * (stats.maxHpMult || 1.0);
+					player.hp = Math.min(player.hp, player.maxHp);
+					const baseMaxStamina = consts.PLAYER_MAX_STAMINA || 100;
+					const flatMaxStamina = stats.flatMaxStamina || 0;
+					player.maxStamina = (baseMaxStamina * (stats.maxStaminaMult || 1.0)) + flatMaxStamina;
+					player.stamina = Math.min(player.stamina, player.maxStamina);
+				}
+				// Force client update
+				player._forceXpUpdate = true;
+				console.log(`[DEV] ${player.name} god mode: ${player.godMode}`);
+				break;
+			}
+			
+			case 'addDrone': {
+				// Add a drone of the specified type
+				const droneTypeId = payload.droneTypeId || 'assault';
+				const droneType = getDroneType(droneTypeId);
+				if (!droneType) {
+					console.warn(`[DEV] Unknown drone type: ${droneTypeId}`);
+					break;
+				}
+				
+				// Add to player's drone types array
+				if (!player.droneTypes) player.droneTypes = [];
+				player.droneTypes.push(droneTypeId);
+				
+				// Rebuild drones with the new count
+				const newCount = player.droneTypes.length;
+				player.droneCount = newCount;
+				rebuildDronesArray(player, newCount);
+				
+				// Force client update
+				player._forceXpUpdate = true;
+				console.log(`[DEV] ${player.name} added drone: ${droneType.name} (now ${newCount} drones)`);
+				break;
+			}
+			
+			case 'clearDrones': {
+				// Clear all drones except the first one
+				player.droneTypes = ['assault']; // Reset to default
+				player.droneCount = 1;
+				rebuildDronesArray(player, 1);
+				
+				// Force client update
+				player._forceXpUpdate = true;
+				console.log(`[DEV] ${player.name} cleared all drones`);
+				break;
+			}
+		}
+	};
+	
 	// Expose pause state for external queries
 	this.isPaused = () => gamePaused;
 
 	this.sendFullState = player => {
 		if (!player || !player.client) return;
 		player.frame = frame;
-		
-		const aoiRadius = player.aoiRadius || calculateAOIRadius(player.viewport);
-		const nearbyPlayers = spatialGrid.getNearby(player.x, player.y, aoiRadius);
-		const nearbyCoins = coinGrid.getNearby(player.x, player.y, aoiRadius);
-		
-		player.knownPlayers.clear();
-		player.knownCoins.clear();
-		for (const np of nearbyPlayers) {
-			player.knownPlayers.add(np.num);
-		}
-		for (const c of nearbyCoins) {
-			player.knownCoins.add(c.id);
-		}
-		
-		const splayers = nearbyPlayers.map(val => serializePlayer(val, player.num));
-		const senemies = getEnemiesForPlayer(player).map(serializeEnemy);
+
+		const splayers = [serializePlayer(player, player.num)];
+		const senemies = enemies.map(serializeEnemy);
 		player.client.sendPacket(MSG.INIT, {
 			"num": player.num,
-			"gameid": id,
-			"frame": frame,
-			"players": splayers,
-			"coins": nearbyCoins,
-			"enemies": senemies,
-			"enemyStats": getEnemyStats()
-		});
-	};
-
-	this.sendFullStateToGod = god => {
-		if (!god || !god.client) return;
-		god.frame = frame;
-		
-		const splayers = players.map(val => serializePlayer(val, -1));
-		const senemies = enemies.map(serializeEnemy);
-		god.client.sendPacket(MSG.INIT, {
 			"gameid": id,
 			"frame": frame,
 			"players": splayers,
@@ -601,7 +832,6 @@ function Game(id) {
 				value: consts.COIN_VALUE
 			};
 			coins.push(newCoin);
-			coinGrid.insert(newCoin);
 			economyDeltas.coinSpawns.push(newCoin);
 			coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC;
 		}
@@ -612,199 +842,72 @@ function Game(id) {
 		// Run game simulation
 		update(economyDeltas, deltaSeconds, shouldSendDroneUpdates);
 		
-		// Update spatial grid for all alive players
-		for (const p of players) {
-			if (!p.dead && !p.disconnected) {
-				spatialGrid.update(p);
-			}
-		}
-		
 		mergeEconomyDeltas(pendingDeltas, economyDeltas);
 		simFrame++;
 	}
 	
 	function flushFrame() {
-		// Build per-player update packets with AOI filtering
+		// Singleplayer update packets (no AOI filtering)
 		for (const p of players) {
 			if (p.disconnected || p.dead) continue;
-			
-			if (!p.knownPlayers) p.knownPlayers = new Set();
-			if (!p.knownCoins) p.knownCoins = new Set();
-			p.knownPlayers.add(p.num);
-			
-			const aoiRadius = p.aoiRadius || calculateAOIRadius(p.viewport);
-			const { nearby, inBuffer } = spatialGrid.getNearbyWithBuffer(p.x, p.y, aoiRadius, AOI_HYSTERESIS);
-			
-			if (!nearby.includes(p)) {
-				nearby.push(p);
-			}
-			
-			const nearbyNums = new Set(nearby.map(np => np.num));
-			const bufferNums = new Set(inBuffer.map(np => np.num));
-			
-			const entering = [];
-			const leaving = [];
-			
-			for (const np of nearby) {
-				if (!p.knownPlayers.has(np.num)) {
-					entering.push(np);
-					p.knownPlayers.add(np.num);
-				}
-			}
-			
-			for (const knownNum of p.knownPlayers) {
-				if (!nearbyNums.has(knownNum) && !bufferNums.has(knownNum)) {
-					leaving.push(knownNum);
-				}
-			}
-			for (const leaveNum of leaving) {
-				p.knownPlayers.delete(leaveNum);
-			}
-			
-			const moves = [];
-			for (const np of nearby) {
-				moves.push({
-					num: np.num,
-					left: !!np.disconnected || np.dead,
-					targetAngle: np.targetAngle,
-					x: np.x,
-					y: np.y
-				});
-			}
-			for (const bp of inBuffer) {
-				if (p.knownPlayers.has(bp.num)) {
-					moves.push({
-						num: bp.num,
-						left: !!bp.disconnected || bp.dead,
-						targetAngle: bp.targetAngle,
-						x: bp.x,
-						y: bp.y
-					});
-				}
-			}
-			
-			const filteredData = {
+
+			const moves = [{
+				num: p.num,
+				left: !!p.disconnected || p.dead,
+				targetAngle: p.targetAngle,
+				x: p.x,
+				y: p.y
+			}];
+
+			const data = {
 				frame: frame + 1,
 				moves
 			};
+
+			if (pendingDeltas.coinSpawns.length > 0) data.coinSpawns = pendingDeltas.coinSpawns;
+			if (pendingDeltas.coinRemovals.length > 0) data.coinRemovals = pendingDeltas.coinRemovals;
+			if (pendingDeltas.coinUpdates.length > 0) data.coinUpdates = pendingDeltas.coinUpdates;
+			if (pendingDeltas.gameMessages.length > 0) data.gameMessages = pendingDeltas.gameMessages;
+			if (pendingDeltas.xpUpdates.length > 0) data.xpUpdates = pendingDeltas.xpUpdates;
+			if (pendingDeltas.levelUps.length > 0) data.levelUps = pendingDeltas.levelUps;
+			if (pendingDeltas.hitscanEvents.length > 0) data.hitscanEvents = pendingDeltas.hitscanEvents;
+			if (pendingDeltas.captureEvents.length > 0) data.captureEvents = pendingDeltas.captureEvents;
+			if (pendingDeltas.droneUpdates.length > 0) data.droneUpdates = pendingDeltas.droneUpdates;
+			if (pendingDeltas.killEvents.length > 0) data.killEvents = pendingDeltas.killEvents;
+			// Projectile data for client-side rendering of traveling projectiles
+			if (pendingDeltas.projectileSpawns.length > 0) data.projectileSpawns = pendingDeltas.projectileSpawns;
+			if (pendingDeltas.projectileUpdates.length > 0) data.projectileUpdates = pendingDeltas.projectileUpdates;
+			if (pendingDeltas.projectileRemovals.length > 0) data.projectileRemovals = pendingDeltas.projectileRemovals;
 			
-			if (pendingDeltas.coinSpawns.length > 0) {
-				const nearbyCoinSpawns = pendingDeltas.coinSpawns.filter(c => 
-					Math.hypot(c.x - p.x, c.y - p.y) <= aoiRadius
-				);
-				if (nearbyCoinSpawns.length > 0) {
-					filteredData.coinSpawns = nearbyCoinSpawns;
-					for (const c of nearbyCoinSpawns) {
-						p.knownCoins.add(c.id);
-					}
-				}
+			// Heal pack data (Support drone passive)
+			if (pendingDeltas.healPackSpawns && pendingDeltas.healPackSpawns.length > 0) data.healPackSpawns = pendingDeltas.healPackSpawns;
+			if (pendingDeltas.healPackUpdates && pendingDeltas.healPackUpdates.length > 0) data.healPackUpdates = pendingDeltas.healPackUpdates;
+			if (pendingDeltas.healPackRemovals && pendingDeltas.healPackRemovals.length > 0) data.healPackRemovals = pendingDeltas.healPackRemovals;
+			if (pendingDeltas.healPackPickups && pendingDeltas.healPackPickups.length > 0) data.healPackPickups = pendingDeltas.healPackPickups;
+			
+			// Upgrade visual/sound events
+			if (pendingDeltas.phaseShiftEvents.length > 0) data.phaseShiftEvents = pendingDeltas.phaseShiftEvents;
+			if (pendingDeltas.adrenalineEvents.length > 0) data.adrenalineEvents = pendingDeltas.adrenalineEvents;
+			if (pendingDeltas.momentumEvents.length > 0) data.momentumEvents = pendingDeltas.momentumEvents;
+			
+			// New upgrade effects
+			if (pendingDeltas.missileSpawns.length > 0) data.missileSpawns = pendingDeltas.missileSpawns;
+			if (pendingDeltas.missileUpdates.length > 0) data.missileUpdates = pendingDeltas.missileUpdates;
+			if (pendingDeltas.missileRemovals.length > 0) data.missileRemovals = pendingDeltas.missileRemovals;
+			if (pendingDeltas.stickyChargeDetonations.length > 0) data.stickyChargeDetonations = pendingDeltas.stickyChargeDetonations;
+			if (pendingDeltas.arcBarrageBursts.length > 0) data.arcBarrageBursts = pendingDeltas.arcBarrageBursts;
+
+			if (p._territoryDirty) {
+				data.territoryUpdates = [{
+					num: p.num,
+					territory: p.territory
+				}];
 			}
-			
-			if (pendingDeltas.coinRemovals.length > 0) {
-				const knownRemovals = pendingDeltas.coinRemovals.filter(id => 
-					p.knownCoins.has(id)
-				);
-				if (knownRemovals.length > 0) {
-					filteredData.coinRemovals = knownRemovals;
-					for (const id of knownRemovals) {
-						p.knownCoins.delete(id);
-					}
-				}
-			}
-			
-			if (pendingDeltas.xpUpdates.length > 0) {
-				const nearbyXp = pendingDeltas.xpUpdates.filter(u => 
-					p.knownPlayers.has(u.num) || u.num === p.num
-				);
-				if (nearbyXp.length > 0) filteredData.xpUpdates = nearbyXp;
-			}
-			
-			if (pendingDeltas.levelUps.length > 0) {
-				const nearbyLvl = pendingDeltas.levelUps.filter(u => 
-					p.knownPlayers.has(u.playerNum) || u.playerNum === p.num
-				);
-				if (nearbyLvl.length > 0) filteredData.levelUps = nearbyLvl;
-			}
-			
-			if (pendingDeltas.hitscanEvents.length > 0) {
-				const nearbyHits = pendingDeltas.hitscanEvents.filter(h => 
-					Math.hypot(h.fromX - p.x, h.fromY - p.y) <= aoiRadius ||
-					Math.hypot(h.toX - p.x, h.toY - p.y) <= aoiRadius
-				);
-				if (nearbyHits.length > 0) filteredData.hitscanEvents = nearbyHits;
-			}
-			
-			if (pendingDeltas.captureEvents.length > 0) {
-				const nearbyCap = pendingDeltas.captureEvents.filter(e => 
-					p.knownPlayers.has(e.playerNum) || e.playerNum === p.num
-				);
-				if (nearbyCap.length > 0) filteredData.captureEvents = nearbyCap;
-			}
-			
-			if (pendingDeltas.droneUpdates.length > 0) {
-				const nearbyDrones = pendingDeltas.droneUpdates.filter(d => 
-					p.knownPlayers.has(d.ownerNum) || d.ownerNum === p.num
-				);
-				if (nearbyDrones.length > 0) filteredData.droneUpdates = nearbyDrones;
-			}
-			
-			if (pendingDeltas.killEvents.length > 0) {
-				const relevantKills = pendingDeltas.killEvents.filter(k => 
-					k.killerNum === p.num || k.victimNum === p.num ||
-					p.knownPlayers.has(k.killerNum) || p.knownPlayers.has(k.victimNum)
-				);
-				if (relevantKills.length > 0) filteredData.killEvents = relevantKills;
-			}
-			
-			const territoryUpdates = [];
-			for (const np of nearby) {
-				if (np._territoryDirty) {
-					territoryUpdates.push({
-						num: np.num,
-						territory: np.territory
-					});
-				}
-			}
-			if (territoryUpdates.length > 0) {
-				filteredData.territoryUpdates = territoryUpdates;
-			}
-			
-			if (entering.length > 0) {
-				filteredData.newPlayers = entering.map(np => serializePlayer(np, p.num));
-			}
-			
-			if (leaving.length > 0) {
-				filteredData.leftPlayers = leaving;
-			}
-			
-			const nearbyEnemies = getEnemiesForPlayer(p).map(serializeEnemy);
-			filteredData.enemies = nearbyEnemies;
-			filteredData.enemyStats = getEnemyStats();
-			
-			p.client.sendPacket(MSG.FRAME, filteredData);
-		}
-		
-		const godData = {
-			frame: frame + 1,
-			moves: players.map(val => ({
-				num: val.num,
-				left: !!val.disconnected,
-				targetAngle: val.targetAngle
-			}))
-		};
-		if (pendingDeltas.coinSpawns.length > 0) godData.coinSpawns = pendingDeltas.coinSpawns;
-		if (pendingDeltas.coinRemovals.length > 0) godData.coinRemovals = pendingDeltas.coinRemovals;
-		if (pendingDeltas.xpUpdates.length > 0) godData.xpUpdates = pendingDeltas.xpUpdates;
-		if (pendingDeltas.levelUps.length > 0) godData.levelUps = pendingDeltas.levelUps;
-		if (pendingDeltas.hitscanEvents.length > 0) godData.hitscanEvents = pendingDeltas.hitscanEvents;
-		if (pendingDeltas.captureEvents.length > 0) godData.captureEvents = pendingDeltas.captureEvents;
-		if (pendingDeltas.droneUpdates.length > 0) godData.droneUpdates = pendingDeltas.droneUpdates;
-		if (pendingDeltas.killEvents.length > 0) godData.killEvents = pendingDeltas.killEvents;
-		godData.enemies = enemies.map(serializeEnemy);
-		godData.enemyStats = getEnemyStats();
-		
-		for (const g of gods) {
-			g.client.sendPacket(MSG.FRAME, godData);
+
+			data.enemies = enemies.map(serializeEnemy);
+			data.enemyStats = getEnemyStats();
+
+			p.client.sendPacket(MSG.FRAME, data);
 		}
 		
 		for (const p of players) {
@@ -823,25 +926,129 @@ function Game(id) {
 		runTime += deltaSeconds;
 		
 		const activePlayer = players.find(p => !p.dead && !p.disconnected) || null;
+		const frameScale = deltaSeconds / (1 / 60);
 		
-		const spawnEnemyXp = (x, y) => {
+		const spawnEnemyXp = (x, y, value, isDoubleDrop = false, type = "enemy") => {
 			const newCoin = {
 				id: nextCoinId++,
 				x: Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, x)),
 				y: Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, y)),
-				value: 1
+				value: value ?? ENEMY_XP_DROP.defaultValue,
+				type,
+				isDoubleDrop: isDoubleDrop
 			};
 			coins.push(newCoin);
-			coinGrid.insert(newCoin);
 			economyDeltas.coinSpawns.push(newCoin);
+		};
+
+		const applyBossOrbReward = (player) => {
+			if (!player) return null;
+			if (!player.bossBonus) {
+				player.bossBonus = { flatMaxHp: 0, flatMaxStamina: 0, damageMult: 0, attackSpeedMult: 0 };
+			}
+			
+			const rewards = [
+				{
+					id: "max_hp",
+					label: "+40 HP",
+					apply: () => { player.bossBonus.flatMaxHp += 40; }
+				},
+				{
+					id: "max_stamina",
+					label: "+20 Stamina",
+					apply: () => { player.bossBonus.flatMaxStamina += 20; }
+				},
+				{
+					id: "damage",
+					label: "+10% Damage",
+					apply: () => { player.bossBonus.damageMult += 0.10; }
+				},
+				{
+					id: "attack_speed",
+					label: "+10% Attack Speed",
+					apply: () => { player.bossBonus.attackSpeedMult += 0.10; }
+				}
+			];
+			
+			const reward = rewards[Math.floor(Math.random() * rewards.length)];
+			if (!reward) return null;
+			
+			const prevMaxHp = player.maxHp;
+			const prevMaxStamina = player.maxStamina;
+			
+			reward.apply();
+			recalculateDerivedStats(player);
+			
+			// Recalculate max HP/stamina to reflect new bonuses immediately
+			const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+			const hpPerLevel = consts.HP_PER_LEVEL || 10;
+			const level = player.level || 1;
+			const levelBonusHp = (level - 1) * hpPerLevel;
+			const stats = player.derivedStats || {};
+			const flatMaxHp = stats.flatMaxHp || 0;
+			const maxHpMult = stats.maxHpMult || 1.0;
+			player.maxHp = (baseMaxHp + levelBonusHp + flatMaxHp) * maxHpMult;
+			
+			const baseMaxStamina = consts.PLAYER_MAX_STAMINA || 100;
+			const maxStaminaMult = stats.maxStaminaMult || 1.0;
+			const flatMaxStamina = stats.flatMaxStamina || 0;
+			player.maxStamina = (baseMaxStamina * maxStaminaMult) + flatMaxStamina;
+			
+			// Heal by the gained max values
+			if (player.hp !== undefined) {
+				player.hp = Math.min(player.maxHp, player.hp + (player.maxHp - prevMaxHp));
+			}
+			if (player.stamina !== undefined) {
+				player.stamina = Math.min(player.maxStamina, player.stamina + (player.maxStamina - prevMaxStamina));
+			}
+			
+			player._forceXpUpdate = true;
+			return reward.label;
 		};
 		
 		const handleEnemyDeath = (enemy, killer) => {
 			if (enemy.dead) return;
 			enemy.dead = true;
 			enemyKills += 1;
-			spawnEnemyXp(enemy.x, enemy.y);
+			
+			// Spawn XP orb(s) - Scavenger upgrade gives 10% chance for double drops
+			const stats = killer?.derivedStats || {};
+			if (enemy.isBoss) {
+				spawnEnemyXp(enemy.x, enemy.y, enemy.xpDropValue, false, "boss");
+			} else {
+				const shouldDoubleSpawn = stats.hasScavenger && Math.random() < 0.10;
+				spawnEnemyXp(enemy.x, enemy.y, enemy.xpDropValue);
+				if (shouldDoubleSpawn) {
+					// Spawn second orb slightly offset
+					spawnEnemyXp(
+						enemy.x + (Math.random() - 0.5) * 20,
+						enemy.y + (Math.random() - 0.5) * 20,
+						enemy.xpDropValue,
+						true
+					);
+				}
+			}
+			
 			if (killer) {
+				// Soul Collector: Track kills and grant bonus HP
+				if (stats.hasSoulCollector) {
+					killer.soulCollectorKills = (killer.soulCollectorKills || 0) + 1;
+					const killsPerBonus = UPGRADE_KNOBS.SOUL_COLLECTOR.killsPerHpBonus;
+					const maxBonus = UPGRADE_KNOBS.SOUL_COLLECTOR.maxBonusHp;
+					const newBonus = Math.min(maxBonus, Math.floor(killer.soulCollectorKills / killsPerBonus));
+					if (newBonus > (killer.soulCollectorBonus || 0)) {
+						killer.soulCollectorBonus = newBonus;
+						// Recalculate stats to apply new HP bonus
+						recalculateDerivedStats(killer);
+					}
+				}
+				
+				// Vampire: Heal % max HP on kill (no passive regen handled elsewhere)
+				if (stats.hasVampire) {
+					const healAmount = killer.maxHp * UPGRADE_KNOBS.VAMPIRE.healOnKillPercent;
+					killer.hp = Math.min(killer.maxHp, killer.hp + healAmount);
+				}
+				
 				economyDeltas.killEvents.push({
 					killerNum: killer.num,
 					victimNum: -1,
@@ -850,6 +1057,725 @@ function Game(id) {
 				});
 			}
 		};
+		
+		// ===== PROJECTILE SYSTEM FUNCTIONS =====
+		
+		/**
+		 * Calculate player's aim position (inside the player circle, on the aim indicator dot)
+		 */
+		function getPlayerAimPosition(player) {
+			const scaledRadius = (consts.CELL_WIDTH / 2) * (player.sizeScale || 1.0);
+			const aimAngle = player.targetAngle !== undefined ? player.targetAngle : player.angle;
+			// Match the visual aim indicator dot position (inside player at 0.6 * radius)
+			const aimDist = scaledRadius * 0.6;
+			return {
+				x: player.x + Math.cos(aimAngle) * aimDist,
+				y: player.y + Math.sin(aimAngle) * aimDist
+			};
+		}
+		
+		/**
+		 * Create a new projectile from a drone attack
+		 * @param {Object} drone - The drone firing
+		 * @param {Object} target - The target enemy
+		 * @param {number} damage - Damage to deal
+		 * @param {boolean} isCrit - Whether this is a critical hit
+		 * @param {Object} owner - The player who owns the drone
+		 * @param {Object} stats - Additional stats (slow, life on hit, etc.)
+		 * @param {Object} originOverride - Optional {x, y} to override projectile origin
+		 * @param {string} colorOverride - Optional color to use instead of drone color
+		 */
+		function createProjectile(drone, target, damage, isCrit, owner, stats, originOverride, colorOverride) {
+			const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
+			const projectileOpacity = droneType.opacity ?? 1.0;
+			const projectileLifetime = droneType.projectileLifetime ?? 0;
+			const procCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
+			
+			// Use override position if provided (for player's aim shot), otherwise use drone position
+			const originX = originOverride ? originOverride.x : drone.x;
+			const originY = originOverride ? originOverride.y : drone.y;
+			
+			// Calculate direction to target
+			const dx = target.x - originX;
+			const dy = target.y - originY;
+			const dist = Math.hypot(dx, dy);
+			const dirX = dx / dist;
+			const dirY = dy / dist;
+			
+			// Scale projectile size with player size
+			const ownerSizeScale = owner.sizeScale || 1.0;
+			const baseProjectileSize = droneType.projectileSize || 4;
+			const scaledProjectileSize = baseProjectileSize * ownerSizeScale;
+			
+			const projectile = {
+				id: nextProjectileId++,
+				ownerId: owner.num,
+				droneId: drone.id,
+				droneTypeId: drone.typeId,
+				x: originX,
+				y: originY,
+				originX: originX,
+				originY: originY,
+				vx: dirX * droneType.projectileSpeed,
+				vy: dirY * droneType.projectileSpeed,
+				damage: damage,
+				isCrit: isCrit,
+				attackType: drone.attackType,
+				typeColor: colorOverride || drone.typeColor,
+				opacity: projectileOpacity,
+				isPlayerShot: !!originOverride, // Track if this came from player (first drone)
+				pierceCount: droneType.pierceCount || 0,
+				piercedEnemies: new Set(),
+				size: scaledProjectileSize,
+				maxRange: drone.range * 1.5,
+				distanceTraveled: 0,
+				appliesSlow: droneType.appliesSlow || false,
+				slowAmount: droneType.slowAmount || 0,
+				slowDuration: droneType.slowDuration || (consts.SLOW_DURATION_DEFAULT ?? 1.5),
+				spawnTime: runTime,
+				lifetimeSeconds: projectileLifetime > 0 ? projectileLifetime : null,
+				lifeOnHitPercent: stats.lifeOnHitPercent || 0,
+				procCoefficient: procCoefficient,
+				// Track total damage dealt for Support heal pack
+				totalDamageDealt: 0,
+				// PASSIVE flags from drone type
+				pierceDamageScaling: droneType.pierceDamageScaling || false,
+				pierceDamageBonusPerEnemy: droneType.pierceDamageBonusPerEnemy || 0.25,
+				blackHolePull: droneType.blackHolePull || false,
+				blackHolePullRadius: droneType.blackHolePullRadius || 80,
+				blackHolePullStrength: droneType.blackHolePullStrength || 120,
+				dropsHealPack: droneType.dropsHealPack || false,
+				healPackPercent: droneType.healPackPercent || 0.05,
+				healPackMin: droneType.healPackMin || 10,
+				healPackMax: droneType.healPackMax || 200,
+				appliesBleed: droneType.appliesBleed || false,
+				bleedDamagePerStack: droneType.bleedDamagePerStack || 1,
+				bleedDuration: droneType.bleedDuration || 2.0,
+				bleedMaxStacks: droneType.bleedMaxStacks || 10,
+				rampsTargetDamage: droneType.rampsTargetDamage || false,
+				rampDamagePerStack: droneType.rampDamagePerStack || 0.15,
+				rampMaxStacks: droneType.rampMaxStacks || 5,
+				rampDecayTime: droneType.rampDecayTime || 1.5
+			};
+			
+			projectiles.push(projectile);
+			return projectile;
+		}
+
+		function tryMissilePodProc(owner, target, hitDamage, origin, procCoefficient, deltas) {
+			if (!owner || !target || target.dead || target.hp <= 0) return;
+			const stats = owner.derivedStats || {};
+			if (!stats.hasMissilePod) return;
+			const baseChance = UPGRADE_KNOBS.MISSILE_POD.procChance;
+			if (!rollProcChance(baseChance, procCoefficient)) return;
+			
+			const missileDamage = hitDamage * UPGRADE_KNOBS.MISSILE_POD.missileDamagePercent;
+			const fromX = origin?.x ?? owner.x;
+			const fromY = origin?.y ?? owner.y;
+			
+			const dx = target.x - fromX;
+			const dy = target.y - fromY;
+			const dist = Math.hypot(dx, dy) || 1;
+			const speed = UPGRADE_KNOBS.MISSILE_POD.missileSpeed;
+			
+			const missile = {
+				id: nextMissileId++,
+				x: fromX,
+				y: fromY,
+				vx: (dx / dist) * speed,
+				vy: (dy / dist) * speed,
+				ownerId: owner.num,
+				damage: missileDamage,
+				lifetime: UPGRADE_KNOBS.MISSILE_POD.missileLifetime,
+				targetId: target.id,
+				radius: UPGRADE_KNOBS.MISSILE_POD.missileRadius
+			};
+			missiles.push(missile);
+			deltas.missileSpawns.push({
+				id: missile.id,
+				x: missile.x,
+				y: missile.y,
+				vx: missile.vx,
+				vy: missile.vy,
+				ownerId: missile.ownerId,
+				targetId: missile.targetId
+			});
+		}
+
+		function emitProjectileSpawn(proj, deltas) {
+			deltas.projectileSpawns.push({
+				id: proj.id,
+				x: proj.x,
+				y: proj.y,
+				vx: proj.vx,
+				vy: proj.vy,
+				attackType: proj.attackType,
+				typeColor: proj.typeColor,
+				opacity: proj.opacity,
+				size: proj.size,
+				ownerId: proj.ownerId,
+				isPlayerShot: proj.isPlayerShot
+			});
+		}
+
+		function processPendingProjectileSpawns(deltas) {
+			if (pendingProjectileSpawns.length === 0) return;
+			for (let i = pendingProjectileSpawns.length - 1; i >= 0; i--) {
+				const pending = pendingProjectileSpawns[i];
+				if (runTime < pending.fireAt) continue;
+				
+				pendingProjectileSpawns.splice(i, 1);
+				
+				const owner = pending.owner;
+				if (!owner || owner.dead || owner.disconnected) continue;
+				
+				const target = enemies.find(e => e.id === pending.targetId && !e.dead && e.hp > 0);
+				if (!target) continue;
+				
+				const proj = createProjectile(
+					pending.drone,
+					target,
+					pending.damage,
+					pending.isCrit,
+					owner,
+					pending.stats,
+					pending.originOverride,
+					pending.colorOverride
+				);
+				emitProjectileSpawn(proj, deltas);
+			}
+		}
+		
+		/**
+		 * Update all projectiles - movement and collision detection
+		 */
+		function updateProjectiles(deltaSec) {
+			const toRemove = [];
+			
+			for (const proj of projectiles) {
+				const moveX = proj.vx * deltaSec;
+				const moveY = proj.vy * deltaSec;
+				proj.x += moveX;
+				proj.y += moveY;
+				proj.distanceTraveled += Math.hypot(moveX, moveY);
+				
+				// PASSIVE: Guardian - Black hole pull (apply before checking removal)
+				if (proj.blackHolePull) {
+					for (const enemy of enemies) {
+						if (enemy.dead || enemy.hp <= 0) continue;
+						const pullDist = Math.hypot(enemy.x - proj.x, enemy.y - proj.y);
+						if (pullDist < proj.blackHolePullRadius && pullDist > 5) {
+							// Pull enemy toward projectile
+							const pullStrength = proj.blackHolePullStrength * deltaSec;
+							const pullDirX = (proj.x - enemy.x) / pullDist;
+							const pullDirY = (proj.y - enemy.y) / pullDist;
+							enemy.x += pullDirX * pullStrength;
+							enemy.y += pullDirY * pullStrength;
+						}
+					}
+				}
+				
+				if (proj.distanceTraveled > proj.maxRange) {
+					toRemove.push(proj);
+					continue;
+				}
+				
+				if (proj.lifetimeSeconds && (runTime - proj.spawnTime) > proj.lifetimeSeconds) {
+					toRemove.push(proj);
+					continue;
+				}
+				
+				if (proj.x < 0 || proj.x > mapSize || proj.y < 0 || proj.y > mapSize) {
+					toRemove.push(proj);
+					continue;
+				}
+				
+				let hitSomething = false;
+				for (const enemy of enemies) {
+					if (enemy.dead || enemy.hp <= 0) continue;
+					if (proj.piercedEnemies.has(enemy.id)) continue;
+					
+					const dist = Math.hypot(enemy.x - proj.x, enemy.y - proj.y);
+					const hitRadius = (enemy.radius || 15) + proj.size;
+					
+					if (dist < hitRadius) {
+						proj.piercedEnemies.add(enemy.id);
+						
+						const owner = players.find(p => p.num === proj.ownerId);
+						const ownerStats = owner?.derivedStats || {};
+						const baseProcCoefficient = proj.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
+						const procOrigin = {
+							x: proj.originX ?? owner?.x ?? proj.x,
+							y: proj.originY ?? owner?.y ?? proj.y
+						};
+						
+						// Execute: Enemies below threshold HP are instantly killed
+						if (ownerStats.hasExecute && enemy.hp > 0 && enemy.hp < enemy.maxHp * UPGRADE_KNOBS.EXECUTE.hpThreshold) {
+							enemy.hp = 0;
+							handleEnemyDeath(enemy, owner);
+							if (proj.piercedEnemies.size > proj.pierceCount) {
+								hitSomething = true;
+							}
+							continue;
+						}
+						
+						// Calculate damage with Hunter bonus
+						let finalDamage = proj.damage;
+						if (ownerStats.hasHunter && enemy.hp < enemy.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
+							finalDamage *= (1 + UPGRADE_KNOBS.HUNTER.damageBonus);
+						}
+						
+						// PASSIVE: Sniper - Pierce damage scaling
+						if (proj.pierceDamageScaling) {
+							const enemiesPierced = proj.piercedEnemies.size - 1; // -1 because current enemy is already added
+							const pierceBonus = 1 + (enemiesPierced * proj.pierceDamageBonusPerEnemy);
+							finalDamage *= pierceBonus;
+						}
+						
+						// PASSIVE: Assault - Ramp damage on same target
+						if (proj.rampsTargetDamage && owner) {
+							if (!assaultRampStacks.has(owner.num)) {
+								assaultRampStacks.set(owner.num, new Map());
+							}
+							const ownerRamps = assaultRampStacks.get(owner.num);
+							let rampData = ownerRamps.get(enemy.id);
+							
+							if (!rampData || (runTime - rampData.lastHitTime) > proj.rampDecayTime) {
+								// Reset stacks
+								rampData = { stacks: 0, lastHitTime: runTime };
+							}
+							
+							// Apply ramp bonus (before incrementing)
+							const rampBonus = 1 + (rampData.stacks * proj.rampDamagePerStack);
+							finalDamage *= rampBonus;
+							
+							// Increment stacks for next hit
+							rampData.stacks = Math.min(rampData.stacks + 1, proj.rampMaxStacks);
+							rampData.lastHitTime = runTime;
+							ownerRamps.set(enemy.id, rampData);
+						}
+						
+						// UPGRADE: Focused Fire - damage bonus for consecutive hits on same target
+						if (ownerStats.hasFocusedFire && owner) {
+							if (!focusedFireStacks.has(owner.num)) {
+								focusedFireStacks.set(owner.num, { targetId: null, stacks: 0, lastHitTime: 0 });
+							}
+							const ffData = focusedFireStacks.get(owner.num);
+							const decayTime = UPGRADE_KNOBS.FOCUSED_FIRE.decayTime;
+							
+							if (ffData.targetId !== enemy.id || (runTime - ffData.lastHitTime) > decayTime) {
+								ffData.targetId = enemy.id;
+								ffData.stacks = 0;
+							}
+							
+							const ffBonus = 1 + (ffData.stacks * UPGRADE_KNOBS.FOCUSED_FIRE.damagePerHitOnSameTarget);
+							finalDamage *= ffBonus;
+							
+							ffData.stacks = Math.min(ffData.stacks + 1, UPGRADE_KNOBS.FOCUSED_FIRE.maxStacks);
+							ffData.lastHitTime = runTime;
+						}
+						
+						// UPGRADE: Precision Rounds - bonus damage at distance
+						if (ownerStats.hasPrecisionRounds && owner) {
+							// Use projectile origin (stored or calculated from owner)
+							const originX = proj.originX ?? owner.x;
+							const originY = proj.originY ?? owner.y;
+							const dist = Math.hypot(enemy.x - originX, enemy.y - originY);
+							const minDist = UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus;
+							const maxDist = UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus;
+							if (dist > minDist) {
+								const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
+								const prBonus = 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
+								finalDamage *= prBonus;
+							}
+						}
+						
+						enemy.hp -= finalDamage;
+						if (enemy.hp < 0) enemy.hp = 0;
+						
+						// Track total damage for Support heal pack
+						proj.totalDamageDealt = (proj.totalDamageDealt || 0) + finalDamage;
+						
+						// Life steal
+						if (owner && proj.lifeOnHitPercent > 0 && owner.lifeOnHitCooldown <= 0) {
+							const healAmount = owner.maxHp * proj.lifeOnHitPercent;
+							owner.hp = Math.min(owner.maxHp, owner.hp + healAmount);
+							owner.lifeOnHitCooldown = 0.1;
+						}
+						
+						// PASSIVE: Apply slow (Support drone)
+						if (proj.appliesSlow && proj.slowAmount > 0) {
+							enemy.slowAmount = proj.slowAmount;
+							enemy.slowExpires = runTime + proj.slowDuration;
+						}
+						
+						// PASSIVE: Swarm - Apply bleed stacks
+						if (proj.appliesBleed) {
+							if (!enemy.bleedStacks) enemy.bleedStacks = 0;
+							if (!enemy.bleedExpires) enemy.bleedExpires = 0;
+							
+							// Add stack (up to max)
+							enemy.bleedStacks = Math.min(enemy.bleedStacks + 1, proj.bleedMaxStacks);
+							enemy.bleedExpires = runTime + proj.bleedDuration;
+							enemy.bleedDamagePerStack = proj.bleedDamagePerStack;
+							enemy.bleedOwnerId = owner?.num; // Track who applied bleed for kill credit
+						}
+						
+						economyDeltas.hitscanEvents.push({
+							fromX: proj.x,
+							fromY: proj.y,
+							toX: enemy.x,
+							toY: enemy.y,
+							ownerId: proj.ownerId,
+							targetEnemyId: enemy.id,
+							damage: finalDamage,
+							remainingHp: enemy.hp,
+							isCrit: proj.isCrit,
+							attackType: proj.attackType,
+							typeColor: proj.typeColor,
+							isProjectileHit: true
+						});
+						
+						if (enemy.hp <= 0) {
+							handleEnemyDeath(enemy, owner);
+						}
+						
+						// UPGRADE: Missile Pod - chance to fire homing missile
+						tryMissilePodProc(owner, enemy, finalDamage, procOrigin, baseProcCoefficient, economyDeltas);
+						
+						// Explosive Rounds: Hits explode for % damage to nearby enemies
+						if (ownerStats.hasExplosive) {
+							const explosionRadius = UPGRADE_KNOBS.EXPLOSIVE_ROUNDS.explosionRadius;
+							const explosionDamage = finalDamage * UPGRADE_KNOBS.EXPLOSIVE_ROUNDS.explosionDamagePercent;
+							economyDeltas.hitscanEvents.push({
+								fromX: enemy.x,
+								fromY: enemy.y,
+								toX: enemy.x,
+								toY: enemy.y,
+								ownerId: proj.ownerId,
+								targetEnemyId: enemy.id,
+								damage: explosionDamage,
+								remainingHp: enemy.hp,
+								isExplosion: true,
+								typeColor: '#FF9F1C'
+							});
+							for (const nearbyEnemy of enemies) {
+								if (nearbyEnemy === enemy || nearbyEnemy.dead || nearbyEnemy.hp <= 0) continue;
+								if (proj.piercedEnemies.has(nearbyEnemy.id)) continue;
+								const nearDist = Math.hypot(nearbyEnemy.x - enemy.x, nearbyEnemy.y - enemy.y);
+								if (nearDist < explosionRadius) {
+									nearbyEnemy.hp -= explosionDamage;
+									if (nearbyEnemy.hp <= 0) {
+										handleEnemyDeath(nearbyEnemy, owner);
+									}
+									const aoeProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.explosiveRounds ?? 0.25);
+									tryMissilePodProc(owner, nearbyEnemy, explosionDamage, procOrigin, aoeProcCoeff, economyDeltas);
+								}
+							}
+						}
+						
+						// Chain Lightning: Bounce to nearby enemies at % damage
+						if (ownerStats.hasChainLightning) {
+							const hitEnemies = new Set([enemy.id]);
+							let chainTarget = enemy;
+							let chainDamage = finalDamage * UPGRADE_KNOBS.CHAIN_LIGHTNING.bounceDamagePercent;
+							
+							for (let bounce = 0; bounce < UPGRADE_KNOBS.CHAIN_LIGHTNING.bounceCount; bounce++) {
+								let nextTarget = null;
+								let nextDist = UPGRADE_KNOBS.CHAIN_LIGHTNING.bounceRange;
+								
+								for (const e of enemies) {
+									if (e.dead || e.hp <= 0 || hitEnemies.has(e.id)) continue;
+									const d = Math.hypot(e.x - chainTarget.x, e.y - chainTarget.y);
+									if (d < nextDist) {
+										nextDist = d;
+										nextTarget = e;
+									}
+								}
+								
+								if (!nextTarget) break;
+								
+								hitEnemies.add(nextTarget.id);
+								nextTarget.hp -= chainDamage;
+								if (nextTarget.hp < 0) nextTarget.hp = 0;
+								
+								economyDeltas.hitscanEvents.push({
+									fromX: chainTarget.x,
+									fromY: chainTarget.y,
+									toX: nextTarget.x,
+									toY: nextTarget.y,
+									ownerId: proj.ownerId,
+									targetEnemyId: nextTarget.id,
+									damage: chainDamage,
+									remainingHp: nextTarget.hp,
+									isChain: true,
+									typeColor: '#00BFFF'
+								});
+								
+								if (nextTarget.hp <= 0) {
+									handleEnemyDeath(nextTarget, owner);
+								}
+								
+								const chainProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.chainLightning ?? 0.35);
+								tryMissilePodProc(owner, nextTarget, chainDamage, procOrigin, chainProcCoeff, economyDeltas);
+								
+								chainTarget = nextTarget;
+							}
+						}
+						
+						// UPGRADE: Sticky Charges - apply charges that detonate after delay
+						if (ownerStats.hasStickyCharges && owner && !enemy.dead) {
+							let chargeEntry = stickyCharges.find(c => c.enemyId === enemy.id && c.ownerId === owner.num);
+							if (!chargeEntry) {
+								chargeEntry = {
+									enemyId: enemy.id,
+									ownerId: owner.num,
+									charges: 0,
+									detonationTime: runTime + UPGRADE_KNOBS.STICKY_CHARGES.detonationDelay,
+									baseDamage: finalDamage
+								};
+								stickyCharges.push(chargeEntry);
+							}
+							chargeEntry.charges = Math.min(
+								chargeEntry.charges + UPGRADE_KNOBS.STICKY_CHARGES.chargesPerHit,
+								UPGRADE_KNOBS.STICKY_CHARGES.maxChargesPerEnemy
+							);
+							chargeEntry.detonationTime = runTime + UPGRADE_KNOBS.STICKY_CHARGES.detonationDelay;
+							chargeEntry.baseDamage = Math.max(chargeEntry.baseDamage, finalDamage);
+						}
+						
+						// Missile Pod handled by tryMissilePodProc above.
+						
+						if (proj.piercedEnemies.size > proj.pierceCount) {
+							hitSomething = true;
+							break;
+						}
+					}
+				}
+				
+				if (hitSomething) {
+					toRemove.push(proj);
+				}
+			}
+			
+			for (const proj of toRemove) {
+				const idx = projectiles.indexOf(proj);
+				if (idx !== -1) {
+					projectiles.splice(idx, 1);
+					economyDeltas.projectileRemovals.push(proj.id);
+					
+					// PASSIVE: Support - Drop heal pack on projectile death
+					if (proj.dropsHealPack && proj.totalDamageDealt > 0) {
+						const healAmount = Math.max(
+							proj.healPackMin,
+							Math.min(proj.healPackMax, proj.totalDamageDealt * proj.healPackPercent)
+						);
+						const healPack = {
+							id: nextHealPackId++,
+							x: proj.x,
+							y: proj.y,
+							healAmount: healAmount,
+							ownerId: proj.ownerId,
+							spawnTime: runTime,
+							lifetime: consts.HEAL_PACK_LIFETIME || 20
+						};
+						healPacks.push(healPack);
+						economyDeltas.healPackSpawns = economyDeltas.healPackSpawns || [];
+						economyDeltas.healPackSpawns.push({
+							id: healPack.id,
+							x: healPack.x,
+							y: healPack.y,
+							healAmount: healPack.healAmount,
+							ownerId: healPack.ownerId
+						});
+					}
+				}
+			}
+			
+			if (projectiles.length > 0) {
+				economyDeltas.projectileUpdates = projectiles.map(p => ({
+					id: p.id,
+					x: p.x,
+					y: p.y,
+					vx: p.vx,
+					vy: p.vy,
+					attackType: p.attackType,
+					typeColor: p.typeColor,
+					size: p.size
+				}));
+			}
+		}
+		
+		/**
+		 * Update sticky charges - check for detonation
+		 */
+		function updateStickyCharges(economyDeltas) {
+			const toRemove = [];
+			
+			for (const charge of stickyCharges) {
+				if (runTime >= charge.detonationTime) {
+					toRemove.push(charge);
+					
+					// Find the enemy
+					const enemy = enemies.find(e => e.id === charge.enemyId);
+					if (!enemy || enemy.dead || enemy.hp <= 0) continue;
+					
+					// Calculate explosion damage
+					const totalDamage = charge.baseDamage * UPGRADE_KNOBS.STICKY_CHARGES.damagePerCharge * charge.charges;
+					enemy.hp -= totalDamage;
+					if (enemy.hp < 0) enemy.hp = 0;
+					
+					// Find owner for kill credit
+					const owner = players.find(p => p.num === charge.ownerId);
+					const procOrigin = owner ? { x: owner.x, y: owner.y } : { x: enemy.x, y: enemy.y };
+					const directProcCoeff = PROC_COEFFICIENTS.stickyCharge ?? 0.25;
+					tryMissilePodProc(owner, enemy, totalDamage, procOrigin, directProcCoeff, economyDeltas);
+					
+					// Visual feedback
+					economyDeltas.stickyChargeDetonations.push({
+						x: enemy.x,
+						y: enemy.y,
+						damage: totalDamage,
+						charges: charge.charges,
+						ownerId: charge.ownerId
+					});
+					
+					// AOE damage to nearby enemies
+					const explosionRadius = UPGRADE_KNOBS.STICKY_CHARGES.explosionRadius;
+					for (const nearbyEnemy of enemies) {
+						if (nearbyEnemy === enemy || nearbyEnemy.dead || nearbyEnemy.hp <= 0) continue;
+						const dist = Math.hypot(nearbyEnemy.x - enemy.x, nearbyEnemy.y - enemy.y);
+						if (dist < explosionRadius) {
+							const aoeDamage = totalDamage * 0.5; // 50% of direct damage to nearby
+							nearbyEnemy.hp -= aoeDamage;
+							const splashProcCoeff = PROC_COEFFICIENTS.stickyChargeSplash ?? 0.15;
+							tryMissilePodProc(owner, nearbyEnemy, aoeDamage, procOrigin, splashProcCoeff, economyDeltas);
+							if (nearbyEnemy.hp <= 0 && owner) {
+								handleEnemyDeath(nearbyEnemy, owner);
+							}
+						}
+					}
+					
+					if (enemy.hp <= 0 && owner) {
+						handleEnemyDeath(enemy, owner);
+					}
+				}
+			}
+			
+			// Remove detonated charges
+			for (const charge of toRemove) {
+				const idx = stickyCharges.indexOf(charge);
+				if (idx !== -1) stickyCharges.splice(idx, 1);
+			}
+		}
+		
+		/**
+		 * Update missiles - movement, homing, collision
+		 */
+		function updateMissiles(deltaSec, economyDeltas) {
+			const toRemove = [];
+			
+			for (const missile of missiles) {
+				// Reduce lifetime
+				missile.lifetime -= deltaSec;
+				if (missile.lifetime <= 0) {
+					toRemove.push(missile);
+					continue;
+				}
+				
+				// Try to home toward target
+				const target = enemies.find(e => e.id === missile.targetId);
+				if (target && !target.dead && target.hp > 0) {
+					const dx = target.x - missile.x;
+					const dy = target.y - missile.y;
+					const dist = Math.hypot(dx, dy);
+					if (dist > 0) {
+						const speed = UPGRADE_KNOBS.MISSILE_POD.missileSpeed;
+						// Gradually turn toward target (homing behavior)
+						const turnRate = 3.0; // radians per second
+						const currentAngle = Math.atan2(missile.vy, missile.vx);
+						const targetAngle = Math.atan2(dy, dx);
+						let angleDiff = targetAngle - currentAngle;
+						// Normalize angle difference to [-PI, PI]
+						while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+						while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+						const turn = Math.max(-turnRate * deltaSec, Math.min(turnRate * deltaSec, angleDiff));
+						const newAngle = currentAngle + turn;
+						missile.vx = Math.cos(newAngle) * speed;
+						missile.vy = Math.sin(newAngle) * speed;
+					}
+				}
+				
+				// Move missile
+				missile.x += missile.vx * deltaSec;
+				missile.y += missile.vy * deltaSec;
+				
+				// Check bounds
+				if (missile.x < 0 || missile.x > mapSize || missile.y < 0 || missile.y > mapSize) {
+					toRemove.push(missile);
+					continue;
+				}
+				
+				// Check collision with enemies
+				for (const enemy of enemies) {
+					if (enemy.dead || enemy.hp <= 0) continue;
+					const dist = Math.hypot(enemy.x - missile.x, enemy.y - missile.y);
+					const hitRadius = enemy.radius + missile.radius;
+					if (dist < hitRadius) {
+						// Hit!
+						enemy.hp -= missile.damage;
+						if (enemy.hp < 0) enemy.hp = 0;
+						
+						const owner = players.find(p => p.num === missile.ownerId);
+						
+						// Visual feedback
+						economyDeltas.hitscanEvents.push({
+							fromX: missile.x,
+							fromY: missile.y,
+							toX: enemy.x,
+							toY: enemy.y,
+							ownerId: missile.ownerId,
+							targetEnemyId: enemy.id,
+							damage: missile.damage,
+							remainingHp: enemy.hp,
+							isCrit: false,
+							attackType: 'bullet',
+							typeColor: '#FF4500',
+							isMissile: true
+						});
+						
+						if (enemy.hp <= 0 && owner) {
+							handleEnemyDeath(enemy, owner);
+						}
+						
+						toRemove.push(missile);
+						break;
+					}
+				}
+			}
+			
+			// Remove expired/hit missiles
+			for (const missile of toRemove) {
+				const idx = missiles.indexOf(missile);
+				if (idx !== -1) {
+					missiles.splice(idx, 1);
+					economyDeltas.missileRemovals.push(missile.id);
+				}
+			}
+			
+			// Send missile updates
+			if (missiles.length > 0) {
+				economyDeltas.missileUpdates = missiles.map(m => ({
+					id: m.id,
+					x: m.x,
+					y: m.y,
+					vx: m.vx,
+					vy: m.vy
+				}));
+			}
+		}
+		
+		// ===== END PROJECTILE SYSTEM =====
 		
 		// Callback for collision kills (from updateFrame)
 		const notifyKill = (killerIdx, victimIdx) => {
@@ -888,6 +1814,11 @@ function Game(id) {
 		for (const spawn of enemySpawns) {
 			const typeName = spawn.type || 'basic';
 			const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
+			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+			const maxHp = Math.max(1, typeData.maxHp * hpScale);
+			const contactDamage = typeData.contactDamage * damageScale;
+			const xpDropValue = typeData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
 			
 			const enemy = new Enemy({
 				id: `enemy-${nextEnemyId++}`,
@@ -895,10 +1826,11 @@ function Game(id) {
 				y: spawn.y,
 				type: typeName,
 				radius: typeData.radius,
-				maxHp: typeData.maxHp,
-				hp: typeData.maxHp,
+				maxHp: maxHp,
+				hp: maxHp,
 				speed: typeData.speed,
-				contactDamage: typeData.contactDamage
+				contactDamage: contactDamage,
+				xpDropValue: xpDropValue
 			});
 			
 			// Type-specific properties
@@ -921,6 +1853,11 @@ function Game(id) {
 		for (const spawn of bossSpawns) {
 			const bossType = spawn.type || 'titan';
 			const bossData = BOSS_TYPES[bossType] || BOSS_TYPES.titan;
+			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+			const maxHp = Math.max(1, bossData.maxHp * hpScale);
+			const contactDamage = bossData.contactDamage * damageScale;
+			const xpDropValue = bossData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
 			
 			const boss = new Enemy({
 				id: `boss-${nextEnemyId++}`,
@@ -928,10 +1865,11 @@ function Game(id) {
 				y: spawn.y,
 				type: bossType,
 				radius: bossData.radius,
-				maxHp: bossData.maxHp,
-				hp: bossData.maxHp,
+				maxHp: maxHp,
+				hp: maxHp,
 				speed: bossData.speed,
-				contactDamage: bossData.contactDamage
+				contactDamage: contactDamage,
+				xpDropValue: xpDropValue
 			});
 			
 			boss.isBoss = true;
@@ -953,6 +1891,12 @@ function Game(id) {
 			}
 			
 			enemies.push(boss);
+			
+			// Boss spawn alert
+			economyDeltas.gameMessages.push({
+				text: "SwarmBlitz!",
+				duration: 2.5
+			});
 		}
 		
 		if (activePlayer && !activePlayer.dead) {
@@ -1048,6 +1992,11 @@ function Game(id) {
 								const spawnDist = enemy.radius + 20;
 								const minionX = enemy.x + Math.cos(angle) * spawnDist;
 								const minionY = enemy.y + Math.sin(angle) * spawnDist;
+								const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+								const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+								const minionMaxHp = Math.max(1, ENEMY_TYPES.swarm.maxHp * hpScale);
+								const minionContactDamage = ENEMY_TYPES.swarm.contactDamage * damageScale;
+								const xpDropValue = ENEMY_TYPES.swarm.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
 								
 								// Spawn basic enemies as minions
 								const minion = new Enemy({
@@ -1056,10 +2005,11 @@ function Game(id) {
 									y: minionY,
 									type: 'swarm', // Summons swarm enemies
 									radius: ENEMY_TYPES.swarm.radius,
-									maxHp: ENEMY_TYPES.swarm.maxHp,
-									hp: ENEMY_TYPES.swarm.maxHp,
+									maxHp: minionMaxHp,
+									hp: minionMaxHp,
 									speed: ENEMY_TYPES.swarm.speed,
-									contactDamage: ENEMY_TYPES.swarm.contactDamage
+									contactDamage: minionContactDamage,
+									xpDropValue: xpDropValue
 								});
 								enemies.push(minion);
 							}
@@ -1098,6 +2048,45 @@ function Game(id) {
 				enemy.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.x));
 				enemy.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.y));
 				
+				// PASSIVE: Swarm - Process bleed damage ticks
+				if (enemy.bleedStacks > 0 && enemy.bleedExpires && runTime < enemy.bleedExpires) {
+					// Initialize bleed tick timer if not set
+					if (!enemy.lastBleedTick) enemy.lastBleedTick = runTime;
+					
+					const bleedTickRate = consts.BLEED_TICK_RATE || 0.25;
+					if (runTime - enemy.lastBleedTick >= bleedTickRate) {
+						enemy.lastBleedTick = runTime;
+						const bleedDamage = enemy.bleedStacks * (enemy.bleedDamagePerStack || 1);
+						enemy.hp -= bleedDamage;
+						if (enemy.hp < 0) enemy.hp = 0;
+						
+						// Visual feedback for bleed tick (subtle red flash)
+						economyDeltas.hitscanEvents.push({
+							fromX: enemy.x,
+							fromY: enemy.y,
+							toX: enemy.x,
+							toY: enemy.y,
+							ownerId: enemy.bleedOwnerId || -1,
+							targetEnemyId: enemy.id,
+							damage: bleedDamage,
+							remainingHp: enemy.hp,
+							isCrit: false,
+							attackType: 'bleed',
+							typeColor: '#8B0000', // Dark red for bleed
+							isBleedTick: true
+						});
+						
+						if (enemy.hp <= 0) {
+							const bleedOwner = players.find(p => p.num === enemy.bleedOwnerId);
+							handleEnemyDeath(enemy, bleedOwner);
+						}
+					}
+				} else if (enemy.bleedStacks > 0 && runTime >= enemy.bleedExpires) {
+					// Bleed expired, clear stacks
+					enemy.bleedStacks = 0;
+					enemy.bleedExpires = 0;
+				}
+				
 				const hitDx = activePlayer.x - enemy.x;
 				const hitDy = activePlayer.y - enemy.y;
 				const hitDist = Math.hypot(hitDx, hitDy);
@@ -1112,19 +2101,67 @@ function Game(id) {
 						damage *= (1 - reduction);
 					}
 					
-					// Apply armor reduction from upgrades
+					// Get player stats from upgrades
 					const playerStats = activePlayer.derivedStats || {};
-					const armor = playerStats.armor || 0;
-					damage = Math.max(0, damage - armor);
 					
-					// Get effective max HP from upgrades
+					// Phase Shift: First hit every X seconds deals no damage
+					if (playerStats.hasPhaseShift) {
+						if (activePlayer.phaseShiftCooldown === undefined) activePlayer.phaseShiftCooldown = 0;
+						if (activePlayer.phaseShiftCooldown <= 0) {
+							// Nullify this hit
+							activePlayer.phaseShiftCooldown = UPGRADE_KNOBS.PHASE_SHIFT.cooldownSeconds;
+							economyDeltas.phaseShiftEvents.push({
+								playerNum: activePlayer.num,
+								x: activePlayer.x,
+								y: activePlayer.y
+							});
+							enemy.lastHitAt = runTime;
+							continue; // Skip this damage entirely
+						}
+					}
+					
+					// Last Stand: Below threshold HP, take less damage
+					if (playerStats.hasLastStand && activePlayer.hp < activePlayer.maxHp * UPGRADE_KNOBS.LAST_STAND.hpThreshold) {
+						damage *= (1 - UPGRADE_KNOBS.LAST_STAND.damageReduction);
+					}
+					
+					// Apply general damage reduction (if any)
+					const damageReduction = playerStats.damageReduction || 0;
+					damage *= (1 - damageReduction);
+					
+					// Get effective max HP from level + upgrades
 					const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+					const hpPerLevel = consts.HP_PER_LEVEL || 10;
+					const level = activePlayer.level || 1;
+					const levelBonusHp = (level - 1) * hpPerLevel;
+					const flatMaxHp = playerStats.flatMaxHp || 0;
 					const maxHpMult = playerStats.maxHpMult || 1.0;
-					activePlayer.maxHp = baseMaxHp * maxHpMult;
+					activePlayer.maxHp = (baseMaxHp + levelBonusHp + flatMaxHp) * maxHpMult;
 					
 					activePlayer.hp -= damage;
 					if (activePlayer.hp < 0) activePlayer.hp = 0;
 					enemy.lastHitAt = runTime;
+					
+					// Thorns: Reflect 30% damage back to attacker
+					if (playerStats.thornsMult > 0) {
+						const reflectDamage = damage * playerStats.thornsMult;
+						enemy.hp -= reflectDamage;
+						if (enemy.hp <= 0) {
+							handleEnemyDeath(enemy, activePlayer);
+						}
+					}
+					
+					// Adrenaline Rush: Gain move speed when hit
+					if (playerStats.hasAdrenaline) {
+						const wasActive = activePlayer.adrenalineTimer > 0;
+						activePlayer.adrenalineTimer = UPGRADE_KNOBS.ADRENALINE.durationSeconds;
+						if (!wasActive) {
+							economyDeltas.adrenalineEvents.push({
+								playerNum: activePlayer.num,
+								duration: UPGRADE_KNOBS.ADRENALINE.durationSeconds
+							});
+						}
+					}
 					
 					if (activePlayer.hp <= 0 && !activePlayer.dead) {
 						activePlayer.die();
@@ -1144,6 +2181,66 @@ function Game(id) {
 			if (enemies[i].dead) {
 				enemies.splice(i, 1);
 			}
+		}
+		
+		// ===== HEAL PACK UPDATE (Support drone passive) =====
+		// Process heal pack collection and expiration
+		const healPacksToRemove = [];
+		const healPackPickupRadius = consts.HEAL_PACK_RADIUS || 12;
+		const healPackLifetime = consts.HEAL_PACK_LIFETIME || 20;
+		
+		for (const healPack of healPacks) {
+			// Check expiration
+			if (runTime - healPack.spawnTime >= healPackLifetime) {
+				healPacksToRemove.push(healPack);
+				continue;
+			}
+			
+			// Check collection by any player
+			for (const p of players) {
+				if (p.dead || p.disconnected) continue;
+				
+				const distToPlayer = Math.hypot(p.x - healPack.x, p.y - healPack.y);
+				const pickupDist = healPackPickupRadius + (p.getScaledRadius ? p.getScaledRadius() : 20);
+				
+				if (distToPlayer < pickupDist) {
+					// Collect heal pack
+					p.hp = Math.min(p.maxHp || 100, p.hp + healPack.healAmount);
+					healPacksToRemove.push(healPack);
+					
+					// Notify client of pickup
+					economyDeltas.healPackPickups = economyDeltas.healPackPickups || [];
+					economyDeltas.healPackPickups.push({
+						id: healPack.id,
+						playerNum: p.num,
+						healAmount: healPack.healAmount
+					});
+					break;
+				}
+			}
+		}
+		
+		// Remove collected/expired heal packs
+		for (const healPack of healPacksToRemove) {
+			const idx = healPacks.indexOf(healPack);
+			if (idx !== -1) {
+				healPacks.splice(idx, 1);
+				economyDeltas.healPackRemovals = economyDeltas.healPackRemovals || [];
+				economyDeltas.healPackRemovals.push(healPack.id);
+			}
+		}
+		
+		// Send heal pack updates
+		if (healPacks.length > 0) {
+			const blinkTime = consts.HEAL_PACK_BLINK_TIME || 5;
+			economyDeltas.healPackUpdates = healPacks.map(hp => ({
+				id: hp.id,
+				x: hp.x,
+				y: hp.y,
+				healAmount: hp.healAmount,
+				timeRemaining: healPackLifetime - (runTime - hp.spawnTime),
+				isBlinking: (healPackLifetime - (runTime - hp.spawnTime)) <= blinkTime
+			}));
 		}
 		
 		const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
@@ -1187,7 +2284,6 @@ function Game(id) {
 					newCoin.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.x));
 					newCoin.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.y));
 					coins.push(newCoin);
-					coinGrid.insert(newCoin);
 					economyDeltas.coinSpawns.push(newCoin);
 				}
 				
@@ -1213,10 +2309,10 @@ function Game(id) {
 							// Update size scale
 							const sizePerLevel = consts.PLAYER_SIZE_SCALE_PER_LEVEL || 0.04;
 							const maxScale = consts.PLAYER_SIZE_SCALE_MAX || 2.0;
-							killer.sizeScale = Math.min(maxScale, 1.0 + (killer.level - 1) * sizePerLevel);
+							killer.updateSizeScale();
 							
 							// Rebuild drones for new level
-							rebuildDronesArray(killer, killer.level);
+							rebuildDronesArray(killer, getDroneCountForLevel(killer.level));
 							
 							// Send level up event
 							economyDeltas.levelUps.push({
@@ -1235,7 +2331,8 @@ function Game(id) {
 							level: killer.level,
 							xpPerLevel: getXpForLevel(killer.level),
 							sizeScale: killer.sizeScale,
-							droneCount: killer.drones.length
+							droneCount: killer.drones.length,
+							upgrades: killer.upgrades || {}
 						});
 						
 						if (DEBUG_KILL_REWARD_LOGS) {
@@ -1271,14 +2368,151 @@ function Game(id) {
 			
 			// Get derived stats from upgrades
 			const stats = p.derivedStats || {};
-			const attackSpeedMult = stats.attackSpeedMult || 1.0;
-			const damageMult = (stats.damageMult || 1.0) + (stats.adrenalSurgeDamage || 0);
+			let attackSpeedMult = stats.attackSpeedMult || 1.0;
+			let damageMult = stats.damageMult || 1.0;
 			const critChance = stats.critChance || 0;
 			const critMult = stats.critMult || 2.0;
-			const lifeOnHitPercent = stats.lifeOnHitPercent || 0;
-			const enemySlowPercent = Math.min(stats.enemySlowPercent || 0, 0.6);
-			const chainLightningBounces = stats.chainLightningBounces || 0;
+			const lifeOnHitPercent = stats.lifeStealPercent || 0;
 			const extraProjectiles = stats.extraProjectiles || 0;
+			
+			// Berserker: Below threshold HP, gain attack speed and damage
+			if (stats.hasBerserker && p.hp < p.maxHp * UPGRADE_KNOBS.BERSERKER.hpThreshold) {
+				attackSpeedMult *= (1 + UPGRADE_KNOBS.BERSERKER.attackSpeedBonus);
+				damageMult += UPGRADE_KNOBS.BERSERKER.damageBonus;
+			}
+			
+			// Territorial: Bonus damage while in own territory
+			if (stats.hasTerritorial && inTerritory) {
+				damageMult += UPGRADE_KNOBS.TERRITORIAL.damageBonus;
+			}
+			
+			// Update timers
+			if (p.phaseShiftCooldown > 0) p.phaseShiftCooldown -= deltaSeconds;
+			if (p.adrenalineTimer > 0) p.adrenalineTimer -= deltaSeconds;
+			if (p.momentumStacks === undefined) p.momentumStacks = 0;
+			
+			// Momentum: Outside territory, gain speed per second (max capped)
+			if (stats.hasMomentum) {
+				const maxStacks = UPGRADE_KNOBS.MOMENTUM.maxSpeedBonus / UPGRADE_KNOBS.MOMENTUM.speedPerSecond;
+				if (!inTerritory) {
+					const wasZero = p.momentumStacks <= 0;
+					p.momentumStacks = Math.min(maxStacks, p.momentumStacks + deltaSeconds);
+					if (wasZero) {
+						economyDeltas.momentumEvents.push({ playerNum: p.num });
+					}
+				} else {
+					p.momentumStacks = 0; // Reset when entering territory
+				}
+			}
+			
+			// Overcharge Core: Drain HP over time (stops at minimum)
+			if (stats.hasOverchargeCore) {
+				const drainPerSec = UPGRADE_KNOBS.OVERCHARGE_CORE.hpDrainPerSecond;
+				const minHp = p.maxHp * UPGRADE_KNOBS.OVERCHARGE_CORE.minHpPercent;
+				if (p.hp > minHp) {
+					const drain = p.maxHp * drainPerSec * deltaSeconds;
+					p.hp = Math.max(minHp, p.hp - drain);
+				}
+			}
+			
+			// Arc Barrage: Periodic burst around player
+			if (stats.hasArcBarrage) {
+				if (p.arcBarrageCooldown === undefined) p.arcBarrageCooldown = 0;
+				p.arcBarrageCooldown -= deltaSeconds;
+				if (p.arcBarrageCooldown <= 0) {
+					p.arcBarrageCooldown = UPGRADE_KNOBS.ARC_BARRAGE.burstInterval;
+					const burstRadius = UPGRADE_KNOBS.ARC_BARRAGE.burstRadius;
+					const baseDamage = consts.DRONE_DAMAGE || 10;
+					const burstDamage = baseDamage * damageMult * UPGRADE_KNOBS.ARC_BARRAGE.burstDamagePercent;
+					const procCoeff = PROC_COEFFICIENTS.arcBarrage ?? 0.25;
+					let hitCount = 0;
+					const hits = [];
+					const maxHits = UPGRADE_KNOBS.ARC_BARRAGE.maxEnemiesHit;
+					
+					for (const enemy of enemies) {
+						if (enemy.dead || enemy.hp <= 0 || hitCount >= maxHits) continue;
+						const dist = Math.hypot(enemy.x - p.x, enemy.y - p.y);
+						if (dist < burstRadius) {
+							enemy.hp -= burstDamage;
+							if (enemy.hp < 0) enemy.hp = 0;
+							hitCount++;
+							hits.push({
+								x: enemy.x,
+								y: enemy.y,
+								damage: burstDamage
+							});
+							tryMissilePodProc(p, enemy, burstDamage, { x: p.x, y: p.y }, procCoeff, economyDeltas);
+							if (enemy.hp <= 0) {
+								handleEnemyDeath(enemy, p);
+							}
+						}
+					}
+					
+					// Visual feedback - ALWAYS show the burst, even if no enemies hit
+					economyDeltas.arcBarrageBursts.push({
+						x: p.x,
+						y: p.y,
+						radius: burstRadius,
+						playerNum: p.num,
+						damage: burstDamage,
+						hitCount: hitCount,
+						hits
+					});
+				}
+			}
+			
+			// Heatseeker Drones: Passive attack nearby enemies
+			if (stats.hasHeatseekerDrones) {
+				if (p.heatseekerCooldown === undefined) p.heatseekerCooldown = 0;
+				p.heatseekerCooldown -= deltaSeconds;
+				if (p.heatseekerCooldown <= 0) {
+					p.heatseekerCooldown = UPGRADE_KNOBS.HEATSEEKER_DRONES.attackCooldown;
+					const range = UPGRADE_KNOBS.HEATSEEKER_DRONES.attackRange;
+					const baseDamage = consts.DRONE_DAMAGE || 10;
+					const droneDamage = baseDamage * stats.damageMult * UPGRADE_KNOBS.HEATSEEKER_DRONES.damagePercent;
+					const droneCount = UPGRADE_KNOBS.HEATSEEKER_DRONES.droneCount;
+					const procCoeff = PROC_COEFFICIENTS.heatseekerDrones ?? 0.45;
+					
+					// Find closest enemies for each drone
+					const targets = [];
+					for (const enemy of enemies) {
+						if (enemy.dead || enemy.hp <= 0) continue;
+						const dist = Math.hypot(enemy.x - p.x, enemy.y - p.y);
+						if (dist < range) {
+							targets.push({ enemy, dist });
+						}
+					}
+					targets.sort((a, b) => a.dist - b.dist);
+					
+					for (let i = 0; i < Math.min(droneCount, targets.length); i++) {
+						const target = targets[i].enemy;
+						target.hp -= droneDamage;
+						if (target.hp < 0) target.hp = 0;
+						
+						tryMissilePodProc(p, target, droneDamage, { x: p.x, y: p.y }, procCoeff, economyDeltas);
+						
+						// Visual feedback - show as hitscan from player to enemy
+						economyDeltas.hitscanEvents.push({
+							fromX: p.x,
+							fromY: p.y,
+							toX: target.x,
+							toY: target.y,
+							ownerId: p.num,
+							targetEnemyId: target.id,
+							damage: droneDamage,
+							remainingHp: target.hp,
+							isCrit: false,
+							attackType: 'laser',
+							typeColor: '#00FF88',
+							isHeatseekerDrone: true
+						});
+						
+						if (target.hp <= 0) {
+							handleEnemyDeath(target, p);
+						}
+					}
+				}
+			}
 			
 			// Update life on hit cooldown
 			if (p.lifeOnHitCooldown > 0) {
@@ -1287,9 +2521,14 @@ function Game(id) {
 			
 			// Update each drone
 			for (const drone of p.drones) {
-				// Reduce cooldown (modified by attack speed)
+				// Get drone type multipliers (default to 1.0 if not set)
+				const droneCooldownMult = drone.cooldownMult || 1.0;
+				const droneDamageMult = drone.damageMult || 1.0;
+				
+				// Reduce cooldown (modified by attack speed and drone type)
 				if (drone.cooldownRemaining > 0) {
-					drone.cooldownRemaining -= deltaSeconds * attackSpeedMult;
+					// Lower cooldownMult = faster fire, so we divide by it
+					drone.cooldownRemaining -= deltaSeconds * attackSpeedMult / droneCooldownMult;
 				}
 				
 				// Drones are disabled when owner is snipped (can't target or fire)
@@ -1298,28 +2537,74 @@ function Game(id) {
 					continue; // Skip targeting and firing
 				}
 				
-				// Find target (nearest enemy in range, measured from the owner center)
+				// Find target (nearest enemy to this specific drone, within range of player)
 				let target = null;
-				let minDist = drone.range;
+				let minDist = Infinity;
 				const ownerX = p.x;
 				const ownerY = p.y;
-				
+				// Scale drone range with player size
+				const playerSizeScale = p.sizeScale || 1.0;
+				const scaledRange = drone.range * playerSizeScale;
+
 				for (const enemy of enemies) {
 					if (enemy.dead || enemy.hp <= 0) continue;
-					
-					// Measure from player center so range matches the rendered ring
-					const dist = Math.hypot(enemy.x - ownerX, enemy.y - ownerY);
-					if (dist < minDist) {
-						minDist = dist;
+
+					// Check if enemy is within range of player (range is measured from player center)
+					const distToPlayer = Math.hypot(enemy.x - ownerX, enemy.y - ownerY);
+					if (distToPlayer > scaledRange) continue;
+
+					// Target the enemy closest to THIS drone (not the player)
+					// This spreads out targeting so drones don't all shoot the same enemy
+					const distToDrone = Math.hypot(enemy.x - drone.x, enemy.y - drone.y);
+					if (distToDrone < minDist) {
+						minDist = distToDrone;
 						target = enemy;
 					}
 				}
 				
 				drone.targetId = target ? target.id : null;
 				
-				// Hitscan fire if ready and has target
+				// PASSIVE: Skirmisher - Track fire rate ramp state
+				const currentDroneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
+				if (currentDroneType.rampsFireRate) {
+					// Initialize ramp tracking if not present
+					if (drone.fireRateRampProgress === undefined) drone.fireRateRampProgress = 0;
+					if (drone.timeSinceLastShot === undefined) drone.timeSinceLastShot = 0;
+					
+					const resetTime = currentDroneType.fireRateResetTime || 0.6;
+					
+					if (!target) {
+						// No target - track time without shooting
+						drone.timeSinceLastShot += deltaSeconds;
+						if (drone.timeSinceLastShot >= resetTime) {
+							// Reset ramp after no enemies for reset time
+							drone.fireRateRampProgress = 0;
+						}
+					}
+				}
+				
+				// Fire if ready and has target
 				if (target && drone.cooldownRemaining <= 0) {
-					drone.cooldownRemaining = consts.DRONE_COOLDOWN || 1.0;
+					// Calculate cooldown with Skirmisher fire rate ramp
+					let baseCooldown = consts.DRONE_COOLDOWN || 0.5;
+					if (currentDroneType.rampsFireRate) {
+						const rampMax = currentDroneType.fireRateRampMax || 2.0;
+						const fireRateMult = 1 + (rampMax - 1) * (drone.fireRateRampProgress || 0);
+						baseCooldown = baseCooldown / fireRateMult;
+						
+						// Progress the ramp
+						const rampTime = currentDroneType.fireRateRampTime || 3.0;
+						drone.fireRateRampProgress = Math.min(1, (drone.fireRateRampProgress || 0) + (deltaSeconds / rampTime) * 2);
+						drone.timeSinceLastShot = 0; // Reset idle timer on shot
+					}
+					drone.cooldownRemaining = baseCooldown;
+					
+					// Execute: Enemies below threshold HP are instantly killed
+					if (stats.hasExecute && target.hp > 0 && target.hp < target.maxHp * UPGRADE_KNOBS.EXECUTE.hpThreshold) {
+						target.hp = 0;
+						handleEnemyDeath(target, p);
+						continue; // Skip normal attack, enemy is dead
+					}
 					
 					// Calculate base damage dynamically from config
 					// First drone = full damage, 2nd = EXTRA_MULT, 3rd+ = decay factor applied
@@ -1338,8 +2623,13 @@ function Game(id) {
 						baseDmg = baseDamage * extraMult * Math.pow(decayFactor, droneIndex - 1);
 					}
 					
-					// Apply damage multiplier from upgrades
-					let damage = baseDmg * damageMult;
+					// Apply damage multiplier from upgrades AND drone type
+					let damage = baseDmg * damageMult * droneDamageMult;
+					
+					// Hunter: Bonus damage vs enemies below threshold HP
+					if (stats.hasHunter && target.hp < target.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
+						damage *= (1 + UPGRADE_KNOBS.HUNTER.damageBonus);
+					}
 					
 					// Check for critical hit
 					const isCrit = Math.random() < critChance;
@@ -1347,90 +2637,177 @@ function Game(id) {
 						damage *= critMult;
 					}
 					
-					// Apply damage to primary target
-					applyHitscanDamage(p, drone, target, damage, isCrit, economyDeltas, enemySlowPercent, lifeOnHitPercent);
+					// Check if this drone uses hitscan or projectile
+					const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
+					const isHitscan = droneType.isHitscan;
 					
-					// Multi-shot: fire at additional nearby enemies
-					if (extraProjectiles > 0) {
-						const nearbyEnemies = enemies.filter(e => 
-							e !== target && !e.dead && e.hp > 0 &&
-							Math.hypot(e.x - ownerX, e.y - ownerY) < drone.range
-						);
-						// Sort by distance
-						nearbyEnemies.sort((a, b) => 
-							Math.hypot(a.x - ownerX, a.y - ownerY) - Math.hypot(b.x - ownerX, b.y - ownerY)
-						);
-						// Fire at up to extraProjectiles additional targets
-						for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
-							const multiTarget = nearbyEnemies[i];
-							applyHitscanDamage(p, drone, multiTarget, damage, isCrit, economyDeltas, enemySlowPercent, lifeOnHitPercent);
-						}
-					}
-					
-					// Chain lightning: bounce to additional enemies
-					if (chainLightningBounces > 0 && !target.dead) {
-						const hitEnemies = new Set([target.id]);
-						let chainTarget = target;
-						let chainDamage = damage * 0.7; // 70% damage per bounce
+					if (isHitscan) {
+						// HITSCAN: Instant hit (lasers, pulse beams)
+						// First drone (index 0) fires from player's aim position, others fire from drone
+						const isFirstDrone = droneIndex === 0;
+						const hitscanOrigin = isFirstDrone ? getPlayerAimPosition(p) : null;
 						
-						for (let bounce = 0; bounce < chainLightningBounces; bounce++) {
-							// Find nearest enemy not yet hit
-							let nextTarget = null;
-							let nextDist = 200; // Chain range
-							
-							for (const enemy of enemies) {
-								if (enemy.dead || enemy.hp <= 0 || hitEnemies.has(enemy.id)) continue;
-								const dist = Math.hypot(enemy.x - chainTarget.x, enemy.y - chainTarget.y);
-								if (dist < nextDist) {
-									nextDist = dist;
-									nextTarget = enemy;
+						applyHitscanDamage(p, drone, target, damage, isCrit, economyDeltas, hitscanOrigin);
+						
+						// Multi-shot: fire at additional nearby enemies (only for hitscan)
+						if (extraProjectiles > 0) {
+							const nearbyEnemies = enemies.filter(e => 
+								e !== target && !e.dead && e.hp > 0 &&
+								Math.hypot(e.x - ownerX, e.y - ownerY) < scaledRange
+							);
+							nearbyEnemies.sort((a, b) => 
+								Math.hypot(a.x - ownerX, a.y - ownerY) - Math.hypot(b.x - ownerX, b.y - ownerY)
+							);
+							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
+								const multiTarget = nearbyEnemies[i];
+								const extraDamage = damage * Math.pow(0.8, i + 1);
+								applyHitscanDamage(p, drone, multiTarget, extraDamage, isCrit, economyDeltas, hitscanOrigin);
+							}
+						}
+						
+						// Chain lightning is handled in applyHitscanDamage
+					} else {
+						// PROJECTILE: Spawn a traveling projectile (bullets, plasma, railgun)
+						// First drone (index 0) fires from player's aim position, others fire from drone
+						const isFirstDrone = droneIndex === 0;
+						const originPos = isFirstDrone ? getPlayerAimPosition(p) : null;
+						// First drone uses player's color instead of drone color
+						const playerColor = isFirstDrone ? colorToHex(p.baseColor) : null;
+						
+						const proj = createProjectile(drone, target, damage, isCrit, p, {
+							lifeOnHitPercent: lifeOnHitPercent
+						}, originPos, playerColor);
+						
+						// Send projectile spawn event for client
+						emitProjectileSpawn(proj, economyDeltas);
+						
+						// Multi-shot for projectiles: spawn additional projectiles
+						if (extraProjectiles > 0) {
+							const multishotDelayMs = UPGRADE_KNOBS.MULTISHOT.projectileDelayMs || 0;
+							const nearbyEnemies = enemies.filter(e => 
+								e !== target && !e.dead && e.hp > 0 &&
+								Math.hypot(e.x - ownerX, e.y - ownerY) < scaledRange
+							);
+							nearbyEnemies.sort((a, b) => 
+								Math.hypot(a.x - ownerX, a.y - ownerY) - Math.hypot(b.x - ownerX, b.y - ownerY)
+							);
+							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
+								const multiTarget = nearbyEnemies[i];
+								const extraDamage = damage * Math.pow(0.8, i + 1);
+								const delaySec = multishotDelayMs > 0 ? (multishotDelayMs * (i + 1)) / 1000 : 0;
+								
+								if (delaySec > 0) {
+									pendingProjectileSpawns.push({
+										fireAt: runTime + delaySec,
+										drone,
+										targetId: multiTarget.id,
+										damage: extraDamage,
+										isCrit,
+										owner: p,
+										stats: { lifeOnHitPercent: lifeOnHitPercent },
+										originOverride: originPos,
+										colorOverride: playerColor
+									});
+								} else {
+									const extraProj = createProjectile(drone, multiTarget, extraDamage, isCrit, p, {
+										lifeOnHitPercent: lifeOnHitPercent
+									}, originPos, playerColor); // Extra projectiles also come from same origin with player color
+									emitProjectileSpawn(extraProj, economyDeltas);
 								}
 							}
-							
-							if (!nextTarget) break;
-							
-							hitEnemies.add(nextTarget.id);
-							
-							// Apply chain damage
-							nextTarget.hp -= chainDamage;
-							if (nextTarget.hp < 0) nextTarget.hp = 0;
-							
-							// Send chain lightning visual
-							economyDeltas.hitscanEvents.push({
-								fromX: chainTarget.x,
-								fromY: chainTarget.y,
-								toX: nextTarget.x,
-								toY: nextTarget.y,
-								ownerId: p.num,
-								targetEnemyId: nextTarget.id,
-								damage: chainDamage,
-								remainingHp: nextTarget.hp,
-								isChain: true
-							});
-							
-							// Check for death
-							if (nextTarget.hp <= 0) {
-								handleEnemyDeath(nextTarget, p);
-							}
-							
-							chainTarget = nextTarget;
 						}
 					}
 				}
 			}
 		}
 		
+		// Spawn any delayed multishot projectiles
+		processPendingProjectileSpawns(economyDeltas);
+		
+		// Update projectiles (movement and collision)
+		updateProjectiles(deltaSeconds);
+		
+		// Update sticky charges (detonation timer)
+		updateStickyCharges(economyDeltas);
+		
+		// Update missiles (movement and homing)
+		updateMissiles(deltaSeconds, economyDeltas);
+		
 		// Helper function to apply hitscan damage with all effects
-		function applyHitscanDamage(player, drone, target, damage, isCrit, deltas, slowPercent, lifeOnHitPct) {
-			// Apply damage
-			target.hp -= damage;
-			if (target.hp < 0) target.hp = 0;
+		// originOverride: optional {x, y} for first drone to fire from player's aim position
+		function applyHitscanDamage(player, drone, target, damage, isCrit, deltas, originOverride) {
+			const stats = player.derivedStats || {};
+			const lifeOnHitPct = stats.lifeStealPercent || 0;
+			const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
+			const baseProcCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
+			const procOrigin = originOverride ? originOverride : { x: drone.x, y: drone.y };
 			
-			// Apply slow debuff
-			if (slowPercent > 0) {
-				target.slowAmount = Math.min((target.slowAmount || 0) + slowPercent, 0.6);
-				target.slowExpires = runTime + 1.5; // 1.5s duration
+			// PASSIVE: Assault - Ramp damage on same target
+			let finalDamage = damage;
+			if (droneType.rampsTargetDamage) {
+				if (!assaultRampStacks.has(player.num)) {
+					assaultRampStacks.set(player.num, new Map());
+				}
+				const ownerRamps = assaultRampStacks.get(player.num);
+				let rampData = ownerRamps.get(target.id);
+				
+				const rampDecayTime = droneType.rampDecayTime || 1.5;
+				if (!rampData || (runTime - rampData.lastHitTime) > rampDecayTime) {
+					rampData = { stacks: 0, lastHitTime: runTime };
+				}
+				
+				// Apply ramp bonus (before incrementing)
+				const rampDamagePerStack = droneType.rampDamagePerStack || 0.15;
+				const rampMaxStacks = droneType.rampMaxStacks || 5;
+				const rampBonus = 1 + (rampData.stacks * rampDamagePerStack);
+				finalDamage *= rampBonus;
+				
+				// Increment stacks for next hit
+				rampData.stacks = Math.min(rampData.stacks + 1, rampMaxStacks);
+				rampData.lastHitTime = runTime;
+				ownerRamps.set(target.id, rampData);
 			}
+			
+			// UPGRADE: Focused Fire - damage bonus for consecutive hits on same target
+			if (stats.hasFocusedFire) {
+				if (!focusedFireStacks.has(player.num)) {
+					focusedFireStacks.set(player.num, { targetId: null, stacks: 0, lastHitTime: 0 });
+				}
+				const ffData = focusedFireStacks.get(player.num);
+				const decayTime = UPGRADE_KNOBS.FOCUSED_FIRE.decayTime;
+				
+				if (ffData.targetId !== target.id || (runTime - ffData.lastHitTime) > decayTime) {
+					// New target or decay, reset stacks
+					ffData.targetId = target.id;
+					ffData.stacks = 0;
+				}
+				
+				// Apply bonus
+				const ffBonus = 1 + (ffData.stacks * UPGRADE_KNOBS.FOCUSED_FIRE.damagePerHitOnSameTarget);
+				finalDamage *= ffBonus;
+				
+				// Increment stacks
+				ffData.stacks = Math.min(ffData.stacks + 1, UPGRADE_KNOBS.FOCUSED_FIRE.maxStacks);
+				ffData.lastHitTime = runTime;
+			}
+			
+			// UPGRADE: Precision Rounds - bonus damage at distance
+			if (stats.hasPrecisionRounds) {
+				const fromX = originOverride ? originOverride.x : drone.x;
+				const fromY = originOverride ? originOverride.y : drone.y;
+				const dist = Math.hypot(target.x - fromX, target.y - fromY);
+				const minDist = UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus;
+				const maxDist = UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus;
+				if (dist > minDist) {
+					const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
+					const prBonus = 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
+					finalDamage *= prBonus;
+				}
+			}
+			
+			// Apply damage
+			target.hp -= finalDamage;
+			if (target.hp < 0) target.hp = 0;
 			
 			// Life on hit (with internal cooldown)
 			if (lifeOnHitPct > 0 && player.lifeOnHitCooldown <= 0) {
@@ -1439,27 +2816,193 @@ function Game(id) {
 				player.lifeOnHitCooldown = 0.1; // 0.1s cooldown
 			}
 			
-			if (DEBUG_HITSCAN_LOGS) {
-				console.log(`[HITSCAN] Drone ${drone.id} (owner: ${player.name}) hit enemy ${target.id} for ${damage.toFixed(1)} dmg${isCrit ? ' (CRIT!)' : ''}. HP: ${target.hp}/${target.maxHp}`);
+			// PASSIVE: Swarm - Apply bleed stacks
+			if (droneType.appliesBleed) {
+				if (!target.bleedStacks) target.bleedStacks = 0;
+				if (!target.bleedExpires) target.bleedExpires = 0;
+				
+				const bleedMaxStacks = droneType.bleedMaxStacks || 10;
+				const bleedDuration = droneType.bleedDuration || 2.0;
+				target.bleedStacks = Math.min(target.bleedStacks + 1, bleedMaxStacks);
+				target.bleedExpires = runTime + bleedDuration;
+				target.bleedDamagePerStack = droneType.bleedDamagePerStack || 1;
+				target.bleedOwnerId = player.num;
 			}
+			
+			if (DEBUG_HITSCAN_LOGS) {
+				console.log(`[HITSCAN] Drone ${drone.id} (owner: ${player.name}) hit enemy ${target.id} for ${finalDamage.toFixed(1)} dmg${isCrit ? ' (CRIT!)' : ''}. HP: ${target.hp}/${target.maxHp}`);
+			}
+			
+			// Use override position if provided (for first drone), otherwise use drone position
+			const fromX = originOverride ? originOverride.x : drone.x;
+			const fromY = originOverride ? originOverride.y : drone.y;
 			
 			// Send hitscan event for visual feedback
 			deltas.hitscanEvents.push({
-				fromX: drone.x,
-				fromY: drone.y,
+				fromX: fromX,
+				fromY: fromY,
 				toX: target.x,
 				toY: target.y,
 				ownerId: player.num,
 				targetEnemyId: target.id,
-				damage: damage,
+				damage: finalDamage,
 				remainingHp: target.hp,
-				isCrit: isCrit
+				isCrit: isCrit,
+				attackType: drone.attackType || 'bullet',
+				typeColor: drone.typeColor || '#FF6B6B'
 			});
 			
 			// Check for death
 			if (target.hp <= 0) {
 				handleEnemyDeath(target, player);
 			}
+			
+			// UPGRADE: Missile Pod - chance to fire homing missile
+			tryMissilePodProc(player, target, finalDamage, procOrigin, baseProcCoefficient, deltas);
+			
+			// PASSIVE: Rapid - Chain hits nearby enemies for 15% damage
+			if (droneType.chainHitsNearby && !target.dead) {
+				const chainPercent = droneType.chainHitPercent || 0.15;
+				const chainRadius = droneType.chainHitRadius || 60;
+				const chainDamage = finalDamage * chainPercent;
+				
+				for (const nearbyEnemy of enemies) {
+					if (nearbyEnemy === target || nearbyEnemy.dead || nearbyEnemy.hp <= 0) continue;
+					const dist = Math.hypot(nearbyEnemy.x - target.x, nearbyEnemy.y - target.y);
+					if (dist < chainRadius) {
+						nearbyEnemy.hp -= chainDamage;
+						if (nearbyEnemy.hp < 0) nearbyEnemy.hp = 0;
+						
+						// Visual feedback for chain hit
+						deltas.hitscanEvents.push({
+							fromX: target.x,
+							fromY: target.y,
+							toX: nearbyEnemy.x,
+							toY: nearbyEnemy.y,
+							ownerId: player.num,
+							targetEnemyId: nearbyEnemy.id,
+							damage: chainDamage,
+							remainingHp: nearbyEnemy.hp,
+							isCrit: false,
+							attackType: 'laser',
+							typeColor: droneType.color || '#4ECDC4',
+							isChainHit: true
+						});
+						
+						if (nearbyEnemy.hp <= 0) {
+							handleEnemyDeath(nearbyEnemy, player);
+						}
+						
+						const chainProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.rapidChainHit ?? 0.25);
+						tryMissilePodProc(player, nearbyEnemy, chainDamage, procOrigin, chainProcCoeff, deltas);
+					}
+				}
+			}
+			
+			// Explosive Rounds: Hits explode for % damage to nearby enemies
+			if (stats.hasExplosive && !target.dead) {
+				const explosionRadius = UPGRADE_KNOBS.EXPLOSIVE_ROUNDS.explosionRadius;
+				const explosionDamage = finalDamage * UPGRADE_KNOBS.EXPLOSIVE_ROUNDS.explosionDamagePercent;
+				deltas.hitscanEvents.push({
+					fromX: target.x,
+					fromY: target.y,
+					toX: target.x,
+					toY: target.y,
+					ownerId: player.num,
+					targetEnemyId: target.id,
+					damage: explosionDamage,
+					remainingHp: target.hp,
+					isExplosion: true,
+					typeColor: '#FF9F1C'
+				});
+				for (const nearbyEnemy of enemies) {
+					if (nearbyEnemy === target || nearbyEnemy.dead || nearbyEnemy.hp <= 0) continue;
+					const dist = Math.hypot(nearbyEnemy.x - target.x, nearbyEnemy.y - target.y);
+					if (dist < explosionRadius) {
+						nearbyEnemy.hp -= explosionDamage;
+						if (nearbyEnemy.hp <= 0) {
+							handleEnemyDeath(nearbyEnemy, player);
+						}
+						const aoeProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.explosiveRounds ?? 0.25);
+						tryMissilePodProc(player, nearbyEnemy, explosionDamage, procOrigin, aoeProcCoeff, deltas);
+					}
+				}
+			}
+			
+			// Chain Lightning: Bounce to nearby enemies at % damage
+			if (stats.hasChainLightning && !target.dead) {
+				const hitEnemies = new Set([target.id]);
+				let chainTarget = target;
+				let chainDamage = finalDamage * UPGRADE_KNOBS.CHAIN_LIGHTNING.bounceDamagePercent;
+				
+				for (let bounce = 0; bounce < UPGRADE_KNOBS.CHAIN_LIGHTNING.bounceCount; bounce++) {
+					let nextTarget = null;
+					let nextDist = UPGRADE_KNOBS.CHAIN_LIGHTNING.bounceRange;
+					
+					for (const enemy of enemies) {
+						if (enemy.dead || enemy.hp <= 0 || hitEnemies.has(enemy.id)) continue;
+						const dist = Math.hypot(enemy.x - chainTarget.x, enemy.y - chainTarget.y);
+						if (dist < nextDist) {
+							nextDist = dist;
+							nextTarget = enemy;
+						}
+					}
+					
+					if (!nextTarget) break;
+					
+					hitEnemies.add(nextTarget.id);
+					nextTarget.hp -= chainDamage;
+					if (nextTarget.hp < 0) nextTarget.hp = 0;
+					
+					deltas.hitscanEvents.push({
+						fromX: chainTarget.x,
+						fromY: chainTarget.y,
+						toX: nextTarget.x,
+						toY: nextTarget.y,
+						ownerId: player.num,
+						targetEnemyId: nextTarget.id,
+						damage: chainDamage,
+						remainingHp: nextTarget.hp,
+						isChain: true,
+						typeColor: '#00BFFF' // Chain lightning color
+					});
+					
+					if (nextTarget.hp <= 0) {
+						handleEnemyDeath(nextTarget, player);
+					}
+					
+					const chainProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.chainLightning ?? 0.35);
+					tryMissilePodProc(player, nextTarget, chainDamage, procOrigin, chainProcCoeff, deltas);
+					
+					chainTarget = nextTarget;
+				}
+			}
+			
+			// UPGRADE: Sticky Charges - apply charges that detonate after delay
+			if (stats.hasStickyCharges && !target.dead) {
+				// Find existing charge entry for this enemy
+				let chargeEntry = stickyCharges.find(c => c.enemyId === target.id && c.ownerId === player.num);
+				if (!chargeEntry) {
+					chargeEntry = {
+						enemyId: target.id,
+						ownerId: player.num,
+						charges: 0,
+						detonationTime: runTime + UPGRADE_KNOBS.STICKY_CHARGES.detonationDelay,
+						baseDamage: finalDamage
+					};
+					stickyCharges.push(chargeEntry);
+				}
+				// Add charges (capped)
+				chargeEntry.charges = Math.min(
+					chargeEntry.charges + UPGRADE_KNOBS.STICKY_CHARGES.chargesPerHit,
+					UPGRADE_KNOBS.STICKY_CHARGES.maxChargesPerEnemy
+				);
+				// Reset detonation timer and update base damage
+				chargeEntry.detonationTime = runTime + UPGRADE_KNOBS.STICKY_CHARGES.detonationDelay;
+				chargeEntry.baseDamage = Math.max(chargeEntry.baseDamage, finalDamage);
+			}
+			
+			// Missile Pod handled by tryMissilePodProc above.
 		}
 		
 		// Process players who died from hitscan damage
@@ -1499,7 +3042,6 @@ function Game(id) {
 				newCoin.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.x));
 				newCoin.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, newCoin.y));
 				coins.push(newCoin);
-				coinGrid.insert(newCoin);
 				economyDeltas.coinSpawns.push(newCoin);
 			}
 			
@@ -1525,10 +3067,10 @@ function Game(id) {
 						// Update size scale
 						const sizePerLevel = consts.PLAYER_SIZE_SCALE_PER_LEVEL || 0.04;
 						const maxScale = consts.PLAYER_SIZE_SCALE_MAX || 2.0;
-						killer.sizeScale = Math.min(maxScale, 1.0 + (killer.level - 1) * sizePerLevel);
+						killer.updateSizeScale();
 						
 						// Rebuild drones for new level
-						rebuildDronesArray(killer, killer.level);
+						rebuildDronesArray(killer, getDroneCountForLevel(killer.level));
 						
 						// Send level up event
 						economyDeltas.levelUps.push({
@@ -1547,7 +3089,8 @@ function Game(id) {
 						level: killer.level,
 						xpPerLevel: getXpForLevel(killer.level),
 						sizeScale: killer.sizeScale,
-						droneCount: killer.drones.length
+						droneCount: killer.drones.length,
+						upgrades: killer.upgrades || {}
 					});
 					
 					console.log(`[KILL REWARD] ${killer.name} received ${killerXp} XP for killing ${p.name} (victim had ${totalXp} total XP)`);
@@ -1569,18 +3112,67 @@ function Game(id) {
 			if (p.dead) continue;
 			
 			let changed = false;
+			const prevHp = p.hp;
+			const prevMaxHp = p.maxHp;
+
+			// 0. Pull enemy XP orbs toward player when inside territory
+			const inTerritory = p.territory && p.territory.length >= 3 &&
+				pointInPolygon({ x: p.x, y: p.y }, p.territory);
+			if (inTerritory && coins.length > 0) {
+				const pullSpeed = (consts.SPEED || 4) * 0.4; // 40% of base movement speed (per frame)
+				for (const coin of coins) {
+					if (coin.type !== "enemy" && coin.type !== "boss") continue;
+					if (!pointInPolygon({ x: coin.x, y: coin.y }, p.territory)) continue;
+					
+					const dx = p.x - coin.x;
+					const dy = p.y - coin.y;
+					const dist = Math.hypot(dx, dy);
+					if (dist <= 0.01) continue;
+					
+					const maxStep = pullSpeed * frameScale;
+					const step = Math.min(maxStep, dist);
+					const nx = dx / dist;
+					const ny = dy / dist;
+					
+					coin.x += nx * step;
+					coin.y += ny * step;
+					economyDeltas.coinUpdates.push({ id: coin.id, x: coin.x, y: coin.y });
+				}
+			}
+
+			// Check for exhaustion death (HP drained due to stamina depletion)
+			if (p.hp <= 0 && !p.dead) {
+				p.die();
+				economyDeltas.killEvents.push({
+					killerNum: -1,
+					victimNum: p.num,
+					victimName: p.name || "Player",
+					killType: "exhaustion"
+				});
+				changed = true;
+			}
 
 			// 1. XP pickups (coins) -> add directly to XP
-			const scaledRadius = p.getScaledRadius ? p.getScaledRadius() : PLAYER_RADIUS;
+			// Pickup radius is based on drone orbit radius (where drones circle), scaled with player size
+			const droneOrbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
+			const playerSizeScale = p.sizeScale || 1.0;
 			const pickupRadiusMult = (p.derivedStats && p.derivedStats.pickupRadiusMult) || 1.0;
-			const effectivePickupRadius = (scaledRadius + consts.COIN_RADIUS) * pickupRadiusMult;
+			const effectivePickupRadius = droneOrbitRadius * playerSizeScale * pickupRadiusMult;
 			for (let i = coins.length - 1; i >= 0; i--) {
 				const coin = coins[i];
 				const dist = Math.hypot(p.x - coin.x, p.y - coin.y);
 				if (dist < effectivePickupRadius) {
 					p.xp += coin.value;
+					if (coin.type === "boss") {
+						const rewardText = applyBossOrbReward(p);
+						if (rewardText) {
+							economyDeltas.gameMessages.push({
+								text: rewardText,
+								duration: 2.0
+							});
+						}
+					}
 					economyDeltas.coinRemovals.push(coin.id);
-					coinGrid.remove(coin);
 					coins.splice(i, 1);
 					changed = true;
 				}
@@ -1588,7 +3180,25 @@ function Game(id) {
 
 			// 2. Territory rewards -> add directly to XP
 			if (p._pendingTerritoryAreaGained > 0) {
-				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * consts.COINS_PER_AREA_UNIT;
+				// Auto-collect gold coins inside newly claimed territory (not enemy XP orbs)
+				if (p.territory && p.territory.length >= 3) {
+					let territoryXp = 0;
+					for (let i = coins.length - 1; i >= 0; i--) {
+						const coin = coins[i];
+						if (coin.type === "enemy" || coin.type === "boss") continue;
+						if (pointInPolygon({ x: coin.x, y: coin.y }, p.territory)) {
+							territoryXp += coin.value;
+							economyDeltas.coinRemovals.push(coin.id);
+							coins.splice(i, 1);
+						}
+					}
+					if (territoryXp > 0) {
+						p.xp += territoryXp;
+						changed = true;
+					}
+				}
+
+				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * (consts.TERRITORY_XP_PER_AREA || 0.00025);
 				const xpGained = Math.floor(p._territoryCoinCarry);
 				if (xpGained > 0) {
 					p.xp += xpGained;
@@ -1651,14 +3261,21 @@ function Game(id) {
 				}
 			}
 
-			if (changed || p._forceXpUpdate) {
+			const hpChanged = (p.hp !== prevHp) || (p.maxHp !== prevMaxHp);
+			if (changed || p._forceXpUpdate || hpChanged) {
 				economyDeltas.xpUpdates.push({
 					num: p.num,
 					level: p.level,
 					xp: p.xp,
 					xpPerLevel: getXpForLevel(p.level),
 					sizeScale: p.sizeScale,
-					droneCount: p.droneCount || 1
+					droneCount: p.droneCount || 1,
+					hp: p.hp,
+					maxHp: p.maxHp,
+					stamina: p.stamina,
+					maxStamina: p.maxStamina,
+					derivedStats: p.derivedStats || null,
+					upgrades: p.upgrades || {}
 				});
 				p._forceXpUpdate = false;
 			}
@@ -1671,7 +3288,12 @@ function Game(id) {
 						id: d.id,
 						x: d.x,
 						y: d.y,
-						targetId: d.targetId
+						targetId: d.targetId,
+						// Include type info for rendering
+						typeId: d.typeId || 'assault',
+						typeName: d.typeName || 'Assault',
+						typeColor: d.typeColor || '#FF6B6B',
+						attackType: d.attackType || 'bullet'
 					}))
 				});
 			}
@@ -1679,20 +3301,69 @@ function Game(id) {
 	}
 	
 	/**
-	 * Apply level-up benefits: +1 drone and increased player size
+	 * Apply level-up benefits: check for drone unlock and update player size.
+	 * Note: Drone is NOT added here - it's added after player picks the drone type.
+	 * Returns true if a new drone slot was unlocked (pending choice needed).
 	 */
 	function applyLevelBenefits(player) {
 		// Update size scale based on new level
 		player.updateSizeScale();
 		
-		// Add one drone (up to max)
-		const maxDrones = consts.MAX_DRONES || 50;
-		const newDroneCount = Math.min(player.level, maxDrones);
+		// Recalculate max HP to include the new level bonus
+		const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+		const hpPerLevel = consts.HP_PER_LEVEL || 10;
+		const level = player.level || 1;
+		const levelBonusHp = (level - 1) * hpPerLevel;
+		const stats = player.derivedStats || {};
+		const flatMaxHp = stats.flatMaxHp || 0;
+		const maxHpMult = stats.maxHpMult || 1.0;
+		player.maxHp = (baseMaxHp + levelBonusHp + flatMaxHp) * maxHpMult;
+		
+		// Heal the player for the HP gained from leveling
+		player.hp = Math.min(player.hp + hpPerLevel, player.maxHp);
+		
+		// Check if this level unlocks a new drone slot
+		const newDroneCount = getDroneCountForLevel(player.level);
 		
 		if (newDroneCount > (player.droneCount || 1)) {
-			player.droneCount = newDroneCount;
-			rebuildDronesArray(player, player.droneCount);
+			// Mark that a drone unlock is pending (don't add drone yet)
+			player._pendingDroneUnlock = newDroneCount;
+			return true; // Drone unlock pending
 		}
+		
+		return false; // No drone unlock
+	}
+	
+	/**
+	 * Check if player has pending drone unlock and trigger drone choice flow
+	 */
+	function checkPendingDroneUnlock(player) {
+		if (!player._pendingDroneUnlock) return false;
+		
+		const newDroneIndex = player._pendingDroneUnlock - 1; // 0-indexed slot for the new drone
+		
+		// Roll 3 drone type choices
+		const choices = rollDroneChoices();
+		
+		pendingDroneOffer = {
+			playerNum: player.num,
+			droneIndex: newDroneIndex,
+			choices: choices
+		};
+		gamePaused = true;
+		
+		// Send drone offer to the player
+		player.client.sendPacket(MSG.DRONE_OFFER, {
+			choices: choices,
+			droneIndex: newDroneIndex,
+			newDroneCount: player._pendingDroneUnlock
+		});
+		
+		if (DEBUG_LEVELING_LOGS) {
+			console.log(`[DRONE] Offering drone types to ${player.name}:`, choices.map(c => c.name).join(', '));
+		}
+		
+		return true;
 	}
 }
 

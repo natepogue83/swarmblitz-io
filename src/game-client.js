@@ -1,6 +1,7 @@
 import { Player, initPlayer, updateFrame, polygonArea } from "./core/index.js";
 import { consts, config } from "../config.js";
 import { MSG, encodePacket, decodePacket } from "./net/packet.js";
+import * as SoundManager from "./sound-manager.js";
 
 // Helper to calculate XP needed for a level
 function getXpForLevel(level) {
@@ -14,13 +15,19 @@ let user, socket, frame;
 let players, allPlayers;
 let coinsById = new Map();
 let dronesById = new Map(); // Stores all drones keyed by id
+let projectilesById = new Map(); // Stores all active projectiles keyed by id
+let healPacksById = new Map(); // Stores all active heal packs keyed by id (Support drone passive)
 let enemies = [];
 let enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 let kills;
 
 // Upgrade system state
 let upgradeChoices = null; // Current upgrade choices shown to player
-let gamePaused = false; // True when upgrade selection is pending
+let gamePaused = false; // True when upgrade or drone selection is pending
+
+// Drone choice state
+let droneChoices = null; // Current drone type choices shown to player
+let droneChoiceIndex = -1; // Index of the drone slot being chosen
 let timeout = undefined;
 let dirty = false;
 let deadFrames = 0;
@@ -49,24 +56,8 @@ try {
 	requestAnimationFrame = callback => { setTimeout(callback, 1000 / 30) };
 }
 
-// Get current viewport dimensions for AOI calculation
-function getViewportDimensions() {
-	// Use the actual window dimensions
-	const width = window.innerWidth || document.documentElement.clientWidth || 800;
-	const height = window.innerHeight || document.documentElement.clientHeight || 600;
-	return { width, height };
-}
-
-// Send viewport update to server
-function sendViewportUpdate() {
-	if (socket && socket.readyState === WebSocket.OPEN) {
-		const viewport = getViewportDimensions();
-		socket.send(encodePacket(MSG.VIEWPORT, viewport));
-	}
-}
-
 // Public API
-function connectGame(wsUrl, name, callback, flag) {
+function connectGame(wsUrl, name, callback) {
 	if (running) return;
 	running = true;
 	user = null;
@@ -81,18 +72,12 @@ function connectGame(wsUrl, name, callback, flag) {
 	
 	socket.addEventListener("open", () => {
 		console.info("Connected to server.");
-		const viewport = getViewportDimensions();
 		socket.send(encodePacket(MSG.HELLO, {
 			name: name,
 			type: 0,
-			gameid: -1,
-			god: flag,
-			viewport
+			gameid: -1
 		}));
 	});
-	
-	// Listen for window resize to update AOI on server
-	window.addEventListener("resize", sendViewportUpdate);
 	
 	socket.addEventListener("message", (event) => {
 		const [type, data] = decodePacket(event.data);
@@ -127,11 +112,18 @@ function connectGame(wsUrl, name, callback, flag) {
 			invokeRenderer("showUpgradeUI", [data.choices, data.newLevel]);
 			return;
 		}
+		if (type === MSG.DRONE_OFFER) {
+			// Server is offering drone type choices - pause and show UI
+			droneChoices = data.choices;
+			droneChoiceIndex = data.droneIndex;
+			gamePaused = true;
+			invokeRenderer("showDroneUI", [data.choices, data.droneIndex, data.newDroneCount]);
+			return;
+		}
 	});
 	
 	socket.addEventListener("close", () => {
 		console.info("Server has disconnected. Creating new game.");
-		window.removeEventListener("resize", sendViewportUpdate);
 		if (!user) return;
 		user.die();
 		dirty = true;
@@ -180,8 +172,16 @@ function handleInitState(data) {
 			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP ?? 100);
 			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
 			
+			// Stamina fields
+			pl.stamina = p.stamina ?? (consts.PLAYER_MAX_STAMINA ?? 100);
+			pl.maxStamina = p.maxStamina ?? (consts.PLAYER_MAX_STAMINA ?? 100);
+			
+			// Derived stats from upgrades
+			pl.derivedStats = p.derivedStats || null;
+			
 			// Drone fields
 			pl.droneCount = p.droneCount || 1;
+			pl.droneTypes = p.droneTypes || ['assault'];
 			pl.drones = p.drones || [];
 			// Store drones in the map
 			for (const d of pl.drones) {
@@ -299,6 +299,12 @@ function sendTargetAngle() {
 		wasdCurrentAngle = targetAngle;
 	}
 	
+	// Update local user's targetAngle immediately for responsive aiming
+	// (Don't wait for server round-trip)
+	if (user) {
+		user.targetAngle = targetAngle;
+	}
+	
 	if (socket.readyState === WebSocket.OPEN) {
 		socket.send(encodePacket(MSG.INPUT, {
 			frame: frame,
@@ -333,6 +339,14 @@ function getDrones() {
 
 function getEnemies() {
 	return enemies.slice();
+}
+
+function getProjectiles() {
+	return Array.from(projectilesById.values());
+}
+
+function getHealPacks() {
+	return Array.from(healPacksById.values());
 }
 
 function getEnemyStats() {
@@ -408,6 +422,22 @@ function processFrame(data) {
 		});
 	}
 	
+	if (data.coinUpdates) {
+		data.coinUpdates.forEach(update => {
+			const coin = coinsById.get(update.id);
+			if (coin) {
+				coin.x = update.x;
+				coin.y = update.y;
+			}
+		});
+	}
+	
+	if (data.gameMessages) {
+		data.gameMessages.forEach(msg => {
+			invokeRenderer("gameMessage", [msg.text, msg.duration]);
+		});
+	}
+	
 	if (data.enemies) {
 		enemies = data.enemies;
 	}
@@ -424,6 +454,12 @@ function processFrame(data) {
 				p.xp = update.xp;
 				p.xpPerLevel = update.xpPerLevel; // Store XP needed for next level
 				p.sizeScale = update.sizeScale;
+				if (update.hp !== undefined) p.hp = update.hp;
+				if (update.maxHp !== undefined) p.maxHp = update.maxHp;
+				if (update.stamina !== undefined) p.stamina = update.stamina;
+				if (update.maxStamina !== undefined) p.maxStamina = update.maxStamina;
+				if (update.derivedStats !== undefined) p.derivedStats = update.derivedStats;
+				if (update.upgrades !== undefined) p.upgrades = update.upgrades;
 				// Update drone count
 				if (update.droneCount !== undefined) {
 					p.droneCount = update.droneCount;
@@ -443,13 +479,43 @@ function processFrame(data) {
 	if (data.droneUpdates) {
 		data.droneUpdates.forEach(update => {
 			const p = allPlayers[update.ownerNum];
-			if (p) {
-				// Update player's drones array
-				p.drones = update.drones || [];
-				// Update global drone map
-				for (const d of p.drones) {
-					d.ownerId = update.ownerNum;
-					dronesById.set(d.id, d);
+			if (p && update.drones && update.drones.length > 0) {
+				// Build map of existing drones by ID for quick lookup
+				const existingById = new Map();
+				if (p.drones) {
+					for (const d of p.drones) {
+						existingById.set(d.id, d);
+					}
+				}
+				
+				// Build new drones array from update, merging with existing data
+				const newDrones = [];
+				for (const updateDrone of update.drones) {
+					const existing = existingById.get(updateDrone.id);
+					if (existing) {
+						// Update existing drone in place
+						existing.x = updateDrone.x;
+						existing.y = updateDrone.y;
+						existing.targetId = updateDrone.targetId;
+						existing.ownerId = update.ownerNum;
+						// Update type info
+						if (updateDrone.typeId) existing.typeId = updateDrone.typeId;
+						if (updateDrone.typeName) existing.typeName = updateDrone.typeName;
+						if (updateDrone.typeColor) existing.typeColor = updateDrone.typeColor;
+						if (updateDrone.attackType) existing.attackType = updateDrone.attackType;
+						newDrones.push(existing);
+						dronesById.set(existing.id, existing);
+					} else {
+						// New drone from server
+						updateDrone.ownerId = update.ownerNum;
+						newDrones.push(updateDrone);
+						dronesById.set(updateDrone.id, updateDrone);
+					}
+				}
+				
+				// Only replace if we have drones to show
+				if (newDrones.length > 0) {
+					p.drones = newDrones;
 				}
 			}
 		});
@@ -471,7 +537,28 @@ function processFrame(data) {
 				target.lastHitTime = Date.now();
 			}
 			// Notify renderer of hitscan for visual effect (laser line)
-			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage]);
+			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage, hit.attackType, hit.typeColor, hit.isCrit, hit.isChain, hit.isExplosion, hit.isHeatseekerDrone]);
+		});
+	}
+
+	// Phase Shift visuals (gold flash when effect triggers)
+	if (data.phaseShiftEvents) {
+		data.phaseShiftEvents.forEach(evt => {
+			invokeRenderer("phaseShiftUsed", [evt.playerNum, evt.x, evt.y]);
+		});
+	}
+
+	// Adrenaline visuals (speed glow when activated)
+	if (data.adrenalineEvents) {
+		data.adrenalineEvents.forEach(evt => {
+			invokeRenderer("adrenalineActivated", [evt.playerNum, evt.duration]);
+		});
+	}
+
+	// Momentum sound cue (when stacking starts)
+	if (data.momentumEvents) {
+		data.momentumEvents.forEach(evt => {
+			invokeRenderer("momentumStart", [evt.playerNum]);
 		});
 	}
 	
@@ -481,6 +568,148 @@ function processFrame(data) {
 			const player = allPlayers[evt.playerNum];
 			const isLocalPlayer = user && evt.playerNum === user.num;
 			invokeRenderer("captureSuccess", [evt.x, evt.y, evt.xpGained, player, isLocalPlayer]);
+		});
+	}
+	
+	// Handle projectile spawns
+	if (data.projectileSpawns) {
+		data.projectileSpawns.forEach(proj => {
+			projectilesById.set(proj.id, {
+				id: proj.id,
+				x: proj.x,
+				y: proj.y,
+				vx: proj.vx,
+				vy: proj.vy,
+				attackType: proj.attackType,
+				typeColor: proj.typeColor,
+				opacity: proj.opacity,
+				size: proj.size,
+				ownerId: proj.ownerId,
+				isPlayerShot: proj.isPlayerShot,
+				spawnTime: Date.now()
+			});
+			// Track when local player fires a shot from their aim dot
+			if (proj.isPlayerShot && user && proj.ownerId === user.num) {
+				user.lastShotTime = Date.now();
+			}
+			
+			// Play fire sound for projectile weapons (non-hitscan)
+			if (user && proj.attackType) {
+				const isOwnShot = proj.ownerId === user.num;
+				const dx = proj.x - user.x;
+				const dy = proj.y - user.y;
+				const distance = Math.sqrt(dx * dx + dy * dy);
+				SoundManager.playProjectileFire(proj.attackType, distance, isOwnShot);
+			}
+		});
+	}
+	
+	// Handle projectile updates
+	if (data.projectileUpdates) {
+		data.projectileUpdates.forEach(proj => {
+			const existing = projectilesById.get(proj.id);
+			if (existing) {
+				existing.x = proj.x;
+				existing.y = proj.y;
+				existing.vx = proj.vx;
+				existing.vy = proj.vy;
+			}
+		});
+	}
+	
+	// Handle projectile removals
+	if (data.projectileRemovals) {
+		data.projectileRemovals.forEach(projId => {
+			projectilesById.delete(projId);
+		});
+	}
+	
+	// Handle heal pack spawns (Support drone passive)
+	if (data.healPackSpawns) {
+		data.healPackSpawns.forEach(pack => {
+			healPacksById.set(pack.id, {
+				id: pack.id,
+				x: pack.x,
+				y: pack.y,
+				healAmount: pack.healAmount,
+				ownerId: pack.ownerId,
+				spawnTime: Date.now()
+			});
+		});
+	}
+	
+	// Handle missile spawns (Missile Pod upgrade)
+	if (data.missileSpawns) {
+		data.missileSpawns.forEach(missile => {
+			invokeRenderer("missileSpawn", [missile.id, missile.x, missile.y, missile.vx, missile.vy, missile.ownerId]);
+		});
+	}
+	
+	// Handle missile updates
+	if (data.missileUpdates) {
+		data.missileUpdates.forEach(missile => {
+			invokeRenderer("missileUpdate", [missile.id, missile.x, missile.y, missile.vx, missile.vy]);
+		});
+	}
+	
+	// Handle missile removals
+	if (data.missileRemovals) {
+		data.missileRemovals.forEach(missileId => {
+			invokeRenderer("missileRemove", [missileId]);
+		});
+	}
+	
+	// Handle sticky charge detonations
+	if (data.stickyChargeDetonations) {
+		data.stickyChargeDetonations.forEach(det => {
+			invokeRenderer("stickyChargeDetonate", [det.x, det.y, det.damage, det.charges, det.ownerId]);
+		});
+	}
+	
+	// Handle arc barrage bursts
+	if (data.arcBarrageBursts) {
+		data.arcBarrageBursts.forEach(burst => {
+			invokeRenderer("arcBarrageBurst", [
+				burst.x,
+				burst.y,
+				burst.radius,
+				burst.playerNum,
+				burst.damage,
+				burst.hitCount,
+				burst.hits
+			]);
+		});
+	}
+	
+	// Handle heal pack updates
+	if (data.healPackUpdates) {
+		data.healPackUpdates.forEach(pack => {
+			const existing = healPacksById.get(pack.id);
+			if (existing) {
+				existing.x = pack.x;
+				existing.y = pack.y;
+				existing.timeRemaining = pack.timeRemaining;
+				existing.isBlinking = pack.isBlinking;
+			}
+		});
+	}
+	
+	// Handle heal pack removals
+	if (data.healPackRemovals) {
+		data.healPackRemovals.forEach(packId => {
+			healPacksById.delete(packId);
+		});
+	}
+	
+	// Handle heal pack pickups
+	if (data.healPackPickups) {
+		data.healPackPickups.forEach(pickup => {
+			const pack = healPacksById.get(pickup.id);
+			// Check if local player picked it up
+			if (pack && user && pickup.playerNum === user.num) {
+				invokeRenderer("healPackPickup", [pack, pickup.healAmount]);
+			}
+			healPacksById.delete(pickup.id);
 		});
 	}
 	
@@ -511,84 +740,26 @@ function processFrame(data) {
 		});
 	}
 
-	if (data.newPlayers) {
-		data.newPlayers.forEach(p => {
-			if (user && p.num === user.num) return;
-			const pl = new Player(p);
-			// Copy XP/Level fields
-			pl.level = p.level || 1;
-			pl.xp = p.xp || 0;
-			pl.xpPerLevel = p.xpPerLevel || getXpForLevel(pl.level);
-			pl.sizeScale = p.sizeScale || 1.0;
-			// HP fields
-			pl.hp = p.hp ?? (consts.PLAYER_MAX_HP ?? 100);
-			pl.maxHp = p.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
-			// Drone fields
-			pl.droneCount = p.droneCount || 1;
-			pl.drones = p.drones || [];
-			for (const d of pl.drones) {
-				dronesById.set(d.id, d);
-			}
-			addPlayer(pl);
-			if (!p.territory || p.territory.length === 0) {
-				initPlayer(pl);
-			}
-		});
-	}
-	
-	// Handle players leaving AOI (server stopped sending them)
-	// Note: This is NOT a death - just out of view. Don't trigger death effects.
-	if (data.leftPlayers) {
-		data.leftPlayers.forEach(num => {
-			const p = allPlayers[num];
-			if (p && p !== user) {
-				// Remove their drones from the map
-				if (p.drones) {
-					for (const d of p.drones) {
-						dronesById.delete(d.id);
-					}
+	// Singleplayer: only update the local player from moves
+	if (data.moves && user) {
+		const move = data.moves.find(val => val.num === user.num);
+		if (move) {
+			if (move.left) user.die();
+			user.targetAngle = move.targetAngle;
+			
+			// Sync position with server to prevent drift (especially for drones)
+			if (move.x !== undefined && move.y !== undefined) {
+				// Snap to server position when paused, lerp during normal play
+				if (gamePaused) {
+					user.x = move.x;
+					user.y = move.y;
+				} else {
+					// Smooth correction to server position
+					const correctionStrength = 0.3;
+					user.x += (move.x - user.x) * correctionStrength;
+					user.y += (move.y - user.y) * correctionStrength;
 				}
-				// Remove from players array
-				const idx = players.indexOf(p);
-				if (idx !== -1) {
-					players.splice(idx, 1);
-				}
-				delete allPlayers[num];
-				// Use silent removal - no death animation
-				invokeRenderer("removePlayerSilent", [p]);
 			}
-		});
-	}
-	
-	// IMPORTANT: never rely on array index alignment between server `moves[]` and local `players[]`.
-	// Players can be added/removed and local ordering can drift, which would randomly kill the wrong player.
-	const presentNums = new Set();
-	data.moves.forEach(val => {
-		presentNums.add(val.num);
-		const player = allPlayers[val.num];
-		if (!player) return;
-		if (val.left) player.die();
-		player.targetAngle = val.targetAngle;
-		
-		// Sync position with server to prevent drift (especially for drones)
-		if (val.x !== undefined && val.y !== undefined) {
-			// Snap to server position when paused, lerp during normal play
-			if (gamePaused) {
-				player.x = val.x;
-				player.y = val.y;
-			} else {
-				// Smooth correction to server position
-				const correctionStrength = 0.3;
-				player.x += (val.x - player.x) * correctionStrength;
-				player.y += (val.y - player.y) * correctionStrength;
-			}
-		}
-	});
-	
-	// Any locally-known player that isn't in the server moves list this frame should be considered gone/dead.
-	for (const p of players) {
-		if (p && !presentNums.has(p.num)) {
-			p.die();
 		}
 	}
 	
@@ -701,7 +872,7 @@ function selectUpgrade(upgradeId) {
 	// Send selection to server
 	socket.send(encodePacket(MSG.UPGRADE_PICK, { upgradeId }));
 	
-	// Clear local state (server will resume)
+	// Clear local state - unpause now, if drone choice follows it will re-pause
 	upgradeChoices = null;
 	gamePaused = false;
 	
@@ -709,12 +880,84 @@ function selectUpgrade(upgradeId) {
 	invokeRenderer("hideUpgradeUI", []);
 }
 
+// Drone type selection functions
+function selectDrone(droneTypeId) {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	if (!droneChoices || !gamePaused) return;
+	
+	// Validate the selection is one of the choices
+	const validChoice = droneChoices.find(c => c.id === droneTypeId);
+	if (!validChoice) {
+		console.warn("Invalid drone selection:", droneTypeId);
+		return;
+	}
+	
+	// Send selection to server
+	socket.send(encodePacket(MSG.DRONE_PICK, { droneTypeId }));
+	
+	// Clear local state (server will resume)
+	droneChoices = null;
+	droneChoiceIndex = -1;
+	gamePaused = false;
+	
+	// Notify renderer to hide UI
+	invokeRenderer("hideDroneUI", []);
+}
+
 function getUpgradeChoices() {
 	return upgradeChoices;
 }
 
+function getDroneChoices() {
+	return droneChoices;
+}
+
 function isGamePaused() {
 	return gamePaused;
+}
+
+function setGamePaused(paused) {
+	gamePaused = paused;
+	// Send pause state to server so it stops simulation
+	if (socket && socket.readyState === WebSocket.OPEN) {
+		socket.send(encodePacket(MSG.PAUSE, { paused }));
+	}
+}
+
+// ===== DEV CONSOLE COMMANDS =====
+function devGiveXP(amount) {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'giveXP', amount }));
+}
+
+function devSetLevel(level) {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'setLevel', level }));
+}
+
+function devGiveUpgrade(upgradeId) {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'giveUpgrade', upgradeId }));
+}
+
+function devHeal() {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'heal' }));
+}
+
+function devGodMode() {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'godMode' }));
+}
+
+function devAddDrone(droneTypeId) {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'addDrone', droneTypeId }));
+}
+
+function devClearDrones() {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(encodePacket(MSG.DEV_CMD, { cmd: 'clearDrones' }));
 }
 
 // Export stuff
@@ -725,6 +968,8 @@ export {
 	getOthers, 
 	getCoins,
 	getDrones,
+	getProjectiles,
+	getHealPacks,
 	getEnemies,
 	getEnemyStats,
 	disconnect, 
@@ -739,7 +984,18 @@ export {
 	polygonArea,
 	selectUpgrade,
 	getUpgradeChoices,
-	isGamePaused
+	selectDrone,
+	getDroneChoices,
+	isGamePaused,
+	setGamePaused,
+	// Dev commands
+	devGiveXP,
+	devSetLevel,
+	devGiveUpgrade,
+	devHeal,
+	devGodMode,
+	devAddDrone,
+	devClearDrones
 };
 
 export const allowAnimation = {

@@ -11,7 +11,8 @@ export default class Enemy {
 		contactDamage = 8,
 		speed = 55,
 		lastHitAt = 0,
-		type = "basic"
+		type = "basic",
+		xpDropValue = 1
 	} = {}) {
 		this.id = id;
 		this.x = x;
@@ -25,6 +26,7 @@ export default class Enemy {
 		this.speed = speed;
 		this.lastHitAt = lastHitAt;
 		this.type = type;
+		this.xpDropValue = xpDropValue;
 	}
 
 	applyKnockback(dx, dy) {
@@ -45,7 +47,8 @@ export default class Enemy {
 			contactDamage: this.contactDamage,
 			speed: this.speed,
 			lastHitAt: this.lastHitAt,
-			type: this.type
+			type: this.type,
+			xpDropValue: this.xpDropValue
 		};
 	}
 }

@@ -1,87 +1,7 @@
 import { consts } from "../../config.js";
+import { ENEMY_TYPES, BOSS_TYPES, ENEMY_SPAWN_RATE } from "./enemy-knobs.js";
 
-// Enemy type definitions with their stats and unlock times
-// Unlock schedule: 0s, 15s, 35s (15+20), 60s (35+25), 90s (60+30)
-export const ENEMY_TYPES = {
-	basic: {
-		unlockTime: 0,       // Available from start
-		radius: 10,
-		maxHp: 20,
-		speed: 55,
-		contactDamage: 8,
-		spawnWeight: 50      // Higher = more common
-	},
-	charger: {
-		unlockTime: 15,      // Unlocks at 15 seconds
-		radius: 12,
-		maxHp: 15,
-		speed: 45,           // Base speed (slower), but charges fast
-		contactDamage: 15,
-		chargeSpeed: 200,    // Speed when charging
-		chargeCooldown: 3,   // Seconds between charges
-		chargeDistance: 180, // Distance to trigger charge
-		spawnWeight: 30
-	},
-	tank: {
-		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
-		radius: 18,
-		maxHp: 80,
-		speed: 30,           // Very slow
-		contactDamage: 20,
-		spawnWeight: 15
-	},
-	swarm: {
-		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
-		radius: 6,
-		maxHp: 8,
-		speed: 75,           // Fast
-		contactDamage: 4,
-		spawnWeight: 60      // Very common when unlocked
-	},
-	sniper: {
-		unlockTime: 90,      // Unlocks at 90 seconds (60+30)
-		radius: 9,
-		maxHp: 12,
-		speed: 40,           // Moves to maintain distance
-		contactDamage: 5,
-		preferredDistance: 200,  // Distance it tries to maintain from player
-		spawnWeight: 20
-	}
-};
-
-// Boss type definitions
-export const BOSS_TYPES = {
-	titan: {
-		// Giant slow boss with massive HP
-		radius: 40,
-		maxHp: 500,
-		speed: 20,
-		contactDamage: 35,
-		spawnWeight: 40
-	},
-	berserker: {
-		// Medium boss that charges repeatedly
-		radius: 28,
-		maxHp: 300,
-		speed: 35,
-		contactDamage: 25,
-		chargeSpeed: 250,
-		chargeCooldown: 2,
-		chargeDistance: 250,
-		spawnWeight: 35
-	},
-	summoner: {
-		// Boss that spawns minions
-		radius: 32,
-		maxHp: 350,
-		speed: 25,
-		contactDamage: 15,
-		summonCooldown: 4,    // Seconds between summons
-		summonCount: 3,       // Enemies spawned per summon
-		preferredDistance: 300, // Tries to stay away
-		spawnWeight: 25
-	}
-};
+export { ENEMY_TYPES, BOSS_TYPES };
 
 const BOSS_NAMES = ['titan', 'berserker', 'summoner'];
 
@@ -125,6 +45,11 @@ export default class EnemySpawner {
 		this.bossTimer = 0;
 		this.nextBossAt = initialBossInterval; // First boss at 60s
 		this.bossesSpawned = 0;
+		
+		// Temporary spawn boost after boss spawns
+		this.spawnBoostDuration = consts.ENEMY_SPAWN_BOOST_DURATION ?? 15;
+		this.spawnBoostMult = consts.ENEMY_SPAWN_BOOST_MULT ?? 0.6;
+		this.spawnBoostRemaining = 0;
 	}
 	
 	reset() {
@@ -140,6 +65,9 @@ export default class EnemySpawner {
 		this.bossTimer = 0;
 		this.nextBossAt = this.initialBossInterval;
 		this.bossesSpawned = 0;
+		
+		// Reset spawn boost
+		this.spawnBoostRemaining = 0;
 	}
 	
 	// Get currently unlocked enemy types
@@ -156,6 +84,9 @@ export default class EnemySpawner {
 	update(deltaSeconds, player, mapSize) {
 		this.runTime += deltaSeconds;
 		this.spawnTimer += deltaSeconds;
+		if (this.spawnBoostRemaining > 0) {
+			this.spawnBoostRemaining = Math.max(0, this.spawnBoostRemaining - deltaSeconds);
+		}
 
 		const rampT = Math.min(1, this.runTime / this.rampDuration);
 		this.spawnInterval = this.baseInterval - (this.baseInterval - this.minInterval) * rampT;
@@ -173,9 +104,10 @@ export default class EnemySpawner {
 		const newEnemies = [];
 		const newBosses = [];
 		
-		// Regular enemy spawning
-		while (this.spawnTimer >= this.spawnInterval) {
-			this.spawnTimer -= this.spawnInterval;
+		// Regular enemy spawning (apply global spawn rate multiplier)
+		const effectiveInterval = (this.spawnInterval * (this.spawnBoostRemaining > 0 ? this.spawnBoostMult : 1)) / ENEMY_SPAWN_RATE.multiplier;
+		while (this.spawnTimer >= effectiveInterval) {
+			this.spawnTimer -= effectiveInterval;
 			for (let i = 0; i < this.spawnCountPerWave; i++) {
 				const spawn = this.getSpawnPoint(player, mapSize);
 				if (spawn) {
@@ -194,6 +126,9 @@ export default class EnemySpawner {
 				newBosses.push(bossSpawn);
 				this.bossesSpawned++;
 				console.log(`[SPAWNER] Boss spawned: ${bossSpawn.type} (#${this.bossesSpawned}) at ${Math.floor(this.runTime)}s`);
+				
+				// Activate spawn boost
+				this.spawnBoostRemaining = this.spawnBoostDuration;
 			}
 			
 			// Calculate next boss spawn time (gets shorter over time)

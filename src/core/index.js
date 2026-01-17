@@ -1,5 +1,6 @@
 import { consts } from "../../config.js";
 import Player, { checkPlayerCollision, pointInPolygon, PLAYER_RADIUS, polygonsOverlap, subtractTerritorySimple } from "./player.js";
+import * as UPGRADE_KNOBS from "./upgrade-knobs.js";
 
 export { default as Color } from "./color.js";
 export { Player, checkPlayerCollision, pointInPolygon, PLAYER_RADIUS, polygonsOverlap, subtractTerritorySimple };
@@ -25,46 +26,110 @@ export function initPlayer(player) {
 
 /**
  * Updates player stamina based on whether they are in their own territory.
- * Also regenerates HP when in territory.
+ * Also regenerates HP when in territory (unless Vampire upgrade).
+ * Implements stamina upgrades: Endurance, Quick Recovery, Second Wind, Marathon
  * @param {Player} player 
  * @param {number} deltaSeconds 
  */
 export function updateStamina(player, deltaSeconds) {
 	const inTerritory = player.isInOwnTerritory();
+	const stats = player.derivedStats || {};
 	
-	// Apply stat multipliers (default to 1.0 if not set)
-	const regenMult = player.staminaRegenMult || 1.0;
-	const drainMult = player.staminaDrainMult || 1.0;
+	// Calculate effective max stamina with Endurance upgrade
+	const baseMaxStamina = consts.PLAYER_MAX_STAMINA || 100;
+	const maxStaminaMult = stats.maxStaminaMult || 1.0;
+	const flatMaxStamina = stats.flatMaxStamina || 0;
+	player.maxStamina = (baseMaxStamina * maxStaminaMult) + flatMaxStamina;
+	
+	// Initialize stamina if not set
+	if (player.stamina === undefined || player.stamina === null || isNaN(player.stamina)) {
+		player.stamina = player.maxStamina;
+	}
+	
+	// Initialize cooldown timers if not set
+	if (player.secondWindCooldown === undefined) player.secondWindCooldown = 0;
+	
+	// Initialize exhausted time tracker
+	if (player.exhaustedTime === undefined) player.exhaustedTime = 0;
+	
+	// Decrement cooldowns
+	if (player.secondWindCooldown > 0) {
+		player.secondWindCooldown -= deltaSeconds;
+	}
+	
+	// Apply stat multipliers from upgrades (Quick Recovery, Marathon Runner)
+	const regenMult = stats.staminaRegenMult || 1.0;
+	const drainMult = Math.max(0.1, stats.staminaDrainMult || 1.0); // Marathon reduces this
 	
 	if (inTerritory) {
-		// Regenerate stamina
-		player.stamina += consts.STAMINA_REGEN_INSIDE_PER_SEC * regenMult * deltaSeconds;
+		// Regenerate stamina (boosted by Quick Recovery)
+		player.stamina += (consts.STAMINA_REGEN_INSIDE_PER_SEC || 20) * regenMult * deltaSeconds;
 		if (player.stamina > player.maxStamina) {
 			player.stamina = player.maxStamina;
 		}
 		
-		// Recover from exhaustion
-		if (player.isExhausted && player.stamina >= consts.EXHAUSTED_RECOVER_THRESHOLD) {
+		// Recover from exhaustion and reset exhausted timer
+		if (player.isExhausted && player.stamina >= (consts.EXHAUSTED_RECOVER_THRESHOLD || 30)) {
 			player.isExhausted = false;
+			player.exhaustedTime = 0; // Reset exponential drain timer
 		}
 		
-		// Regenerate HP in territory (using effective maxHp from upgrades)
-		const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
-		const maxHpMult = (player.derivedStats && player.derivedStats.maxHpMult) || 1.0;
-		player.maxHp = baseMaxHp * maxHpMult;
+		// Reset exhausted time when in territory (even if not fully recovered)
+		player.exhaustedTime = 0;
 		
-		if (player.hp < player.maxHp) {
+		// Calculate effective max HP with level bonus, Vitality and other upgrades
+		const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+		const hpPerLevel = consts.HP_PER_LEVEL || 10;
+		const level = player.level || 1;
+		const levelBonusHp = (level - 1) * hpPerLevel;
+		const flatMaxHp = stats.flatMaxHp || 0;
+		const maxHpMult = stats.maxHpMult || 1.0;
+		player.maxHp = (baseMaxHp + levelBonusHp + flatMaxHp) * maxHpMult;
+		
+		// Regenerate HP in territory (UNLESS Vampire upgrade)
+		if (!stats.hasVampire && player.hp < player.maxHp) {
 			player.hp += (consts.PLAYER_HP_REGEN_IN_TERRITORY || 8) * deltaSeconds;
 			if (player.hp > player.maxHp) {
 				player.hp = player.maxHp;
 			}
 		}
 	} else {
-		// Drain stamina outside territory
-		player.stamina -= consts.STAMINA_DRAIN_OUTSIDE_PER_SEC * drainMult * deltaSeconds;
-		if (player.stamina <= 0) {
+		// Drain stamina outside territory (reduced by Marathon Runner via drainMult)
+		if (player.stamina > 0) {
+			player.stamina -= (consts.STAMINA_DRAIN_OUTSIDE_PER_SEC || 10) * drainMult * deltaSeconds;
+			
+			// Check for Second Wind trigger
+			if (player.stamina <= 0) {
+				// Second Wind: Recover stamina when it hits 0 (with cooldown)
+				if (stats.hasSecondWind && player.secondWindCooldown <= 0) {
+					player.stamina = player.maxStamina * UPGRADE_KNOBS.SECOND_WIND.staminaRecoverPercent;
+					player.secondWindCooldown = UPGRADE_KNOBS.SECOND_WIND.cooldownSeconds;
+					player.isExhausted = false;
+					player.exhaustedTime = 0; // Reset exponential drain timer
+				} else {
+					player.stamina = 0;
+					player.isExhausted = true;
+				}
+			}
+		} else {
+			// Stamina empty: drain HP with EXPONENTIAL increase over time
 			player.stamina = 0;
 			player.isExhausted = true;
+			
+			// Track time spent exhausted
+			player.exhaustedTime += deltaSeconds;
+			
+			// Exponential HP drain: starts at base rate, doubles every 2 seconds
+			// Formula: baseDrain * 2^(exhaustedTime / 2)
+			const baseHpDrain = consts.STAMINA_HP_DRAIN_PER_SEC || 8;
+			const exponentialFactor = Math.pow(2, player.exhaustedTime / 2);
+			const currentDrain = baseHpDrain * exponentialFactor;
+			
+			player.hp -= currentDrain * deltaSeconds;
+			if (player.hp <= 0) {
+				player.hp = 0;
+				player.dead = true;
+			}
 		}
 	}
 }
@@ -100,6 +165,15 @@ export function updateFrame(players, dead, notifyKill, deltaSeconds = 1 / 60) {
 	// Set up collision tracking and kill notification (needed for territory resolution too)
 	const removing = new Array(alive.length).fill(false);
 	const kill = notifyKill || (() => {});
+
+	// Singleplayer shortcut: no territory overlap or player-vs-player collisions.
+	if (alive.length <= 1) {
+		players.length = alive.length;
+		for (let i = 0; i < alive.length; i++) {
+			players[i] = alive[i];
+		}
+		return;
+	}
 	
 	// TERRITORY OVERLAP RESOLUTION
 	// When a player captures territory, subtract it from overlapping enemy territories

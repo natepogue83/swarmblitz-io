@@ -17,8 +17,8 @@ const settings = {
     // Individual sound volumes (0.0 - 1.0)
     // Adjust these to balance sound levels
     volumes: {
-        playerLaser: 0.3,    // Your drone laser shots
-        enemyLaser: 0.2,     // Enemy drone laser shots
+        playerLaser: 0.3,    // Your drone laser shots (legacy)
+        enemyLaser: 0.2,     // Enemy drone laser shots (legacy)
         playerFuse: 1.0,     // Your fuse when snipped
         enemyFuse: 0.7,      // Enemy fuse when you snip them
         capture: 1.0,        // Territory capture sound
@@ -28,9 +28,145 @@ const settings = {
         coinPickup: 1.0,     // XP orb pickup
         hit: 1.5,            // Taking damage
         trailing: 0.4,       // Legacy (unused)
-        speedRush: 0.5       // Speed rush sound (plays at 10%+ speed buff)
+        speedRush: 0.5,      // Speed rush sound (plays at 10%+ speed buff)
+        momentum: 0.6,       // Momentum start cue
+        
+        // Per-attack-type fire sounds (drone shoots)
+        // Lower for spammy weapons, higher for impactful slow weapons
+        bullet_fire: 0.30,   // Assault/Skirmisher - moderate, common
+        laser_fire: 0.18,    // Rapid/Swarm - low, very frequent
+        railgun_fire: 0.55,  // Sniper - high, slow and heavy
+        plasma_fire: 0.40,   // Guardian - medium-high, slow chunky
+        pulse_fire: 0.25,    // Support - moderate, slow
+        
+        // Per-attack-type impact sounds (projectile hits)
+        bullet_impact: 0.25,
+        laser_impact: 0.12,  // Very quiet - lots of these
+        railgun_impact: 0.50,
+        plasma_impact: 0.40,
+        pulse_impact: 0.28
     }
 };
+
+// ===== VOICE LIMITER / COOLDOWN SYSTEM =====
+// Prevents audio overload by limiting concurrent sounds per event type
+const voiceLimiter = {
+    // Per-event state: { lastPlayTime, activeCount }
+    events: {},
+    
+    // Configuration per event type: { maxVoices, minInterval (ms) }
+    // Lower maxVoices + higher minInterval = less overlap
+    config: {
+        // Fire sounds - tuned to prevent overwhelming during dense combat
+        bullet_fire:   { maxVoices: 3, minInterval: 60 },   // Assault/Skirmisher
+        laser_fire:    { maxVoices: 4, minInterval: 45 },   // Rapid/Swarm - cap these
+        railgun_fire:  { maxVoices: 2, minInterval: 250 },  // Sniper - slow, let it be heard
+        plasma_fire:   { maxVoices: 2, minInterval: 100 },  // Guardian - chunky
+        pulse_fire:    { maxVoices: 3, minInterval: 70 },   // Support
+        
+        // Impact sounds - more restrictive to prevent audio mud
+        bullet_impact:  { maxVoices: 4, minInterval: 50 },
+        laser_impact:   { maxVoices: 5, minInterval: 35 },  // Many hits, keep light
+        railgun_impact: { maxVoices: 2, minInterval: 180 }, // Heavy, distinctive
+        plasma_impact:  { maxVoices: 2, minInterval: 90 },
+        pulse_impact:   { maxVoices: 3, minInterval: 60 },
+        
+        // Important game events - less restrictive, should always be heard
+        coinPickup:  { maxVoices: 4, minInterval: 40 },
+        hit:         { maxVoices: 3, minInterval: 50 },
+        capture:     { maxVoices: 2, minInterval: 150 },
+        levelUp:     { maxVoices: 1, minInterval: 800 },   // Only one at a time
+        kill:        { maxVoices: 2, minInterval: 150 },   // Important feedback
+        death:       { maxVoices: 2, minInterval: 300 }
+    }
+};
+
+/**
+ * Check if a sound event can play (voice limit + cooldown check)
+ * @param {string} eventType - The event type key
+ * @returns {boolean} True if sound can play
+ */
+function canPlaySound(eventType) {
+    const cfg = voiceLimiter.config[eventType];
+    if (!cfg) return true; // No limit configured
+    
+    const now = performance.now();
+    let state = voiceLimiter.events[eventType];
+    
+    if (!state) {
+        state = { lastPlayTime: 0, activeCount: 0 };
+        voiceLimiter.events[eventType] = state;
+    }
+    
+    // Check cooldown
+    if (now - state.lastPlayTime < cfg.minInterval) {
+        return false;
+    }
+    
+    // Check voice count
+    if (state.activeCount >= cfg.maxVoices) {
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Mark a sound as started (increment active count, update time)
+ * @param {string} eventType - The event type key
+ * @param {number} duration - Sound duration in seconds (for auto-decrement)
+ */
+function markSoundStarted(eventType, duration = 0.2) {
+    const cfg = voiceLimiter.config[eventType];
+    if (!cfg) return;
+    
+    let state = voiceLimiter.events[eventType];
+    if (!state) {
+        state = { lastPlayTime: 0, activeCount: 0 };
+        voiceLimiter.events[eventType] = state;
+    }
+    
+    state.lastPlayTime = performance.now();
+    state.activeCount++;
+    
+    // Schedule decrement when sound ends
+    setTimeout(() => {
+        state.activeCount = Math.max(0, state.activeCount - 1);
+    }, duration * 1000 + 50);
+}
+
+// ===== VARIATION HELPERS =====
+// Add subtle randomization to prevent identical repeated sounds
+
+/**
+ * Get a random pitch multiplier for variation
+ * @param {number} range - Maximum deviation (e.g., 0.1 = ±10%)
+ * @returns {number} Pitch multiplier (0.9 - 1.1 for range=0.1)
+ */
+function randomPitch(range = 0.08) {
+    return 1 + (Math.random() * 2 - 1) * range;
+}
+
+/**
+ * Get a random volume multiplier for variation
+ * @param {number} range - Maximum deviation (e.g., 0.15 = ±15%)
+ * @returns {number} Volume multiplier
+ */
+function randomVolume(range = 0.12) {
+    return 1 + (Math.random() * 2 - 1) * range;
+}
+
+/**
+ * Calculate distance attenuation (volume falloff)
+ * @param {number} distance - Distance from listener
+ * @param {number} maxDistance - Distance at which sound is silent
+ * @param {number} minVolume - Minimum volume multiplier threshold
+ * @returns {number} Volume multiplier (0 to 1)
+ */
+function distanceAttenuation(distance, maxDistance = 800, minVolume = 0.05) {
+    const atten = Math.max(0, 1 - (distance / maxDistance));
+    return atten < minVolume ? 0 : atten;
+}
 
 // Track playing sounds for cleanup
 const activeSounds = new Set();
@@ -218,11 +354,14 @@ function createNoise(duration, gain = 0.3) {
 
 // ===== PLAYER LASER SOUND =====
 // A satisfying "pew" sound - higher pitched, quick attack
+// NOTE: Legacy function - prefer playProjectileFire('laser', distance, true) for new code
 
 export function playPlayerLaser() {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.playerLaser <= 0) return;
+    if (!canPlaySound('laser_fire')) return;
     resume();
+    markSoundStarted('laser_fire', 0.15);
     
     const vol = settings.volumes.playerLaser;
     const now = audioContext.currentTime;
@@ -269,11 +408,14 @@ export function playPlayerLaser() {
 
 // ===== ENEMY LASER SOUND =====
 // Lower pitched, slightly different timbre, with positional volume
+// NOTE: Legacy function - prefer playProjectileFire('laser', distance, false) for new code
 
 export function playEnemyLaser(distance, maxDistance = 800) {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.enemyLaser <= 0) return;
+    if (!canPlaySound('laser_fire')) return;
     resume();
+    markSoundStarted('laser_fire', 0.12);
     
     const vol = settings.volumes.enemyLaser;
     
@@ -327,13 +469,644 @@ export function playEnemyLaser(distance, maxDistance = 800) {
     osc2.stop(now + duration);
 }
 
+// ===== PER-ATTACK-TYPE PROJECTILE SOUNDS =====
+// Unique sounds for each weapon type with variation
+
+/**
+ * Play projectile fire sound based on attack type
+ * @param {string} attackType - 'bullet', 'laser', 'railgun', 'plasma', 'pulse'
+ * @param {number} distance - Distance from local player (for volume falloff)
+ * @param {boolean} isPlayerShot - True if this is the local player's shot
+ */
+export function playProjectileFire(attackType, distance = 0, isPlayerShot = false) {
+    if (!initialized || !settings.enabled) return;
+    
+    const eventKey = `${attackType}_fire`;
+    const vol = settings.volumes[eventKey] ?? 0.3;
+    if (vol <= 0) return;
+    
+    // Voice limiter check
+    if (!canPlaySound(eventKey)) return;
+    
+    // Distance attenuation (player shots are louder)
+    const maxDist = isPlayerShot ? 1200 : 800;
+    const distVol = isPlayerShot ? 1.0 : distanceAttenuation(distance, maxDist);
+    if (distVol <= 0) return;
+    
+    resume();
+    
+    // Dispatch to specific sound generator
+    switch (attackType) {
+        case 'bullet':
+            playBulletFire(vol * distVol, isPlayerShot);
+            break;
+        case 'laser':
+            playLaserFire(vol * distVol, isPlayerShot);
+            break;
+        case 'railgun':
+            playRailgunFire(vol * distVol, isPlayerShot);
+            break;
+        case 'plasma':
+            playPlasmaFire(vol * distVol, isPlayerShot);
+            break;
+        case 'pulse':
+            playPulseFire(vol * distVol, isPlayerShot);
+            break;
+        default:
+            // Fallback to generic laser
+            playLaserFire(vol * distVol, isPlayerShot);
+    }
+    
+    markSoundStarted(eventKey, 0.2);
+}
+
+/**
+ * Play projectile impact sound based on attack type
+ * @param {string} attackType - 'bullet', 'laser', 'railgun', 'plasma', 'pulse'
+ * @param {number} distance - Distance from local player
+ */
+export function playProjectileImpact(attackType, distance = 0) {
+    if (!initialized || !settings.enabled) return;
+    
+    const eventKey = `${attackType}_impact`;
+    const vol = settings.volumes[eventKey] ?? 0.3;
+    if (vol <= 0) return;
+    
+    // Voice limiter check
+    if (!canPlaySound(eventKey)) return;
+    
+    // Distance attenuation
+    const distVol = distanceAttenuation(distance, 600);
+    if (distVol <= 0) return;
+    
+    resume();
+    
+    // Dispatch to specific impact generator
+    switch (attackType) {
+        case 'bullet':
+            playBulletImpact(vol * distVol);
+            break;
+        case 'laser':
+            playLaserImpact(vol * distVol);
+            break;
+        case 'railgun':
+            playRailgunImpact(vol * distVol);
+            break;
+        case 'plasma':
+            playPlasmaImpact(vol * distVol);
+            break;
+        case 'pulse':
+            playPulseImpact(vol * distVol);
+            break;
+        default:
+            playLaserImpact(vol * distVol);
+    }
+    
+    markSoundStarted(eventKey, 0.15);
+}
+
+// ----- BULLET: Punchy, percussive "pop" -----
+function playBulletFire(vol, isPlayerShot) {
+    const now = audioContext.currentTime;
+    const duration = 0.12;
+    const pitch = randomPitch(0.12);
+    const volMod = randomVolume(0.1);
+    
+    // Punchy attack oscillator
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc.type = 'square';
+    const baseFreq = isPlayerShot ? 320 : 280;
+    osc.frequency.setValueAtTime(baseFreq * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(80 * pitch, now + duration * 0.6);
+    
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(2000, now);
+    filter.frequency.exponentialRampToValueAtTime(400, now + duration);
+    filter.Q.value = 1.5;
+    
+    const finalVol = 0.35 * settings.sfxVolume * vol * volMod;
+    gainNode.gain.setValueAtTime(0, now);
+    gainNode.gain.linearRampToValueAtTime(finalVol, now + 0.008);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
+    
+    osc.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    osc.start(now);
+    osc.stop(now + duration);
+    
+    // Add noise transient for "crack"
+    const noiseLen = audioContext.sampleRate * 0.04;
+    const noiseBuf = audioContext.createBuffer(1, noiseLen, audioContext.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+        noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (noiseLen * 0.3));
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioContext.createGain();
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.value = 1500 * pitch;
+    noiseFilter.Q.value = 2;
+    
+    noiseGain.gain.setValueAtTime(0.25 * settings.sfxVolume * vol * volMod, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    
+    noise.start(now);
+    noise.stop(now + 0.05);
+}
+
+function playBulletImpact(vol) {
+    const now = audioContext.currentTime;
+    const pitch = randomPitch(0.15);
+    const volMod = randomVolume(0.12);
+    
+    // Short thud
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(200 * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(60 * pitch, now + 0.08);
+    
+    gainNode.gain.setValueAtTime(0.3 * settings.sfxVolume * vol * volMod, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+    
+    osc.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    osc.start(now);
+    osc.stop(now + 0.1);
+    
+    // Impact noise
+    const noiseLen = audioContext.sampleRate * 0.05;
+    const noiseBuf = audioContext.createBuffer(1, noiseLen, audioContext.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+        noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (noiseLen * 0.25));
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioContext.createGain();
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'highpass';
+    noiseFilter.frequency.value = 800;
+    
+    noiseGain.gain.setValueAtTime(0.2 * settings.sfxVolume * vol * volMod, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.06);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    
+    noise.start(now);
+    noise.stop(now + 0.06);
+}
+
+// ----- LASER: Quick "zap" / electronic pew -----
+function playLaserFire(vol, isPlayerShot) {
+    const now = audioContext.currentTime;
+    const duration = 0.1;
+    const pitch = randomPitch(0.1);
+    const volMod = randomVolume(0.1);
+    
+    const osc1 = audioContext.createOscillator();
+    const osc2 = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc1.type = 'sawtooth';
+    osc2.type = 'square';
+    
+    const baseFreq = isPlayerShot ? 1600 : 1200;
+    osc1.frequency.setValueAtTime(baseFreq * pitch, now);
+    osc1.frequency.exponentialRampToValueAtTime(400 * pitch, now + duration * 0.7);
+    
+    osc2.frequency.setValueAtTime((baseFreq - 200) * pitch, now);
+    osc2.frequency.exponentialRampToValueAtTime(300 * pitch, now + duration * 0.7);
+    
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(3500, now);
+    filter.frequency.exponentialRampToValueAtTime(600, now + duration);
+    filter.Q.value = 2.5;
+    
+    const finalVol = 0.28 * settings.sfxVolume * vol * volMod;
+    gainNode.gain.setValueAtTime(0, now);
+    gainNode.gain.linearRampToValueAtTime(finalVol, now + 0.008);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
+    
+    osc1.connect(filter);
+    osc2.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + duration);
+    osc2.stop(now + duration);
+}
+
+function playLaserImpact(vol) {
+    const now = audioContext.currentTime;
+    const pitch = randomPitch(0.12);
+    const volMod = randomVolume(0.1);
+    
+    // Quick electronic "tink"
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(2200 * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(800 * pitch, now + 0.05);
+    
+    gainNode.gain.setValueAtTime(0.18 * settings.sfxVolume * vol * volMod, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.06);
+    
+    osc.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    osc.start(now);
+    osc.stop(now + 0.07);
+}
+
+// ----- RAILGUN: Heavy, resonant "boom" with charge feel -----
+function playRailgunFire(vol, isPlayerShot) {
+    const now = audioContext.currentTime;
+    const duration = 0.35;
+    const pitch = randomPitch(0.06);
+    const volMod = randomVolume(0.08);
+    
+    // Deep bass hit
+    const bass = audioContext.createOscillator();
+    const bassGain = audioContext.createGain();
+    
+    bass.type = 'sine';
+    const bassFreq = isPlayerShot ? 100 : 80;
+    bass.frequency.setValueAtTime(bassFreq * pitch, now);
+    bass.frequency.exponentialRampToValueAtTime(35 * pitch, now + duration);
+    
+    const finalVol = 0.45 * settings.sfxVolume * vol * volMod;
+    bassGain.gain.setValueAtTime(0, now);
+    bassGain.gain.linearRampToValueAtTime(finalVol, now + 0.015);
+    bassGain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+    
+    bass.connect(bassGain);
+    bassGain.connect(masterGain);
+    
+    bass.start(now);
+    bass.stop(now + duration);
+    
+    // High "crack" / discharge
+    const crack = audioContext.createOscillator();
+    const crackGain = audioContext.createGain();
+    const crackFilter = audioContext.createBiquadFilter();
+    
+    crack.type = 'sawtooth';
+    crack.frequency.setValueAtTime(800 * pitch, now);
+    crack.frequency.exponentialRampToValueAtTime(200 * pitch, now + 0.12);
+    
+    crackFilter.type = 'bandpass';
+    crackFilter.frequency.value = 600;
+    crackFilter.Q.value = 2;
+    
+    crackGain.gain.setValueAtTime(0.35 * settings.sfxVolume * vol * volMod, now);
+    crackGain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+    
+    crack.connect(crackFilter);
+    crackFilter.connect(crackGain);
+    crackGain.connect(masterGain);
+    
+    crack.start(now);
+    crack.stop(now + 0.15);
+    
+    // Electric sizzle
+    const noiseLen = audioContext.sampleRate * 0.1;
+    const noiseBuf = audioContext.createBuffer(1, noiseLen, audioContext.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+        const t = i / audioContext.sampleRate;
+        noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-t * 15) * (Math.random() > 0.5 ? 1 : 0.3);
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioContext.createGain();
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'highpass';
+    noiseFilter.frequency.value = 3000;
+    
+    noiseGain.gain.setValueAtTime(0.2 * settings.sfxVolume * vol * volMod, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    
+    noise.start(now);
+    noise.stop(now + 0.12);
+}
+
+function playRailgunImpact(vol) {
+    const now = audioContext.currentTime;
+    const pitch = randomPitch(0.08);
+    const volMod = randomVolume(0.1);
+    
+    // Heavy thump
+    const bass = audioContext.createOscillator();
+    const bassGain = audioContext.createGain();
+    
+    bass.type = 'sine';
+    bass.frequency.setValueAtTime(120 * pitch, now);
+    bass.frequency.exponentialRampToValueAtTime(30 * pitch, now + 0.2);
+    
+    bassGain.gain.setValueAtTime(0.4 * settings.sfxVolume * vol * volMod, now);
+    bassGain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+    
+    bass.connect(bassGain);
+    bassGain.connect(masterGain);
+    
+    bass.start(now);
+    bass.stop(now + 0.25);
+    
+    // Metallic ring
+    const ring = audioContext.createOscillator();
+    const ringGain = audioContext.createGain();
+    
+    ring.type = 'triangle';
+    ring.frequency.setValueAtTime(1800 * pitch, now);
+    ring.frequency.exponentialRampToValueAtTime(600 * pitch, now + 0.15);
+    
+    ringGain.gain.setValueAtTime(0.15 * settings.sfxVolume * vol * volMod, now);
+    ringGain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+    
+    ring.connect(ringGain);
+    ringGain.connect(masterGain);
+    
+    ring.start(now);
+    ring.stop(now + 0.18);
+}
+
+// ----- PLASMA: Wobbly, electric "bwom" -----
+function playPlasmaFire(vol, isPlayerShot) {
+    const now = audioContext.currentTime;
+    const duration = 0.2;
+    const pitch = randomPitch(0.1);
+    const volMod = randomVolume(0.1);
+    
+    // Wobbly main tone
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc.type = 'sine';
+    const baseFreq = isPlayerShot ? 350 : 300;
+    osc.frequency.setValueAtTime(baseFreq * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(120 * pitch, now + duration);
+    
+    // LFO for wobble
+    const lfo = audioContext.createOscillator();
+    const lfoGain = audioContext.createGain();
+    lfo.type = 'sine';
+    lfo.frequency.value = 25 + Math.random() * 15;
+    lfoGain.gain.value = 40 * pitch;
+    
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+    
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1200, now);
+    filter.frequency.exponentialRampToValueAtTime(300, now + duration);
+    filter.Q.value = 3;
+    
+    const finalVol = 0.35 * settings.sfxVolume * vol * volMod;
+    gainNode.gain.setValueAtTime(0, now);
+    gainNode.gain.linearRampToValueAtTime(finalVol, now + 0.02);
+    gainNode.gain.setValueAtTime(finalVol * 0.8, now + duration * 0.5);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
+    
+    osc.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    lfo.start(now);
+    osc.start(now);
+    lfo.stop(now + duration);
+    osc.stop(now + duration);
+    
+    // Electric crackle overlay
+    const noiseLen = audioContext.sampleRate * 0.1;
+    const noiseBuf = audioContext.createBuffer(1, noiseLen, audioContext.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+        noiseData[i] = (Math.random() * 2 - 1) * (Math.random() > 0.6 ? 0.8 : 0.2);
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioContext.createGain();
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.value = 2500;
+    noiseFilter.Q.value = 1;
+    
+    noiseGain.gain.setValueAtTime(0.12 * settings.sfxVolume * vol * volMod, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    
+    noise.start(now);
+    noise.stop(now + 0.1);
+}
+
+function playPlasmaImpact(vol) {
+    const now = audioContext.currentTime;
+    const pitch = randomPitch(0.12);
+    const volMod = randomVolume(0.1);
+    
+    // Splatty "splorch"
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(400 * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(80 * pitch, now + 0.12);
+    
+    // Wobble
+    const lfo = audioContext.createOscillator();
+    const lfoGain = audioContext.createGain();
+    lfo.type = 'sine';
+    lfo.frequency.value = 35;
+    lfoGain.gain.value = 50;
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+    
+    filter.type = 'lowpass';
+    filter.frequency.value = 800;
+    filter.Q.value = 2;
+    
+    gainNode.gain.setValueAtTime(0.3 * settings.sfxVolume * vol * volMod, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+    
+    osc.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    lfo.start(now);
+    osc.start(now);
+    lfo.stop(now + 0.15);
+    osc.stop(now + 0.15);
+    
+    // Splash noise
+    const noiseLen = audioContext.sampleRate * 0.08;
+    const noiseBuf = audioContext.createBuffer(1, noiseLen, audioContext.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+        noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (noiseLen * 0.4));
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioContext.createGain();
+    
+    noiseGain.gain.setValueAtTime(0.15 * settings.sfxVolume * vol * volMod, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+    
+    noise.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    
+    noise.start(now);
+    noise.stop(now + 0.1);
+}
+
+// ----- PULSE: Soft "whomp" with reverb feel -----
+function playPulseFire(vol, isPlayerShot) {
+    const now = audioContext.currentTime;
+    const duration = 0.18;
+    const pitch = randomPitch(0.1);
+    const volMod = randomVolume(0.1);
+    
+    // Soft bass whomp
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc.type = 'sine';
+    const baseFreq = isPlayerShot ? 280 : 240;
+    osc.frequency.setValueAtTime(baseFreq * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(80 * pitch, now + duration);
+    
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(600, now);
+    filter.frequency.exponentialRampToValueAtTime(200, now + duration);
+    filter.Q.value = 1;
+    
+    const finalVol = 0.32 * settings.sfxVolume * vol * volMod;
+    gainNode.gain.setValueAtTime(0, now);
+    gainNode.gain.linearRampToValueAtTime(finalVol, now + 0.015);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
+    
+    osc.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    osc.start(now);
+    osc.stop(now + duration);
+    
+    // Soft "breath" overtone
+    const breath = audioContext.createOscillator();
+    const breathGain = audioContext.createGain();
+    
+    breath.type = 'triangle';
+    breath.frequency.setValueAtTime(800 * pitch, now);
+    breath.frequency.exponentialRampToValueAtTime(300 * pitch, now + 0.1);
+    
+    breathGain.gain.setValueAtTime(0.12 * settings.sfxVolume * vol * volMod, now);
+    breathGain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+    
+    breath.connect(breathGain);
+    breathGain.connect(masterGain);
+    
+    breath.start(now);
+    breath.stop(now + 0.12);
+}
+
+function playPulseImpact(vol) {
+    const now = audioContext.currentTime;
+    const pitch = randomPitch(0.1);
+    const volMod = randomVolume(0.1);
+    
+    // Soft thud with resonance
+    const osc = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(250 * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(60 * pitch, now + 0.12);
+    
+    filter.type = 'lowpass';
+    filter.frequency.value = 500;
+    filter.Q.value = 2;
+    
+    gainNode.gain.setValueAtTime(0.28 * settings.sfxVolume * vol * volMod, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+    
+    osc.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(masterGain);
+    
+    osc.start(now);
+    osc.stop(now + 0.15);
+    
+    // Soft "puff"
+    const noiseLen = audioContext.sampleRate * 0.06;
+    const noiseBuf = audioContext.createBuffer(1, noiseLen, audioContext.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+        noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (noiseLen * 0.35));
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioContext.createGain();
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'lowpass';
+    noiseFilter.frequency.value = 1200;
+    
+    noiseGain.gain.setValueAtTime(0.12 * settings.sfxVolume * vol * volMod, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    
+    noise.start(now);
+    noise.stop(now + 0.08);
+}
+
 // ===== TERRITORY CAPTURE SOUND =====
 // Satisfying "whoosh" + chime for capturing land
 
 export function playCaptureSound(isLocalPlayer = true) {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.capture <= 0) return;
+    if (!canPlaySound('capture')) return;
     resume();
+    markSoundStarted('capture', 0.4);
     
     const vol = settings.volumes.capture;
     const now = audioContext.currentTime;
@@ -405,7 +1178,9 @@ export function playCaptureSound(isLocalPlayer = true) {
 export function playLevelUpSound() {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.levelUp <= 0) return;
+    if (!canPlaySound('levelUp')) return;
     resume();
+    markSoundStarted('levelUp', 0.6);
     
     const vol = settings.volumes.levelUp;
     const now = audioContext.currentTime;
@@ -496,7 +1271,9 @@ export function playLevelUpSound() {
 export function playDeathSound(isLocalPlayer = false, distance = 0, maxDistance = 400) {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.death <= 0) return;
+    if (!canPlaySound('death')) return;
     resume();
+    markSoundStarted('death', 0.9);
     
     const vol = settings.volumes.death;
     const now = audioContext.currentTime;
@@ -633,7 +1410,9 @@ export function playDeathSound(isLocalPlayer = false, distance = 0, maxDistance 
 export function playCoinPickup() {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.coinPickup <= 0) return;
+    if (!canPlaySound('coinPickup')) return;
     resume();
+    markSoundStarted('coinPickup', 0.2);
     
     const vol = settings.volumes.coinPickup;
     const now = audioContext.currentTime;
@@ -691,7 +1470,9 @@ export function playCoinPickup() {
 export function playKillSound() {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.kill <= 0) return;
+    if (!canPlaySound('kill')) return;
     resume();
+    markSoundStarted('kill', 0.5);
     
     const vol = settings.volumes.kill;
     const now = audioContext.currentTime;
@@ -835,7 +1616,9 @@ export function playKillSound() {
 export function playHitSound() {
     if (!initialized || !settings.enabled) return;
     if (settings.volumes.hit <= 0) return;
+    if (!canPlaySound('hit')) return;
     resume();
+    markSoundStarted('hit', 0.1);
     
     const vol = settings.volumes.hit;
     const now = audioContext.currentTime;
@@ -868,6 +1651,32 @@ export function playHitSound() {
     
     noise.start(now);
     noise.stop(now + 0.1);
+}
+
+// Momentum cue: short rising tone when momentum starts stacking
+export function playMomentumSound() {
+    if (!initialized || !settings.enabled) return;
+    if (settings.volumes.momentum <= 0) return;
+    resume();
+    
+    const vol = settings.volumes.momentum;
+    const now = audioContext.currentTime;
+    
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.exponentialRampToValueAtTime(660, now + 0.08);
+    
+    gain.gain.setValueAtTime(vol * 0.6, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    
+    osc.connect(gain);
+    gain.connect(audioContext.destination);
+    
+    osc.start(now);
+    osc.stop(now + 0.17);
 }
 
 // ===== FUSE SOUND (LOOPING) =====
@@ -1614,12 +2423,15 @@ export default {
     getAllVolumes,
     playPlayerLaser,
     playEnemyLaser,
+    playProjectileFire,
+    playProjectileImpact,
     playCaptureSound,
     playLevelUpSound,
     playDeathSound,
     playCoinPickup,
     playKillSound,
     playHitSound,
+    playMomentumSound,
     startFuseSound,
     stopFuseSound,
     updateFuseVolume,

@@ -932,6 +932,27 @@ span {
 	font-family: "Changa", sans-serif;
 }
 
+/* Checkbox toggle styling */
+.checkbox-row {
+	justify-content: space-between;
+}
+
+.checkbox-row label {
+	flex: 1;
+}
+
+.setting-row input[type="checkbox"] {
+	width: 20px;
+	height: 20px;
+	accent-color: #7fed4c;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.setting-row input[type="checkbox"]:checked {
+	background-color: #7fed4c;
+}
+
 .controls-grid {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
@@ -1024,4 +1045,83 @@ span {
 	color: #666;
 	background: #333;
 	font-family: "Changa", sans-serif;
+}
+
+/* Settings upgrades panel (left side) */
+#settings-upgrades-panel {
+	position: fixed;
+	left: 10px;
+	bottom: 65px;
+	width: 260px;
+	max-height: calc(100vh - 80px);
+	overflow-y: auto;
+	background: #2f2f2f;
+	border-bottom: 6px solid #1f1f1f;
+	z-index: 99;
+	padding: 0;
+}
+
+.settings-upgrades-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	background: #3a3a3a;
+	border-bottom: 3px solid #252525;
+}
+
+.settings-upgrades-header h3 {
+	margin: 0;
+	font-size: 0.85rem;
+	color: #98FB98;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	font-family: "Changa", sans-serif;
+}
+
+.settings-upgrades-list {
+	padding: 10px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.settings-upgrades-empty {
+	color: #888;
+	font-size: 0.8rem;
+	text-align: center;
+	padding: 8px 0;
+}
+
+.upgrade-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: #3a3a3a;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 6px;
+	padding: 6px 8px;
+	cursor: default;
+}
+
+.upgrade-item .upgrade-icon {
+	width: 24px;
+	height: 24px;
+	flex: 0 0 24px;
+	background: rgba(0, 0, 0, 0.25);
+	border-radius: 4px;
+}
+
+.upgrade-item .upgrade-name {
+	flex: 1;
+	font-size: 0.8rem;
+	color: #f2f2f2;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.upgrade-item .upgrade-stacks {
+	font-size: 0.75rem;
+	color: #ccc;
 }
