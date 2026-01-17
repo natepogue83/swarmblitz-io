@@ -19,8 +19,8 @@ export default class EnemySpawner {
 		spawnMargin = 120,
 		typeUnlockInterval = 45,
 		// Boss settings
-		initialBossInterval = 60,   // First boss spawns at 60s, then every 60s
-		minBossInterval = 12,       // At 5 min, bosses spawn every ~12s
+		initialBossInterval = 45,   // First boss spawns at 60s, then every 60s
+		minBossInterval = 8,       // At 5 min, bosses spawn every ~12s
 		bossRampDuration = 300      // 5 minutes to reach min interval
 	} = {}) {
 		this.spawnTimer = 0;

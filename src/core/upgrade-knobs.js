@@ -91,7 +91,7 @@ export const CRITICAL_STRIKE = {
 };
 
 export const LIFE_STEAL = {
-	lifeStealPerStack: 0.0015,   // +0.15% HP on hit per stack (with diminishing returns)
+	lifeStealPerStack: 0.01,   // +1% HP on hit per stack (with diminishing returns)
 	usesDiminishing: true
 };
 
@@ -199,6 +199,14 @@ export const STICKY_CHARGES = {
 	maxStacks: 1
 };
 
+export const BLEEDING_ROUNDS = {
+	procChance: 0.15,              // 15% chance on hit to apply bleed
+	damagePerStack: 0.5,            // Bleed damage per stack per tick
+	durationSeconds: 3.0,           // Each stack lasts 3 seconds
+	maxBleedStacks: 12,             // Max bleed stacks applied by this upgrade
+	maxStacks: Infinity
+};
+
 export const MISSILE_POD = {
 	procChance: 0.10,               // 10% chance to fire missile on hit
 	missileDamagePercent: 0.40,     // Missile deals 40% of hit damage
@@ -275,6 +283,26 @@ export const OVERCHARGE_CORE = {
 };
 
 // ============================================================================
+// DRONE RANGE UPGRADES
+// ============================================================================
+
+export const EXTENDED_ANTENNAE = {
+	rangePerStack: 0.10,            // +10% drone range per stack
+	maxStacks: Infinity
+};
+
+export const SIGNAL_BOOSTERS = {
+	rangePerStack: 0.05,            // +5% drone range per stack
+	projectileLifetimePerStack: 0.05, // +5% projectile lifetime per stack
+	maxStacks: Infinity
+};
+
+export const GET_AWAY = {
+	damagePerEnemy: 0.02,           // +2% damage per enemy within drone range
+	maxStacks: 1
+};
+
+// ============================================================================
 // HELPER: Get all knobs as a single object (for debugging/inspector)
 // ============================================================================
 
@@ -313,6 +341,7 @@ export const ALL_UPGRADE_KNOBS = {
 	ADRENALINE,
 	MOMENTUM,
 	STICKY_CHARGES,
+	BLEEDING_ROUNDS,
 	MISSILE_POD,
 	HEATSEEKER_DRONES,
 	
@@ -325,5 +354,10 @@ export const ALL_UPGRADE_KNOBS = {
 	VAMPIRE,
 	CHAIN_LIGHTNING,
 	ARC_BARRAGE,
-	OVERCHARGE_CORE
+	OVERCHARGE_CORE,
+	
+	// Drone Range
+	EXTENDED_ANTENNAE,
+	SIGNAL_BOOSTERS,
+	GET_AWAY
 };

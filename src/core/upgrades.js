@@ -60,10 +60,15 @@ export const UPGRADE_ICONS = {
 	focused_fire: "target",
 	precision_rounds: "scope",
 	sticky_charges: "bomb",
+	bleeding_rounds: "droplet",
 	missile_pod: "rocket",
 	heatseeker_drones: "drone",
 	arc_barrage: "burst",
-	overcharge_core: "core"
+	overcharge_core: "core",
+	// Drone range upgrades
+	extended_antennae: "scope",
+	signal_boosters: "scope",
+	get_away: "scope"
 };
 
 /**
@@ -117,6 +122,8 @@ export function initPlayerUpgrades(player) {
 		extraProjectiles: 0,
 		lifeStealPercent: 0,
 		attackSpeedMult: 1.0,
+		rangeMult: 1.0,
+		projectileLifetimeMult: 1.0,
 		
 		// Utility
 		pickupRadiusMult: 1.0,
@@ -144,10 +151,12 @@ export function initPlayerUpgrades(player) {
 		hasFocusedFire: false,
 		hasPrecisionRounds: false,
 		hasStickyCharges: false,
+		hasBleedingRounds: false,
 		hasMissilePod: false,
 		hasHeatseekerDrones: false,
 		hasArcBarrage: false,
-		hasOverchargeCore: false
+		hasOverchargeCore: false,
+		hasGetAway: false
 	};
 	
 	// Cooldown timers for triggered abilities
@@ -194,6 +203,8 @@ export function recalculateDerivedStats(player) {
 	stats.extraProjectiles = 0;
 	stats.lifeStealPercent = 0;
 	stats.attackSpeedMult = 1.0;
+	stats.rangeMult = 1.0;
+	stats.projectileLifetimeMult = 1.0;
 	
 	stats.pickupRadiusMult = 1.0;
 	stats.sizeScaleMult = 1.0;
@@ -218,10 +229,12 @@ export function recalculateDerivedStats(player) {
 	stats.hasFocusedFire = false;
 	stats.hasPrecisionRounds = false;
 	stats.hasStickyCharges = false;
+	stats.hasBleedingRounds = false;
 	stats.hasMissilePod = false;
 	stats.hasHeatseekerDrones = false;
 	stats.hasArcBarrage = false;
 	stats.hasOverchargeCore = false;
+	stats.hasGetAway = false;
 
 	// Apply persistent boss orb bonuses (if any)
 	const bossBonus = player.bossBonus || {};
@@ -637,6 +650,21 @@ export const UPGRADE_CATALOG = [
 		}
 	},
 	{
+		id: 'bleeding_rounds',
+		name: 'Bleeding Rounds',
+		rarity: RARITY.BASIC,
+		maxStacks: KNOBS.BLEEDING_ROUNDS.maxStacks,
+		description: () => {
+			const maxStacks = KNOBS.BLEEDING_ROUNDS.maxBleedStacks;
+			const duration = KNOBS.BLEEDING_ROUNDS.durationSeconds;
+			const procChance = Math.round((KNOBS.BLEEDING_ROUNDS.procChance ?? 0.15) * 100);
+			return `${procChance}% bleed chance per stack\nMax ${maxStacks} stacks, ${duration}s`;
+		},
+		apply: (player, stacks) => {
+			if (stacks > 0) player.derivedStats.hasBleedingRounds = true;
+		}
+	},
+	{
 		id: 'missile_pod',
 		name: 'Missile Pod',
 		rarity: RARITY.RARE,
@@ -805,6 +833,49 @@ export const UPGRADE_CATALOG = [
 				player.derivedStats.damageMult += KNOBS.OVERCHARGE_CORE.damageBonus;
 				player.derivedStats.attackSpeedMult += KNOBS.OVERCHARGE_CORE.attackSpeedBonus;
 			}
+		}
+	},
+	
+	// ===== DRONE RANGE UPGRADES =====
+	{
+		id: 'extended_antennae',
+		name: 'Extended Antennae',
+		rarity: RARITY.BASIC,
+		maxStacks: KNOBS.EXTENDED_ANTENNAE.maxStacks,
+		description: (stacks) => {
+			const perStack = Math.round(KNOBS.EXTENDED_ANTENNAE.rangePerStack * 100);
+			return `+${perStack}% drone range\nTotal: +${stacks * perStack}%`;
+		},
+		apply: (player, stacks) => {
+			player.derivedStats.rangeMult += stacks * KNOBS.EXTENDED_ANTENNAE.rangePerStack;
+		}
+	},
+	{
+		id: 'signal_boosters',
+		name: 'Signal Boosters',
+		rarity: RARITY.RARE,
+		maxStacks: KNOBS.SIGNAL_BOOSTERS.maxStacks,
+		description: (stacks) => {
+			const rangePerStack = Math.round(KNOBS.SIGNAL_BOOSTERS.rangePerStack * 100);
+			const lifetimePerStack = Math.round(KNOBS.SIGNAL_BOOSTERS.projectileLifetimePerStack * 100);
+			return `+${rangePerStack}% drone range\n+${lifetimePerStack}% projectile lifetime`;
+		},
+		apply: (player, stacks) => {
+			player.derivedStats.rangeMult += stacks * KNOBS.SIGNAL_BOOSTERS.rangePerStack;
+			player.derivedStats.projectileLifetimeMult += stacks * KNOBS.SIGNAL_BOOSTERS.projectileLifetimePerStack;
+		}
+	},
+	{
+		id: 'get_away',
+		name: 'Get Away',
+		rarity: RARITY.LEGENDARY,
+		maxStacks: KNOBS.GET_AWAY.maxStacks,
+		description: () => {
+			const dmgPer = Math.round(KNOBS.GET_AWAY.damagePerEnemy * 100);
+			return `+${dmgPer}% damage per enemy\nwithin drone range`;
+		},
+		apply: (player, stacks) => {
+			if (stacks > 0) player.derivedStats.hasGetAway = true;
 		}
 	}
 ];

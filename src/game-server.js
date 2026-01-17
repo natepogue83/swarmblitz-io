@@ -287,15 +287,23 @@ function rebuildDronesArray(player, count) {
 	const extraDamage = consts.DRONE_DAMAGE_EXTRA || 5;
 	const baseRange = consts.DRONE_RANGE || 200;
 	const baseOrbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
+	const usesPlayerDroneSlot = (player.droneTypes[0] || 'assault') === 'assault';
+	const orbitingCount = Math.max(0, count - (usesPlayerDroneSlot ? 1 : 0));
+	let orbitingIndex = 0;
 	
 	for (let i = 0; i < count; i++) {
-		const offset = (i * Math.PI * 2) / count;
 		// First drone (index 0) does full damage, rest do reduced
 		const damage = i === 0 ? baseDamage : extraDamage;
 		
 		// Get type for this slot (default to assault if not set)
 		const typeId = player.droneTypes[i] || 'assault';
+		const isPlayerDroneSlot = i === 0 && typeId === 'assault';
+		const slotIndex = isPlayerDroneSlot ? null : orbitingIndex++;
+		const offset = (orbitingCount > 0 && slotIndex !== null)
+			? (slotIndex * Math.PI * 2) / orbitingCount
+			: 0;
 		const droneType = getDroneType(typeId) || getDefaultDroneType();
+		const orbitRadius = isPlayerDroneSlot ? 0 : baseOrbitRadius * droneType.orbitRadiusMult;
 		
 		// Try to reuse existing drone data (preserve cooldown)
 		if (i < oldDrones.length) {
@@ -317,7 +325,7 @@ function rebuildDronesArray(player, count) {
 			old.orbitRadiusMult = droneType.orbitRadiusMult;
 			old.orbitSpeedMult = droneType.orbitSpeedMult;
 			old.range = baseRange * droneType.rangeMult;
-			old.orbitRadius = baseOrbitRadius * droneType.orbitRadiusMult;
+			old.orbitRadius = orbitRadius;
 			// Weapon properties
 			old.isHitscan = droneType.isHitscan ?? false;
 			old.projectileSpeed = droneType.projectileSpeed || 400;
@@ -327,7 +335,9 @@ function rebuildDronesArray(player, count) {
 			newDrones.push(old);
 		} else {
 			// Create new drone with proper index and type
-			newDrones.push(createDrone(player.num, offset, i, typeId));
+			const newDrone = createDrone(player.num, offset, i, typeId);
+			newDrone.orbitRadius = orbitRadius;
+			newDrones.push(newDrone);
 		}
 	}
 	
@@ -439,6 +449,46 @@ function Game(id) {
 	function markEnemyHit(enemy) {
 		if (!enemy || enemy.isBoss) return;
 		enemy.lastDamagedAt = runTime;
+	}
+
+	function applyBleedStacks(target, ownerId, bleedConfig) {
+		if (!target || !bleedConfig) return;
+		if (!target.bleedStacks) target.bleedStacks = 0;
+		if (!target.bleedExpires) target.bleedExpires = 0;
+
+		const damagePerStack = bleedConfig.damagePerStack ?? bleedConfig.bleedDamagePerStack ?? 1;
+		const durationSeconds = bleedConfig.durationSeconds ?? bleedConfig.bleedDuration ?? 2.0;
+		const maxStacks = bleedConfig.maxBleedStacks ?? bleedConfig.bleedMaxStacks ?? 10;
+		const stackIncrement = bleedConfig.stackIncrement ?? 1;
+		const maxAllowedStacks = Math.max(target.bleedMaxStacks || 0, maxStacks);
+
+		target.bleedStacks = Math.min(target.bleedStacks + stackIncrement, maxAllowedStacks);
+		target.bleedExpires = Math.max(target.bleedExpires || 0, runTime + durationSeconds);
+		target.bleedDamagePerStack = Math.max(target.bleedDamagePerStack || 0, damagePerStack);
+		target.bleedMaxStacks = maxAllowedStacks;
+		if (ownerId !== undefined && ownerId !== null) {
+			target.bleedOwnerId = ownerId;
+		}
+	}
+
+	function applyBurnStacks(target, ownerId, burnConfig) {
+		if (!target || !burnConfig) return;
+		if (!target.burnStacks) target.burnStacks = 0;
+		if (!target.burnExpires) target.burnExpires = 0;
+
+		const damagePerStack = burnConfig.damagePerStack ?? burnConfig.burnDamagePerStack ?? 1;
+		const durationSeconds = burnConfig.durationSeconds ?? burnConfig.burnDuration ?? 2.0;
+		const maxStacks = burnConfig.maxBurnStacks ?? burnConfig.burnMaxStacks ?? 10;
+		const stackIncrement = burnConfig.stackIncrement ?? 1;
+		const maxAllowedStacks = Math.max(target.burnMaxStacks || 0, maxStacks);
+
+		target.burnStacks = Math.min(target.burnStacks + stackIncrement, maxAllowedStacks);
+		target.burnExpires = Math.max(target.burnExpires || 0, runTime + durationSeconds);
+		target.burnDamagePerStack = Math.max(target.burnDamagePerStack || 0, damagePerStack);
+		target.burnMaxStacks = maxAllowedStacks;
+		if (ownerId !== undefined && ownerId !== null) {
+			target.burnOwnerId = ownerId;
+		}
 	}
 
 	function applyEnemyScaling(enemy) {
@@ -622,6 +672,18 @@ function Game(id) {
 		const hpMult = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
 		const dmgMult = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
 		const basicEnemyBaseHp = ENEMY_TYPES.basic?.maxHp || 30;
+		
+		// Calculate territory XP multiplier for debug display
+		// Use first active player's level or default to level 1
+		const activePlayer = players.find(p => !p.dead);
+		const sampleLevel = activePlayer ? (activePlayer.level || 1) : 1;
+		const xpNeeded = getXpForLevel(sampleLevel);
+		const baseXpNeeded = getXpForLevel(1);
+		const levelRatio = baseXpNeeded > 0 ? (xpNeeded / baseXpNeeded) : 1;
+		const levelScale = Math.sqrt(levelRatio);
+		const territoryXpScale = consts.TERRITORY_XP_SCALE ?? 1.0;
+		const territoryXpMult = levelScale * territoryXpScale;
+		
 		return {
 			runTime,
 			spawnInterval: enemySpawner.spawnInterval,
@@ -634,6 +696,7 @@ function Game(id) {
 			// Scaling debug info
 			hpMult,
 			dmgMult,
+			territoryXpMult,
 			timeSpeed: timeSpeedMultiplier,
 			sampleSpawnHp: Math.round(basicEnemyBaseHp * hpMult)
 		};
@@ -987,7 +1050,8 @@ function Game(id) {
 					x: spawnX,
 					y: spawnY,
 					type: "stamina",
-					value: consts.STAMINA_BOOST_AMOUNT || 20
+					value: consts.STAMINA_BOOST_AMOUNT || 20,
+					spawnTime: runTime
 				};
 				coins.push(newCoin);
 				economyDeltas.coinSpawns.push(newCoin);
@@ -1087,6 +1151,12 @@ function Game(id) {
 		
 		const activePlayer = players.find(p => !p.dead && !p.disconnected) || null;
 		const frameScale = deltaSeconds / (1 / 60);
+		
+		// Track HP at start of frame for change detection (life steal, vampire, etc.)
+		const frameStartHp = new Map();
+		for (const p of players) {
+			if (!p.dead) frameStartHp.set(p.num, p.hp);
+		}
 		
 		const spawnEnemyXp = (x, y, value, isDoubleDrop = false, type = "enemy") => {
 			const newCoin = {
@@ -1207,6 +1277,15 @@ function Game(id) {
 				if (stats.hasVampire) {
 					const healAmount = killer.maxHp * UPGRADE_KNOBS.VAMPIRE.healOnKillPercent;
 					killer.hp = Math.min(killer.maxHp, killer.hp + healAmount);
+					// Visual feedback for vampire heal
+					economyDeltas.boostPickups = economyDeltas.boostPickups || [];
+					economyDeltas.boostPickups.push({
+						type: "vampire",
+						amount: Math.round(healAmount * 10) / 10,
+						x: enemy.x,
+						y: enemy.y,
+						playerNum: killer.num
+					});
 				}
 				
 				economyDeltas.killEvents.push({
@@ -1233,6 +1312,51 @@ function Game(id) {
 				y: player.y + Math.sin(aimAngle) * aimDist
 			};
 		}
+
+		function getPrecisionRoundsBonus(dist, rangeCap) {
+			const minConfig = UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus;
+			const maxConfig = UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus;
+			const cappedRange = Math.max(1, rangeCap);
+			let minDist = Math.min(minConfig, cappedRange);
+			let maxDist = Math.max(minDist + 1, Math.min(maxConfig, cappedRange));
+
+			// If range is shorter than the configured minimum, allow bonus within range
+			if (cappedRange <= minConfig) {
+				minDist = cappedRange * 0.5;
+				maxDist = cappedRange;
+			}
+
+			if (dist <= minDist) return 1;
+			const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
+			return 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
+		}
+
+		function clamp01(value) {
+			return Math.max(0, Math.min(1, value));
+		}
+
+		function getDroneAccuracy(drone, droneType) {
+			return clamp01(drone.accuracy ?? droneType.accuracy ?? 1);
+		}
+
+		function getInaccurateAimPoint(originX, originY, target, accuracy, maxRange) {
+			const targetRadius = target.radius || 10;
+			const hitRoll = Math.random() < accuracy;
+			if (hitRoll) {
+				return { x: target.x, y: target.y, missDist: 0 };
+			}
+
+			const baseRange = maxRange || 150;
+			const minMiss = targetRadius * 1.2;
+			const maxMiss = Math.max(minMiss, baseRange * 0.35 * (1 - accuracy) + targetRadius);
+			const dist = Math.sqrt(Math.random()) * (maxMiss - minMiss) + minMiss;
+			const angle = Math.random() * Math.PI * 2;
+			return {
+				x: target.x + Math.cos(angle) * dist,
+				y: target.y + Math.sin(angle) * dist,
+				missDist: dist
+			};
+		}
 		
 		/**
 		 * Create a new projectile from a drone attack
@@ -1251,14 +1375,21 @@ function Game(id) {
 			const projectileLifetime = droneType.projectileLifetime ?? 0;
 			const procCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
 			
+			// Get owner stats for range and lifetime upgrades
+			const ownerStats = owner.derivedStats || {};
+			const rangeMult = ownerStats.rangeMult || 1.0;
+			const projectileLifetimeMult = ownerStats.projectileLifetimeMult || 1.0;
+			
 			// Use override position if provided (for player's aim shot), otherwise use drone position
 			const originX = originOverride ? originOverride.x : drone.x;
 			const originY = originOverride ? originOverride.y : drone.y;
 			
 			// Calculate direction to target
-			const dx = target.x - originX;
-			const dy = target.y - originY;
-			const dist = Math.hypot(dx, dy);
+			const accuracy = getDroneAccuracy(drone, droneType);
+			const aimPoint = getInaccurateAimPoint(originX, originY, target, accuracy, drone.range);
+			const dx = aimPoint.x - originX;
+			const dy = aimPoint.y - originY;
+			const dist = Math.hypot(dx, dy) || 1;
 			const dirX = dx / dist;
 			const dirY = dy / dist;
 			
@@ -1287,16 +1418,16 @@ function Game(id) {
 				pierceCount: droneType.pierceCount || 0,
 				piercedEnemies: new Set(),
 				size: scaledProjectileSize,
-				maxRange: drone.range * 1.5,
+				maxRange: drone.range * 1.5 * rangeMult,
 				distanceTraveled: 0,
 				appliesSlow: droneType.appliesSlow || false,
 				slowAmount: droneType.slowAmount || 0,
 				slowDuration: droneType.slowDuration || (consts.SLOW_DURATION_DEFAULT ?? 1.5),
 				spawnTime: runTime,
-				lifetimeSeconds: projectileLifetime > 0 ? projectileLifetime : null,
+				lifetimeSeconds: projectileLifetime > 0 ? projectileLifetime * projectileLifetimeMult : null,
 				lifeOnHitPercent: stats.lifeOnHitPercent || 0,
 				procCoefficient: procCoefficient,
-				// Track total damage dealt for Support heal pack
+				// Track total damage dealt for heal pack passive
 				totalDamageDealt: 0,
 				// PASSIVE flags from drone type
 				pierceDamageScaling: droneType.pierceDamageScaling || false,
@@ -1304,6 +1435,12 @@ function Game(id) {
 				blackHolePull: droneType.blackHolePull || false,
 				blackHolePullRadius: droneType.blackHolePullRadius || 80,
 				blackHolePullStrength: droneType.blackHolePullStrength || 120,
+				blackHolePulseInterval: droneType.blackHolePulseInterval ?? 0.35,
+				blackHolePulseRadiusMult: droneType.blackHolePulseRadiusMult ?? 0.5,
+				blackHolePulseDamageMult: droneType.blackHolePulseDamageMult ?? 0.25,
+				blackHolePulseMin: droneType.blackHolePulseMin ?? 0.25,
+				blackHolePulseMax: droneType.blackHolePulseMax ?? 0.9,
+				blackHolePulseSpeed: droneType.blackHolePulseSpeed ?? 5,
 				dropsHealPack: droneType.dropsHealPack || false,
 				healPackPercent: droneType.healPackPercent || 0.05,
 				healPackMin: droneType.healPackMin || 10,
@@ -1312,6 +1449,10 @@ function Game(id) {
 				bleedDamagePerStack: droneType.bleedDamagePerStack || 1,
 				bleedDuration: droneType.bleedDuration || 2.0,
 				bleedMaxStacks: droneType.bleedMaxStacks || 10,
+				appliesBurn: droneType.appliesBurn || false,
+				burnDamagePerStack: droneType.burnDamagePerStack || 1,
+				burnDuration: droneType.burnDuration || 2.0,
+				burnMaxStacks: droneType.burnMaxStacks || 10,
 				rampsTargetDamage: droneType.rampsTargetDamage || false,
 				rampDamagePerStack: droneType.rampDamagePerStack || 0.15,
 				rampMaxStacks: droneType.rampMaxStacks || 5,
@@ -1374,7 +1515,8 @@ function Game(id) {
 				opacity: proj.opacity,
 				size: proj.size,
 				ownerId: proj.ownerId,
-				isPlayerShot: proj.isPlayerShot
+				isPlayerShot: proj.isPlayerShot,
+				blackHolePull: proj.blackHolePull || false
 			});
 		}
 
@@ -1419,7 +1561,7 @@ function Game(id) {
 				proj.y += moveY;
 				proj.distanceTraveled += Math.hypot(moveX, moveY);
 				
-				// PASSIVE: Guardian - Black hole pull (apply before checking removal)
+				// PASSIVE: Black hole pull (apply before checking removal)
 				if (proj.blackHolePull) {
 					for (const enemy of enemies) {
 						if (enemy.dead || enemy.hp <= 0) continue;
@@ -1431,6 +1573,50 @@ function Game(id) {
 							const pullDirY = (proj.y - enemy.y) / pullDist;
 							enemy.x += pullDirX * pullStrength;
 							enemy.y += pullDirY * pullStrength;
+						}
+					}
+					
+					// Pulsing damage aura around the singularity
+					const pulseInterval = proj.blackHolePulseInterval ?? 0.35;
+					if (!proj.lastBlackHolePulse) proj.lastBlackHolePulse = runTime;
+					if (runTime - proj.lastBlackHolePulse >= pulseInterval) {
+						proj.lastBlackHolePulse = runTime;
+						const pulsePhase = (runTime - proj.spawnTime) * (proj.blackHolePulseSpeed ?? 5);
+						const pulseMin = proj.blackHolePulseMin ?? 0.25;
+						const pulseMax = proj.blackHolePulseMax ?? 0.9;
+						const pulse = pulseMin + (pulseMax - pulseMin) * (0.5 + 0.5 * Math.sin(pulsePhase));
+						const pulseDamage = proj.damage * (proj.blackHolePulseDamageMult ?? 0.25) * pulse;
+						const pulseRadius = proj.blackHolePullRadius * (proj.blackHolePulseRadiusMult ?? 0.5);
+						
+						if (!economyDeltas.hitscanEvents) economyDeltas.hitscanEvents = [];
+						for (const enemy of enemies) {
+							if (enemy.dead || enemy.hp <= 0) continue;
+							const dist = Math.hypot(enemy.x - proj.x, enemy.y - proj.y);
+							if (dist > pulseRadius) continue;
+							
+							enemy.hp -= pulseDamage;
+							if (enemy.hp < 0) enemy.hp = 0;
+							markEnemyHit(enemy);
+							
+							economyDeltas.hitscanEvents.push({
+								fromX: proj.x,
+								fromY: proj.y,
+								toX: enemy.x,
+								toY: enemy.y,
+								ownerId: proj.ownerId,
+								targetEnemyId: enemy.id,
+								damage: pulseDamage,
+								remainingHp: enemy.hp,
+								isCrit: false,
+								attackType: proj.attackType,
+								typeColor: proj.typeColor,
+								isProjectileHit: true
+							});
+							
+							if (enemy.hp <= 0) {
+								const owner = players.find(p => p.num === proj.ownerId);
+								handleEnemyDeath(enemy, owner);
+							}
 						}
 					}
 				}
@@ -1481,7 +1667,12 @@ function Game(id) {
 						}
 						
 						// Calculate damage with Hunter bonus
-						let finalDamage = proj.damage * (ownerStats.damageMult || 1.0);
+						// Note: proj.damage already includes player's damageMult (with Territorial/Berserker) from creation time
+						let finalDamage = proj.damage;
+						if (proj.blackHolePull) {
+							const pulse = 0.75 + 0.25 * Math.sin((runTime - proj.spawnTime) * 4);
+							finalDamage *= pulse;
+						}
 						if (ownerStats.hasHunter && enemy.hp < enemy.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
 							finalDamage *= (1 + UPGRADE_KNOBS.HUNTER.damageBonus);
 						}
@@ -1542,14 +1733,8 @@ function Game(id) {
 							const originX = proj.originX ?? owner.x;
 							const originY = proj.originY ?? owner.y;
 							const dist = Math.hypot(enemy.x - originX, enemy.y - originY);
-							const rangeCap = Math.max(1, proj.maxRange || UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus);
-							const minDist = Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus, rangeCap);
-							const maxDist = Math.max(minDist + 1, Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus, rangeCap));
-							if (dist > minDist) {
-								const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
-								const prBonus = 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
-								finalDamage *= prBonus;
-							}
+							const rangeCap = proj.maxRange || UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus;
+							finalDamage *= getPrecisionRoundsBonus(dist, rangeCap);
 						}
 						
 						enemy.hp -= finalDamage;
@@ -1560,13 +1745,22 @@ function Game(id) {
 						proj.totalDamageDealt = (proj.totalDamageDealt || 0) + finalDamage;
 						
 						// Life steal
-						if (owner && proj.lifeOnHitPercent > 0 && owner.lifeOnHitCooldown <= 0) {
+						if (owner && proj.lifeOnHitPercent > 0 && (owner.lifeOnHitCooldown || 0) <= 0) {
 							const healAmount = owner.maxHp * proj.lifeOnHitPercent;
 							owner.hp = Math.min(owner.maxHp, owner.hp + healAmount);
 							owner.lifeOnHitCooldown = 0.1;
+							// Visual feedback for life steal
+							economyDeltas.boostPickups = economyDeltas.boostPickups || [];
+							economyDeltas.boostPickups.push({
+								type: "lifesteal",
+								amount: Math.round(healAmount * 10) / 10,
+								x: enemy.x,
+								y: enemy.y,
+								playerNum: owner.num
+							});
 						}
 						
-						// PASSIVE: Apply slow (Support drone)
+						// PASSIVE: Apply slow
 						if (proj.appliesSlow && proj.slowAmount > 0) {
 							enemy.slowAmount = proj.slowAmount;
 							enemy.slowExpires = runTime + proj.slowDuration;
@@ -1574,14 +1768,34 @@ function Game(id) {
 						
 						// PASSIVE: Swarm - Apply bleed stacks
 						if (proj.appliesBleed) {
-							if (!enemy.bleedStacks) enemy.bleedStacks = 0;
-							if (!enemy.bleedExpires) enemy.bleedExpires = 0;
-							
-							// Add stack (up to max)
-							enemy.bleedStacks = Math.min(enemy.bleedStacks + 1, proj.bleedMaxStacks);
-							enemy.bleedExpires = runTime + proj.bleedDuration;
-							enemy.bleedDamagePerStack = proj.bleedDamagePerStack;
-							enemy.bleedOwnerId = owner?.num; // Track who applied bleed for kill credit
+							applyBleedStacks(enemy, owner?.num, {
+								bleedMaxStacks: proj.bleedMaxStacks,
+								bleedDuration: proj.bleedDuration,
+								bleedDamagePerStack: proj.bleedDamagePerStack
+							});
+						}
+
+						// PASSIVE: Flame - Apply burn stacks
+						if (proj.appliesBurn) {
+							applyBurnStacks(enemy, owner?.num, {
+								burnMaxStacks: proj.burnMaxStacks,
+								burnDuration: proj.burnDuration,
+								burnDamagePerStack: proj.burnDamagePerStack
+							});
+						}
+
+						// UPGRADE: Bleeding Rounds - proc chance to apply bleed stacks
+						if (ownerStats.hasBleedingRounds && owner && !enemy.dead) {
+							const stacks = owner.upgrades?.bleeding_rounds || 0;
+							const baseChance = UPGRADE_KNOBS.BLEEDING_ROUNDS.procChance ?? 0.15;
+							const procChance = baseChance * Math.max(1, stacks);
+							if (rollProcChance(procChance, baseProcCoefficient)) {
+								applyBleedStacks(enemy, owner.num, {
+									damagePerStack: UPGRADE_KNOBS.BLEEDING_ROUNDS.damagePerStack,
+									durationSeconds: UPGRADE_KNOBS.BLEEDING_ROUNDS.durationSeconds,
+									maxBleedStacks: UPGRADE_KNOBS.BLEEDING_ROUNDS.maxBleedStacks
+								});
+							}
 						}
 						
 						economyDeltas.hitscanEvents.push({
@@ -2305,6 +2519,43 @@ function Game(id) {
 					enemy.bleedStacks = 0;
 					enemy.bleedExpires = 0;
 				}
+
+				// PASSIVE: Flame - Process burn damage ticks
+				if (enemy.burnStacks > 0 && enemy.burnExpires && runTime < enemy.burnExpires) {
+					if (!enemy.lastBurnTick) enemy.lastBurnTick = runTime;
+
+					const burnTickRate = consts.BURN_TICK_RATE || 0.35;
+					if (runTime - enemy.lastBurnTick >= burnTickRate) {
+						enemy.lastBurnTick = runTime;
+						const burnDamage = enemy.burnStacks * (enemy.burnDamagePerStack || 1);
+						enemy.hp -= burnDamage;
+						if (enemy.hp < 0) enemy.hp = 0;
+						markEnemyHit(enemy);
+
+						economyDeltas.hitscanEvents.push({
+							fromX: enemy.x,
+							fromY: enemy.y,
+							toX: enemy.x,
+							toY: enemy.y,
+							ownerId: enemy.burnOwnerId || -1,
+							targetEnemyId: enemy.id,
+							damage: burnDamage,
+							remainingHp: enemy.hp,
+							isCrit: false,
+							attackType: 'burn',
+							typeColor: '#FF7A1A',
+							isBurnTick: true
+						});
+
+						if (enemy.hp <= 0) {
+							const burnOwner = players.find(p => p.num === enemy.burnOwnerId);
+							handleEnemyDeath(enemy, burnOwner);
+						}
+					}
+				} else if (enemy.burnStacks > 0 && runTime >= enemy.burnExpires) {
+					enemy.burnStacks = 0;
+					enemy.burnExpires = 0;
+				}
 				
 				const hitDx = activePlayer.x - enemy.x;
 				const hitDy = activePlayer.y - enemy.y;
@@ -2596,7 +2847,10 @@ function Game(id) {
 			const extraProjectiles = stats.extraProjectiles || 0;
 			
 			// Berserker: Below threshold HP, gain attack speed and damage
-			if (stats.hasBerserker && p.hp < p.maxHp * UPGRADE_KNOBS.BERSERKER.hpThreshold) {
+			const berserkerMaxHp = Math.max(1, p.maxHp || (consts.PLAYER_MAX_HP ?? 100));
+			const berserkerActive = stats.hasBerserker && p.hp <= berserkerMaxHp * UPGRADE_KNOBS.BERSERKER.hpThreshold;
+			p.berserkerActive = berserkerActive;
+			if (berserkerActive) {
 				attackSpeedMult *= (1 + UPGRADE_KNOBS.BERSERKER.attackSpeedBonus);
 				damageMult += UPGRADE_KNOBS.BERSERKER.damageBonus;
 			}
@@ -2604,6 +2858,29 @@ function Game(id) {
 			// Territorial: Bonus damage while in own territory
 			if (stats.hasTerritorial && inTerritory) {
 				damageMult += UPGRADE_KNOBS.TERRITORIAL.damageBonus;
+			}
+			
+			// Get Away: Bonus damage per enemy within drone range
+			if (stats.hasGetAway) {
+				// Calculate scaled drone range (same as targeting logic)
+				const baseRange = consts.DRONE_RANGE || 200;
+				const playerSizeScale = p.sizeScale || 1.0;
+				const rangeMult = stats.rangeMult || 1.0;
+				const scaledRange = baseRange * playerSizeScale * rangeMult;
+				
+				// Count enemies within range
+				let enemiesInRange = 0;
+				for (const enemy of enemies) {
+					if (enemy.dead || enemy.hp <= 0) continue;
+					const dist = Math.hypot(enemy.x - p.x, enemy.y - p.y);
+					if (dist <= scaledRange) {
+						enemiesInRange++;
+					}
+				}
+				
+				// Apply damage bonus
+				damageMult += enemiesInRange * UPGRADE_KNOBS.GET_AWAY.damagePerEnemy;
+				p.getAwayEnemyCount = enemiesInRange; // Store for UI/debugging
 			}
 			
 			// Update timers
@@ -2737,7 +3014,7 @@ function Game(id) {
 			}
 			
 			// Update life on hit cooldown
-			if (p.lifeOnHitCooldown > 0) {
+			if ((p.lifeOnHitCooldown || 0) > 0) {
 				p.lifeOnHitCooldown -= deltaSeconds;
 			}
 			
@@ -2764,9 +3041,10 @@ function Game(id) {
 				let minDist = Infinity;
 				const ownerX = p.x;
 				const ownerY = p.y;
-				// Scale drone range with player size
+				// Scale drone range with player size and rangeMult upgrade
 				const playerSizeScale = p.sizeScale || 1.0;
-				const scaledRange = drone.range * playerSizeScale;
+				const playerRangeMult = stats.rangeMult || 1.0;
+				const scaledRange = drone.range * playerSizeScale * playerRangeMult;
 
 				for (const enemy of enemies) {
 					if (enemy.dead || enemy.hp <= 0) continue;
@@ -2845,8 +3123,8 @@ function Game(id) {
 						baseDmg = baseDamage * extraMult * Math.pow(decayFactor, droneIndex - 1);
 					}
 					
-					// Apply drone type multiplier (player damage multiplier applied on hit)
-					let damage = baseDmg * droneDamageMult;
+					// Apply drone type multiplier AND player damage multiplier (includes Territorial/Berserker)
+					let damage = baseDmg * droneDamageMult * damageMult;
 					
 					// Hunter: Bonus damage vs enemies below threshold HP
 					if (stats.hasHunter && target.hp < target.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
@@ -2869,7 +3147,7 @@ function Game(id) {
 						const isFirstDrone = droneIndex === 0;
 						const hitscanOrigin = isFirstDrone ? getPlayerAimPosition(p) : null;
 						
-						applyHitscanDamage(p, drone, target, damage, isCrit, economyDeltas, hitscanOrigin);
+						applyHitscanDamage(p, drone, target, damage, isCrit, economyDeltas, hitscanOrigin, true);
 						
 						// Multi-shot: fire at additional nearby enemies (only for hitscan)
 						if (extraProjectiles > 0) {
@@ -2883,7 +3161,7 @@ function Game(id) {
 							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
 								const multiTarget = nearbyEnemies[i];
 								const extraDamage = damage * Math.pow(0.8, i + 1);
-								applyHitscanDamage(p, drone, multiTarget, extraDamage, isCrit, economyDeltas, hitscanOrigin);
+								applyHitscanDamage(p, drone, multiTarget, extraDamage, isCrit, economyDeltas, hitscanOrigin, true);
 							}
 						}
 						
@@ -2957,12 +3235,34 @@ function Game(id) {
 		
 		// Helper function to apply hitscan damage with all effects
 		// originOverride: optional {x, y} for first drone to fire from player's aim position
-		function applyHitscanDamage(player, drone, target, damage, isCrit, deltas, originOverride) {
+		// skipBaseDamageMult: if true, don't multiply by stats.damageMult (already applied by caller)
+		function applyHitscanDamage(player, drone, target, damage, isCrit, deltas, originOverride, skipBaseDamageMult = false) {
 			const stats = player.derivedStats || {};
 			const lifeOnHitPct = stats.lifeStealPercent || 0;
 			const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
 			const baseProcCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
 			const procOrigin = originOverride ? originOverride : { x: drone.x, y: drone.y };
+			const accuracy = getDroneAccuracy(drone, droneType);
+			const aimPoint = getInaccurateAimPoint(procOrigin.x, procOrigin.y, target, accuracy, drone.range);
+			const targetRadius = target.radius || 10;
+			const didHit = aimPoint.missDist <= targetRadius;
+
+			if (!didHit) {
+				deltas.hitscanEvents.push({
+					fromX: procOrigin.x,
+					fromY: procOrigin.y,
+					toX: aimPoint.x,
+					toY: aimPoint.y,
+					ownerId: player.num,
+					targetEnemyId: target.id,
+					damage: 0,
+					remainingHp: target.hp,
+					isCrit: false,
+					attackType: drone.attackType || 'bullet',
+					typeColor: drone.typeColor || '#FF6B6B'
+				});
+				return;
+			}
 
 			// Execute: Enemies below threshold HP are instantly killed (hitscan)
 			if (stats.hasExecute && target.hp > 0) {
@@ -2994,7 +3294,8 @@ function Game(id) {
 			}
 			
 			// PASSIVE: Assault - Ramp damage on same target
-			let finalDamage = damage * (stats.damageMult || 1.0);
+			// Only apply base damageMult if not already applied by caller (skipBaseDamageMult)
+			let finalDamage = skipBaseDamageMult ? damage : damage * (stats.damageMult || 1.0);
 			if (droneType.rampsTargetDamage) {
 				if (!assaultRampStacks.has(player.num)) {
 					assaultRampStacks.set(player.num, new Map());
@@ -3047,14 +3348,8 @@ function Game(id) {
 				const fromX = originOverride ? originOverride.x : drone.x;
 				const fromY = originOverride ? originOverride.y : drone.y;
 				const dist = Math.hypot(target.x - fromX, target.y - fromY);
-				const rangeCap = Math.max(1, drone.range * (player.sizeScale || 1.0));
-				const minDist = Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.minDistanceForBonus, rangeCap);
-				const maxDist = Math.max(minDist + 1, Math.min(UPGRADE_KNOBS.PRECISION_ROUNDS.maxDistanceBonus, rangeCap));
-				if (dist > minDist) {
-					const distFactor = Math.min(1, (dist - minDist) / (maxDist - minDist));
-					const prBonus = 1 + (distFactor * UPGRADE_KNOBS.PRECISION_ROUNDS.maxDamageBonus);
-					finalDamage *= prBonus;
-				}
+				const rangeCap = drone.range * (player.sizeScale || 1.0) * (stats.rangeMult || 1.0);
+				finalDamage *= getPrecisionRoundsBonus(dist, rangeCap);
 			}
 			
 			// Apply damage
@@ -3063,23 +3358,51 @@ function Game(id) {
 			markEnemyHit(target);
 			
 			// Life on hit (with internal cooldown)
-			if (lifeOnHitPct > 0 && player.lifeOnHitCooldown <= 0) {
+			if (lifeOnHitPct > 0 && (player.lifeOnHitCooldown || 0) <= 0) {
 				const healAmount = player.maxHp * lifeOnHitPct;
 				player.hp = Math.min(player.maxHp, player.hp + healAmount);
 				player.lifeOnHitCooldown = 0.1; // 0.1s cooldown
+				// Visual feedback for life steal
+				deltas.boostPickups = deltas.boostPickups || [];
+				deltas.boostPickups.push({
+					type: "lifesteal",
+					amount: Math.round(healAmount * 10) / 10,
+					x: target.x,
+					y: target.y,
+					playerNum: player.num
+				});
 			}
 			
 			// PASSIVE: Swarm - Apply bleed stacks
 			if (droneType.appliesBleed) {
-				if (!target.bleedStacks) target.bleedStacks = 0;
-				if (!target.bleedExpires) target.bleedExpires = 0;
-				
-				const bleedMaxStacks = droneType.bleedMaxStacks || 10;
-				const bleedDuration = droneType.bleedDuration || 2.0;
-				target.bleedStacks = Math.min(target.bleedStacks + 1, bleedMaxStacks);
-				target.bleedExpires = runTime + bleedDuration;
-				target.bleedDamagePerStack = droneType.bleedDamagePerStack || 1;
-				target.bleedOwnerId = player.num;
+				applyBleedStacks(target, player.num, {
+					bleedMaxStacks: droneType.bleedMaxStacks,
+					bleedDuration: droneType.bleedDuration,
+					bleedDamagePerStack: droneType.bleedDamagePerStack
+				});
+			}
+
+			// PASSIVE: Flame - Apply burn stacks
+			if (droneType.appliesBurn) {
+				applyBurnStacks(target, player.num, {
+					burnMaxStacks: droneType.burnMaxStacks,
+					burnDuration: droneType.burnDuration,
+					burnDamagePerStack: droneType.burnDamagePerStack
+				});
+			}
+
+			// UPGRADE: Bleeding Rounds - proc chance to apply bleed stacks
+			if (stats.hasBleedingRounds && !target.dead) {
+				const stacks = player.upgrades?.bleeding_rounds || 0;
+				const baseChance = UPGRADE_KNOBS.BLEEDING_ROUNDS.procChance ?? 0.15;
+				const procChance = baseChance * Math.max(1, stacks);
+				if (rollProcChance(procChance, baseProcCoefficient)) {
+					applyBleedStacks(target, player.num, {
+						damagePerStack: UPGRADE_KNOBS.BLEEDING_ROUNDS.damagePerStack,
+						durationSeconds: UPGRADE_KNOBS.BLEEDING_ROUNDS.durationSeconds,
+						maxBleedStacks: UPGRADE_KNOBS.BLEEDING_ROUNDS.maxBleedStacks
+					});
+				}
 			}
 			
 			if (DEBUG_HITSCAN_LOGS) {
@@ -3363,12 +3686,25 @@ function Game(id) {
 			if (p.client.close) p.client.close();
 		}
 		
+		// Expire boost orbs regardless of player state
+		const boostOrbLifetime = consts.BOOST_ORB_LIFETIME_SEC ?? 15;
+		for (let i = coins.length - 1; i >= 0; i--) {
+			const coin = coins[i];
+			if (coin.type !== "stamina" && coin.type !== "heal") continue;
+			if (coin.spawnTime == null) coin.spawnTime = runTime;
+			if (runTime - coin.spawnTime >= boostOrbLifetime) {
+				economyDeltas.coinRemovals.push(coin.id);
+				coins.splice(i, 1);
+			}
+		}
+		
 		// Process alive players economy (XP/Leveling)
 		for (const p of players) {
 			if (p.dead) continue;
 			
 			let changed = false;
-			const prevHp = p.hp;
+			// Use HP from start of frame to detect combat changes (life steal, vampire, etc.)
+			const prevHp = frameStartHp.get(p.num) ?? p.hp;
 			const prevMaxHp = p.maxHp;
 
 			// 0. Pull enemy XP orbs toward player when inside territory
@@ -3415,7 +3751,7 @@ function Game(id) {
 			const droneOrbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
 			const playerSizeScale = p.sizeScale || 1.0;
 			const pickupRadiusMult = (p.derivedStats && p.derivedStats.pickupRadiusMult) || 1.0;
-			const effectivePickupRadius = droneOrbitRadius * playerSizeScale * pickupRadiusMult;
+		const effectivePickupRadius = droneOrbitRadius * playerSizeScale * pickupRadiusMult;
 			for (let i = coins.length - 1; i >= 0; i--) {
 				const coin = coins[i];
 				const dist = Math.hypot(p.x - coin.x, p.y - coin.y);
@@ -3483,13 +3819,16 @@ function Game(id) {
 								coin.type = "heal";
 								// Update the value for heal scaling (base heal amount)
 								coin.value = consts.HEAL_BOOST_BASE || 20;
+								// Reset lifetime timer on conversion
+								coin.spawnTime = runTime;
 								// Notify client of the type change
 								economyDeltas.coinUpdates.push({
 									id: coin.id,
 									x: coin.x,
 									y: coin.y,
 									type: "heal",
-									value: coin.value
+									value: coin.value,
+									spawnTime: coin.spawnTime
 								});
 							}
 							// Note: we no longer auto-collect gold coins since they're now stamina boosts
@@ -3497,7 +3836,16 @@ function Game(id) {
 					}
 				}
 
-				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * (consts.TERRITORY_XP_PER_AREA || 0.00025);
+				const baseTerritoryXpPerArea = consts.TERRITORY_XP_PER_AREA || 0.00025;
+				const territoryXpScale = consts.TERRITORY_XP_SCALE ?? 1.0;
+				// Scale with sqrt of level ratio so it stays relevant but doesn't explode
+				const xpNeeded = getXpForLevel(p.level || 1);
+				const baseXpNeeded = getXpForLevel(1);
+				const levelRatio = baseXpNeeded > 0 ? (xpNeeded / baseXpNeeded) : 1;
+				const levelScale = Math.sqrt(levelRatio);
+				const territoryXpPerArea = baseTerritoryXpPerArea * levelScale * territoryXpScale;
+
+				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * territoryXpPerArea;
 				const xpGained = Math.floor(p._territoryCoinCarry);
 				if (xpGained > 0) {
 					p.xp += xpGained;
@@ -3574,7 +3922,8 @@ function Game(id) {
 					stamina: p.stamina,
 					maxStamina: p.maxStamina,
 					derivedStats: p.derivedStats || null,
-					upgrades: p.upgrades || {}
+					upgrades: p.upgrades || {},
+					getAwayEnemyCount: p.getAwayEnemyCount || 0
 				});
 				p._forceXpUpdate = false;
 			}

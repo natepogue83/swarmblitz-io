@@ -461,6 +461,9 @@ function processFrame(data) {
 				if (update.value !== undefined) {
 					coin.value = update.value;
 				}
+				if (update.spawnTime !== undefined) {
+					coin.spawnTime = update.spawnTime;
+				}
 			}
 		});
 	}
@@ -505,6 +508,10 @@ function processFrame(data) {
 				// Update drone count
 				if (update.droneCount !== undefined) {
 					p.droneCount = update.droneCount;
+				}
+				// Get Away enemy count for damage display
+				if (update.getAwayEnemyCount !== undefined) {
+					p.getAwayEnemyCount = update.getAwayEnemyCount;
 				}
 			}
 		});
@@ -579,7 +586,7 @@ function processFrame(data) {
 				target.lastHitTime = Date.now();
 			}
 			// Notify renderer of hitscan for visual effect (laser line)
-			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage, hit.attackType, hit.typeColor, hit.isCrit, hit.isChain, hit.isExplosion, hit.isHeatseekerDrone]);
+			invokeRenderer("hitscan", [hit.fromX, hit.fromY, hit.toX, hit.toY, hit.ownerId, hit.damage, hit.attackType, hit.typeColor, hit.isCrit, hit.isChain, hit.isExplosion, hit.isHeatseekerDrone, hit.isBleedTick, hit.isBurnTick]);
 		});
 	}
 
@@ -627,6 +634,7 @@ function processFrame(data) {
 				opacity: proj.opacity,
 				size: proj.size,
 				ownerId: proj.ownerId,
+				blackHolePull: proj.blackHolePull,
 				isPlayerShot: proj.isPlayerShot,
 				spawnTime: Date.now()
 			});

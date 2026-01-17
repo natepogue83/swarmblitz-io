@@ -4,6 +4,7 @@ import * as client from "../game-client";
 import { consts } from "../../config.js";
 import { ENEMY_TYPES, BOSS_TYPES } from "../core/enemy-knobs.js";
 import { UPGRADE_ICONS, UPGRADES_BY_ID, UPGRADES_BY_RARITY } from "../core/upgrades.js";
+import * as UPGRADE_KNOBS from "../core/upgrade-knobs.js";
 import * as SoundManager from "../sound-manager.js";
 
 // Drone rendering constants
@@ -34,6 +35,9 @@ const MIN_BAR_WIDTH = 65;
 const BAR_HEIGHT = 45;
 const BAR_WIDTH = 400;
 const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
+const DAMAGE_FLASH_DURATION = 220;
+const DAMAGE_NUMBER_MAX_PER_SEC = 4;
+const DAMAGE_NUMBER_MERGE_WINDOW = 250;
 
 // Territory outline constants
 const TERRITORY_OUTLINE_WIDTH = 2.5;
@@ -69,6 +73,10 @@ const impactEffects = [];
 const damageNumbers = [];
 let showDamageNumbers = true; // Setting toggle
 let showEnemyHealthBars = true; // Setting toggle for enemy HP bars
+
+// Track per-player HP to detect damage locally
+const playerHpTracker = new Map();
+const damageNumberBuckets = new Map();
 
 // Capture feedback effects
 const captureEffects = [];
@@ -564,9 +572,9 @@ function createDevConsole() {
 						<option value="assault" style="color:#FF6B6B">Assault - Balanced bullets</option>
 						<option value="rapid" style="color:#4ECDC4">Rapid - Fast hitscan laser</option>
 						<option value="sniper" style="color:#9B59B6">Sniper - Slow piercing railgun</option>
-						<option value="guardian" style="color:#3498DB">Guardian - Close-range plasma</option>
+						<option value="guardian" style="color:#3B2A5A">Black Hole - Singularity orb</option>
 						<option value="skirmisher" style="color:#F39C12">Skirmisher - Fast bullets</option>
-						<option value="support" style="color:#2ECC71">Support - Slowing pulse</option>
+						<option value="support" style="color:#FF7A1A">Flame - Burning stream</option>
 						<option value="swarm" style="color:#E74C3C">Swarm - Tiny rapid lasers</option>
 					</select>
 					<button id="dev-add-drone">Add Drone</button>
@@ -906,6 +914,8 @@ function reset() {
 	
 	// Clear damage numbers
 	damageNumbers.length = 0;
+	playerHpTracker.clear();
+	damageNumberBuckets.clear();
 	
 	// Clear capture effects
 	captureEffects.length = 0;
@@ -997,7 +1007,8 @@ function paintUIBar(ctx) {
 	const score = (userPortions * 100).toFixed(2) + "%";
 	const kills = client.getKills();
 	const level = user.level || 1;
-	const droneCount = user.droneCount || level;
+	const actualDroneCount = user.droneCount ?? level;
+	const displayDroneCount = Math.max(0, actualDroneCount - 1);
 
 	// === TOP LEFT: Score, Kills, Drones (fixed-width columns) ===
 	const centerY = BAR_HEIGHT / 2 + 6;
@@ -1027,11 +1038,11 @@ function paintUIBar(ctx) {
 	ctx.fillStyle = "white";
 	const droneInterval = consts.DRONE_LEVEL_INTERVAL || 5;
 	const maxDrones = consts.MAX_DRONES || 50;
-	const nextDroneLevel = 1 + (Math.max(1, droneCount) * droneInterval);
-	const droneSuffix = (droneCount >= maxDrones)
+	const nextDroneLevel = 1 + (Math.max(1, actualDroneCount) * droneInterval);
+	const droneSuffix = (actualDroneCount >= maxDrones)
 		? " (Max)"
-		: ` (Lv.${nextDroneLevel})`;
-	ctx.fillText(`${droneCount}${droneSuffix}`, dronesX + 70, centerY);
+		: ` (Unlocked Lv.${nextDroneLevel})`;
+	ctx.fillText(`${displayDroneCount}${droneSuffix}`, dronesX + 70, centerY);
 
 	// === TOP RIGHT: Run Timer ===
 	const stats = client.getEnemyStats();
@@ -1116,13 +1127,33 @@ function paintPlayerStats(ctx) {
 	const derivedStats = user.derivedStats || {};
 	const maxHp = user.maxHp ?? (consts.PLAYER_MAX_HP ?? 100);
 	const maxStamina = user.maxStamina ?? (consts.PLAYER_MAX_STAMINA ?? 100);
-	const damageMult = derivedStats.damageMult ?? 1.0;
-	const attackSpeedMult = derivedStats.attackSpeedMult ?? 1.0;
+	let damageMult = derivedStats.damageMult ?? 1.0;
+	let attackSpeedMult = derivedStats.attackSpeedMult ?? 1.0;
 	const critChance = derivedStats.critChance ?? 0;
 	const critMult = derivedStats.critMult ?? 2.0;
 	const moveSpeedMult = derivedStats.moveSpeedMult ?? 1.0;
 	const lifeStealPercent = derivedStats.lifeStealPercent ?? 0;
 	const extraProjectiles = derivedStats.extraProjectiles ?? 0;
+	const rangeMult = derivedStats.rangeMult ?? 1.0;
+	
+	// Apply Berserker display bonus when active (client-side view)
+	if (derivedStats.hasBerserker) {
+		const berserkerThreshold = UPGRADE_KNOBS.BERSERKER.hpThreshold;
+		if (user.hp <= maxHp * berserkerThreshold) {
+			attackSpeedMult *= (1 + UPGRADE_KNOBS.BERSERKER.attackSpeedBonus);
+			damageMult += UPGRADE_KNOBS.BERSERKER.damageBonus;
+		}
+	}
+
+	// Apply Territorial display bonus when active (client-side view)
+	if (derivedStats.hasTerritorial && isInOwnTerritory(user)) {
+		damageMult += UPGRADE_KNOBS.TERRITORIAL.damageBonus;
+	}
+	
+	// Apply Get Away display bonus when active (client-side view)
+	if (derivedStats.hasGetAway && user.getAwayEnemyCount > 0) {
+		damageMult += user.getAwayEnemyCount * UPGRADE_KNOBS.GET_AWAY.damagePerEnemy;
+	}
 	
 	// Stats to display with labels and formatted values
 	const stats = [
@@ -1139,6 +1170,11 @@ function paintPlayerStats(ctx) {
 	// Add multishot if player has any extra projectiles
 	if (extraProjectiles > 0) {
 		stats.push({ label: "Multishot", value: "+" + extraProjectiles, suffix: "", color: "#00CED1" });
+	}
+	
+	// Add range if player has any range upgrades
+	if (rangeMult > 1.0) {
+		stats.push({ label: "Range", value: Math.round(rangeMult * 100), suffix: "%", color: "#7FDBFF" });
 	}
 	
 	const startY = canvasHeight - (stats.length * rowHeight + 20);
@@ -1255,6 +1291,7 @@ function paintDebugOverlay(ctx) {
 	// Scaling debug info
 	const hpMult = stats.hpMult != null ? stats.hpMult : 1;
 	const dmgMult = stats.dmgMult != null ? stats.dmgMult : 1;
+	const territoryXpMult = stats.territoryXpMult != null ? stats.territoryXpMult : 1;
 	const timeSpeed = stats.timeSpeed != null ? stats.timeSpeed : 1;
 	const sampleSpawnHp = stats.sampleSpawnHp != null ? stats.sampleSpawnHp : 30;
 	
@@ -1267,6 +1304,7 @@ function paintDebugOverlay(ctx) {
 		`── Scaling ──`,
 		`HP Mult: ${hpMult.toFixed(2)}x`,
 		`DMG Mult: ${dmgMult.toFixed(2)}x`,
+		`Territory XP: ${territoryXpMult.toFixed(2)}x`,
 		`Basic spawn HP: ${sampleSpawnHp}`,
 		timeSpeed !== 1 ? `⏩ Time Speed: ${timeSpeed}x` : null
 	].filter(line => line !== null);
@@ -1297,6 +1335,15 @@ function paintDebugOverlay(ctx) {
 				ctx.fillStyle = "#FFD700"; // Yellow for medium
 			} else {
 				ctx.fillStyle = "#98FB98"; // Green for low
+			}
+		} else if (line.startsWith('Territory XP:')) {
+			const mult = parseFloat(line.split(':')[1]);
+			if (mult >= 2) {
+				ctx.fillStyle = "#98FB98"; // Green for good scaling
+			} else if (mult >= 1) {
+				ctx.fillStyle = "#FFD700"; // Yellow for baseline
+			} else {
+				ctx.fillStyle = "#FF6B6B"; // Red for low (diminished)
 			}
 		} else if (line.startsWith('⏩')) {
 			ctx.fillStyle = "#4ECDC4"; // Cyan for time speed
@@ -2309,7 +2356,7 @@ function drawDroneCard(ctx, choice, x, y, width, height, isHovered, keyNum) {
 		{ label: 'Damage', value: stats.damageMult || 1.0, good: true },
 		{ label: 'Fire Rate', value: 1 / (stats.cooldownMult || 1.0), good: true },
 		{ label: 'Range', value: stats.rangeMult || 1.0, good: true },
-		{ label: 'Orbit Speed', value: stats.orbitSpeedMult || 1.0, good: true }
+		{ label: 'Proc Rate', value: stats.procCoefficient || 1.0, good: true }
 	];
 	
 	for (let i = 0; i < statLabels.length; i++) {
@@ -2439,7 +2486,7 @@ function paint(ctx) {
 	// Apply screen shake
 	ctx.translate(screenShake.x, screenShake.y);
 
-	// Zoom based on territory size
+	// Zoom based on player size (scales with level)
 	ctx.scale(zoom, zoom);
 	ctx.translate(-offset[0] + consts.BORDER_WIDTH, -offset[1] + consts.BORDER_WIDTH);
 
@@ -2532,6 +2579,10 @@ function paint(ctx) {
 	// ===== LAYER 2: COINS =====
 	const coins = client.getCoins();
 	const t = Date.now() / 1000;
+	const stats = client.getEnemyStats();
+	const runTime = stats && stats.runTime != null ? stats.runTime : 0;
+	const boostOrbLifetime = consts.BOOST_ORB_LIFETIME_SEC ?? 15;
+	const boostOrbBlinkTime = consts.BOOST_ORB_BLINK_TIME ?? 3;
 	for (const coin of coins) {
 		if (coin.type === "boss") {
 			// Boss XP orb - large sparkling golden orb
@@ -2622,8 +2673,19 @@ function paint(ctx) {
 			// Stamina/Heal boost orb - yellow with plus sign and sparkles
 			const isHeal = coin.type === "heal";
 			const baseRadius = consts.COIN_RADIUS * 1.4;
-			const pulse = 0.9 + 0.1 * Math.sin(t * 4 + (coin.id || 0) * 0.5);
+			const timeRemaining = (coin.spawnTime != null)
+				? boostOrbLifetime - (runTime - coin.spawnTime)
+				: null;
+			const isBlinking = timeRemaining != null && timeRemaining <= boostOrbBlinkTime;
+			const blinkPulse = isBlinking ? (0.5 + 0.5 * Math.sin(t * 10 + (coin.id || 0) * 0.7)) : 1;
+			const pulse = (0.9 + 0.1 * Math.sin(t * 4 + (coin.id || 0) * 0.5))
+				* (isBlinking ? (0.85 + 0.2 * Math.abs(blinkPulse)) : 1);
 			const orbRadius = baseRadius * pulse;
+			
+			ctx.save();
+			if (isBlinking) {
+				ctx.globalAlpha *= 0.35 + 0.65 * Math.abs(blinkPulse);
+			}
 			
 			// Color: yellow for stamina, green-tinted for heal
 			const mainColor = isHeal ? "rgba(100, 255, 150, 0.9)" : "rgba(255, 230, 80, 0.95)";
@@ -2680,6 +2742,8 @@ function paint(ctx) {
 				ctx.arc(sx, sy, Math.max(1, sparkleSize), 0, Math.PI * 2);
 				ctx.fill();
 			}
+			
+			ctx.restore();
 		} else {
 			// Default gold coin (legacy fallback)
 			ctx.fillStyle = "#FFD700";
@@ -2922,6 +2986,8 @@ function paintDoubleBuff() {
 
 function update() {
 	updateSize();
+	trackPlayerDamage();
+	flushDamageNumberBuckets();
 	
 	// Update death animation effects
 	updateDeathEffects();
@@ -2967,16 +3033,17 @@ function update() {
 		}
 	}
 
-	// Zoom based on player size (zoom out as player grows)
-	// Zoom scales at HALF the rate of player size (50% size increase = 25% zoom out)
+	// Zoom based on player size (zoom out slightly as player grows)
+	// Zoom scales at a fraction of the player size increase rate
 	if (user) {
 		const sizeScale = user.sizeScale || 1.0;
 		const maxSizeScale = consts.PLAYER_SIZE_SCALE_MAX || 2.0;
 		// Clamp sizeScale to max (stop zooming at max size)
 		const clampedScale = Math.min(Math.max(sizeScale, 1.0), maxSizeScale);
-		// Effective scale for zoom is half the player's size increase
-		// e.g., if player is 50% bigger (1.5x), zoom as if 25% bigger (1.25x)
-		const effectiveScale = 1 + (clampedScale - 1) * 0.5;
+		// Effective scale for zoom is 20% of the player's size increase
+		// e.g., if player is 60% bigger (1.6x), zoom as if 12% bigger (1.12x) -> zoom ~0.89
+		const zoomRate = consts.ZOOM_SCALE_RATE || 0.2;
+		const effectiveScale = 1 + (clampedScale - 1) * zoomRate;
 		const targetZoom = 1 / effectiveScale;
 		// Smooth interpolation (but hard-clamp once max size is reached)
 		if (sizeScale >= maxSizeScale) {
@@ -2984,7 +3051,7 @@ function update() {
 		} else {
 			zoom = zoom + (targetZoom - zoom) * 0.05;
 		}
-		zoom = Math.max(0.3, Math.min(1, zoom));
+		zoom = Math.max(0.5, Math.min(1, zoom));
 		client.updateZoom(zoom);
 	}
 	
@@ -3778,7 +3845,9 @@ const ATTACK_DURATIONS = {
 	laser: 80,
 	railgun: 300,
 	plasma: 180,
-	pulse: 200
+	pulse: 200,
+	flame: 140,
+	burn: 140
 };
 
 // Parse hex color once and cache RGB values
@@ -4431,8 +4500,8 @@ function renderImpactEffects(ctx) {
 }
 
 // ===== DAMAGE NUMBERS (floating combat text) =====
-function spawnDamageNumber(x, y, damage, isCrit, typeColor, isHeal = false) {
-	if (!showDamageNumbers) return;
+function spawnDamageNumber(x, y, damage, isCrit, typeColor, isHeal = false, alwaysShow = false, isBleed = false) {
+	if (!showDamageNumbers && !alwaysShow) return;
 	
 	// Slight random offset to prevent stacking
 	const offsetX = (Math.random() - 0.5) * 20;
@@ -4441,14 +4510,16 @@ function spawnDamageNumber(x, y, damage, isCrit, typeColor, isHeal = false) {
 	damageNumbers.push({
 		x: x + offsetX,
 		y: y + offsetY,
-		damage: Math.round(damage),
+		damage: Math.round(damage * 10) / 10,
 		isCrit: isCrit,
 		typeColor: isHeal ? '#2ECC71' : (typeColor || '#FF6B6B'), // Green for healing
 		spawnTime: Date.now(),
 		duration: isCrit ? 1200 : 900, // Crits last longer
 		vy: -40 - (isCrit ? 20 : 0), // Float upward, crits float faster
 		scale: isCrit ? 1.4 : 1.0,
-		isHeal: isHeal // Track if this is a heal number
+		isHeal: isHeal, // Track if this is a heal number
+		isBleed: isBleed,
+		alwaysShow: alwaysShow
 	});
 	
 	// Cap damage numbers
@@ -4477,12 +4548,50 @@ function updateDamageNumbers() {
 	}
 }
 
-function renderDamageNumbers(ctx) {
-	if (!showDamageNumbers) return;
+function trackPlayerDamage() {
+	const players = client.getPlayers();
+	const activeIds = new Set();
 	
+	for (const p of players) {
+		activeIds.add(p.num);
+		if (p.hp === undefined || p.hp === null) continue;
+		
+		const prevHp = playerHpTracker.get(p.num);
+		if (prevHp !== undefined && p.hp < prevHp) {
+			const dmg = prevHp - p.hp;
+			if (dmg > 0) {
+				playerDamaged(p.num, dmg, false);
+			}
+		}
+		playerHpTracker.set(p.num, p.hp);
+	}
+	
+	for (const id of playerHpTracker.keys()) {
+		if (!activeIds.has(id)) {
+			playerHpTracker.delete(id);
+		}
+	}
+}
+
+function drawBleedIcon(ctx, x, y, size, color, alpha) {
+	const radius = size * 0.45;
+	const tipY = y + size * 0.6;
+	ctx.save();
+	ctx.fillStyle = color;
+	ctx.globalAlpha = alpha;
+	ctx.beginPath();
+	ctx.arc(x, y - size * 0.1, radius, Math.PI * 0.15, Math.PI * 0.85, false);
+	ctx.lineTo(x, tipY);
+	ctx.closePath();
+	ctx.fill();
+	ctx.restore();
+}
+
+function renderDamageNumbers(ctx) {
 	const now = Date.now();
 	
 	for (const dmgNum of damageNumbers) {
+		if (!showDamageNumbers && !dmgNum.alwaysShow) continue;
 		const elapsed = now - dmgNum.spawnTime;
 		const progress = elapsed / dmgNum.duration;
 		const life = 1 - progress;
@@ -4503,11 +4612,13 @@ function renderDamageNumbers(ctx) {
 		
 		const fontSize = Math.round(18 * displayScale);
 		// Add "+" prefix for healing numbers
-		const text = dmgNum.isHeal ? '+' + dmgNum.damage.toString() : dmgNum.damage.toString();
+		const textValue = dmgNum.damage.toFixed(1);
+		const text = dmgNum.isHeal ? '+' + textValue : textValue;
 		
 		// Parse color for glow
 		const rgb = parseHexColor(dmgNum.typeColor);
 		
+		let finalText = text;
 		if (dmgNum.isHeal) {
 			// Healing number styling - green with heart-like effect
 			ctx.font = `bold ${fontSize}px Changa`;
@@ -4543,7 +4654,8 @@ function renderDamageNumbers(ctx) {
 			
 			// Gold fill
 			ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
-			ctx.fillText(text + '!', dmgNum.x, dmgNum.y);
+			finalText = text + '!';
+			ctx.fillText(finalText, dmgNum.x, dmgNum.y);
 		} else {
 			// Normal damage styling
 			ctx.font = `bold ${fontSize}px Changa`;
@@ -4566,9 +4678,100 @@ function renderDamageNumbers(ctx) {
 			ctx.fillStyle = `rgba(${Math.round(tintR)}, ${Math.round(tintG)}, ${Math.round(tintB)}, ${alpha})`;
 			ctx.fillText(text, dmgNum.x, dmgNum.y);
 		}
+
+		if (dmgNum.isBleed) {
+			const textWidth = ctx.measureText(finalText).width;
+			const iconSize = Math.max(6, fontSize * 0.35);
+			const iconX = dmgNum.x + textWidth / 2 + iconSize * 0.6;
+			const iconY = dmgNum.y - iconSize * 0.1;
+			drawBleedIcon(ctx, iconX, iconY, iconSize, dmgNum.typeColor || '#8B0000', alpha);
+		}
 		
 		ctx.restore();
 	}
+}
+
+function spawnPlayerDamageNumber(player, damage, isCrit) {
+	const isLocalPlayer = client.getUser && player === client.getUser();
+	const sizeScale = player.sizeScale || 1.0;
+	const scaledRadius = PLAYER_RADIUS * sizeScale;
+	const sizeMult = isLocalPlayer ? 1.2 : 1.0;
+	const barWidth = scaledRadius * 2.5 * sizeMult;
+	const barHeight = 6 * sizeScale * sizeMult;
+	const barX = player.x - barWidth / 2;
+	const barY = player.y + scaledRadius + 8;
+	const hpRatio = Math.max(0, Math.min(1, (player.hp || 0) / (player.maxHp || 1)));
+	const numberX = barX + (barWidth * hpRatio);
+	
+	let numberY = barY + barHeight + 10;
+	if (isLocalPlayer && player.stamina !== undefined) {
+		const staminaBarHeight = 4 * sizeScale * sizeMult;
+		const staminaBarY = barY + barHeight + 2;
+		numberY = staminaBarY + staminaBarHeight + 10;
+	}
+	
+	spawnDamageNumber(numberX, numberY, damage, isCrit, '#FF4444', false, true);
+}
+
+function flushDamageNumberBuckets() {
+	const now = Date.now();
+	const minInterval = 1000 / DAMAGE_NUMBER_MAX_PER_SEC;
+	const players = client.getPlayers();
+	const playerById = new Map(players.map(p => [p.num, p]));
+	
+	for (const [playerNum, bucket] of damageNumberBuckets.entries()) {
+		const player = playerById.get(playerNum);
+		if (!player) {
+			damageNumberBuckets.delete(playerNum);
+			continue;
+		}
+		
+		const shouldFlush = bucket.pending > 0
+			&& (now - bucket.lastDamage) >= DAMAGE_NUMBER_MERGE_WINDOW
+			&& (now - bucket.lastSpawn) >= minInterval;
+		
+		if (shouldFlush) {
+			const amount = bucket.pending;
+			const isCrit = bucket.isCrit;
+			bucket.pending = 0;
+			bucket.isCrit = false;
+			bucket.lastSpawn = now;
+			spawnPlayerDamageNumber(player, amount, isCrit);
+		}
+	}
+}
+
+// Player damage visual handler (red flash + damage number)
+export function playerDamaged(playerNum, damage, isCrit = false) {
+	const players = client.getPlayers();
+	const player = players.find(p => p.num === playerNum);
+	if (!player || damage <= 0) return;
+	
+	const now = Date.now();
+	player.damageFlashDuration = DAMAGE_FLASH_DURATION;
+	player.damageFlashUntil = Math.max(player.damageFlashUntil || 0, now + DAMAGE_FLASH_DURATION);
+	
+	const bucket = damageNumberBuckets.get(player.num) || {
+		pending: 0,
+		lastSpawn: 0,
+		lastDamage: 0,
+		isCrit: false
+	};
+	bucket.pending += damage;
+	bucket.lastDamage = now;
+	bucket.isCrit = bucket.isCrit || isCrit;
+	
+	const minInterval = 1000 / DAMAGE_NUMBER_MAX_PER_SEC;
+	if (now - bucket.lastSpawn >= minInterval) {
+		const amount = bucket.pending;
+		const crit = bucket.isCrit;
+		bucket.pending = 0;
+		bucket.isCrit = false;
+		bucket.lastSpawn = now;
+		spawnPlayerDamageNumber(player, amount, crit);
+	}
+	
+	damageNumberBuckets.set(player.num, bucket);
 }
 
 // ===== PROJECTILE RENDERING (actual traveling projectiles from server) =====
@@ -4600,10 +4803,17 @@ function renderProjectiles(ctx) {
 		
 		switch (attackType) {
 			case 'plasma':
-				renderPlasmaProjectile(ctx, proj.x, proj.y, size, rgba, rgbaLight);
+				if (proj.blackHolePull) {
+					renderBlackHoleProjectile(ctx, proj.x, proj.y, size, rgba, rgbaLight, proj.spawnTime);
+				} else {
+					renderPlasmaProjectile(ctx, proj.x, proj.y, size, rgba, rgbaLight);
+				}
 				break;
 			case 'railgun':
 				renderRailgunProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight);
+				break;
+			case 'flame':
+				renderFlameProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight, proj.spawnTime);
 				break;
 			case 'bullet':
 			default:
@@ -4646,6 +4856,70 @@ function renderBulletProjectile(ctx, x, y, size, angle, rgba, rgbaLight) {
 	ctx.fill();
 	
 	ctx.shadowBlur = 0;
+}
+
+// Render a flame projectile - layered fire with flicker and ember trail
+function renderFlameProjectile(ctx, x, y, size, angle, rgba, rgbaLight, spawnTime) {
+	const flicker = 0.85 + 0.15 * Math.sin(Date.now() / 60 + x * 0.03);
+	const length = size * 2.6 * flicker;
+	const width = size * 1.2 * flicker;
+	const ageMs = spawnTime ? (Date.now() - spawnTime) : 0;
+	const fade = Math.max(0, 1 - (ageMs / 450));
+	
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(angle);
+	
+	// Outer glow sheath
+	ctx.shadowBlur = 20;
+	ctx.shadowColor = rgba(0.9);
+	ctx.fillStyle = rgba(0.25);
+	ctx.beginPath();
+	ctx.ellipse(0, 0, length * 0.7, width * 0.55, 0, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Core flame gradient
+	const grad = ctx.createLinearGradient(-length * 0.7, 0, length * 0.7, 0);
+	grad.addColorStop(0, rgbaLight(0.9));
+	grad.addColorStop(0.45, rgba(0.7));
+	grad.addColorStop(1, rgba(0.05));
+	ctx.fillStyle = grad;
+	ctx.beginPath();
+	ctx.ellipse(0, 0, length * 0.55, width * 0.45, 0, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Ember trail cone
+	ctx.shadowBlur = 0;
+	ctx.fillStyle = rgba(0.35 * fade);
+	ctx.beginPath();
+	ctx.moveTo(-length * 0.15, -width * 0.25);
+	ctx.quadraticCurveTo(-length * 0.9, 0, -length * 0.15, width * 0.25);
+	ctx.closePath();
+	ctx.fill();
+	
+	// Smoke wisps as flame fades
+	if (fade < 0.95) {
+		const rise = Math.min(1, ageMs / 450);
+		const smokeAlpha = Math.max(0, (1 - fade) * 0.65);
+		for (let i = 0; i < 5; i++) {
+			const t = i / 4;
+			const sx = -length * (0.45 + 0.25 * t);
+			const sy = (-width * 0.45 * rise) + (Math.sin(Date.now() / 140 + i) * 0.12) * width;
+			const sSize = width * (0.45 + 0.45 * t);
+			ctx.fillStyle = `rgba(70, 70, 80, ${smokeAlpha * (1 - t)})`;
+			ctx.beginPath();
+			ctx.ellipse(sx, sy, sSize, sSize * 0.8, 0, 0, Math.PI * 2);
+			ctx.fill();
+		}
+	}
+	
+	// Inner hot core
+	ctx.fillStyle = 'rgba(255,230,190,0.8)';
+	ctx.beginPath();
+	ctx.ellipse(-length * 0.1, 0, length * 0.2, width * 0.18, 0, 0, Math.PI * 2);
+	ctx.fill();
+	
+	ctx.restore();
 }
 
 // Render a plasma projectile - HEXAGON shape
@@ -4693,6 +4967,48 @@ function renderPlasmaProjectile(ctx, x, y, size, rgba, rgbaLight) {
 	ctx.fill();
 	
 	ctx.shadowBlur = 0;
+}
+
+// Render a black hole projectile - dark core with accretion ring
+function renderBlackHoleProjectile(ctx, x, y, size, rgba, rgbaLight, spawnTime) {
+	const t = (Date.now() - (spawnTime || Date.now())) / 1000;
+	const pulse = 0.85 + 0.15 * Math.sin(t * 4);
+	const coreSize = size * 0.65 * pulse;
+	const ringSize = size * 1.5 * (0.9 + 0.1 * Math.sin(t * 2.2));
+	const rotation = t * 1.8;
+	
+	// Outer glow
+	ctx.shadowBlur = 18;
+	ctx.shadowColor = rgba(0.4);
+	ctx.fillStyle = rgba(0.25);
+	ctx.beginPath();
+	ctx.arc(x, y, ringSize * 1.05, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Accretion ring
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(rotation);
+	ctx.strokeStyle = rgbaLight(0.6);
+	ctx.lineWidth = Math.max(2, size * 0.25);
+	ctx.beginPath();
+	ctx.ellipse(0, 0, ringSize, ringSize * 0.55, 0, 0.2, Math.PI * 1.4);
+	ctx.stroke();
+	ctx.restore();
+	
+	// Dark core
+	ctx.shadowBlur = 0;
+	ctx.fillStyle = 'rgba(10, 10, 15, 0.95)';
+	ctx.beginPath();
+	ctx.arc(x, y, coreSize, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Inner event horizon glow
+	ctx.strokeStyle = 'rgba(120, 140, 255, 0.35)';
+	ctx.lineWidth = Math.max(1, size * 0.1);
+	ctx.beginPath();
+	ctx.arc(x, y, coreSize * 0.75, 0, Math.PI * 2);
+	ctx.stroke();
 }
 
 // Render a railgun projectile - DIAMOND shape (elongated)
@@ -5085,6 +5401,12 @@ function renderDrone(ctx, drone, ownerPlayer, isUserDrone) {
 	const droneTypeColor = drone.typeColor || '#FF6B6B';
 	const typeId = drone.typeId || 'assault';
 	const time = Date.now();
+	// Flame drone plume aligns with orbit direction when possible
+	let engineAngle = null;
+	if (ownerPlayer && ownerPlayer.x != null && ownerPlayer.y != null) {
+		const orbitAngle = Math.atan2(y - ownerPlayer.y, x - ownerPlayer.x);
+		engineAngle = orbitAngle - Math.PI / 2;
+	}
 	
 	ctx.save();
 	
@@ -5116,7 +5438,7 @@ function renderDrone(ctx, drone, ownerPlayer, isUserDrone) {
 				renderSkirmisherDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
 				break;
 			case 'support':
-				renderSupportDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
+				renderSupportDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null, engineAngle);
 				break;
 			case 'swarm':
 				renderSwarmDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
@@ -5295,52 +5617,52 @@ function renderSniperDrone(ctx, x, y, radius, color, time, isTargeting) {
 	}
 }
 
-// GUARDIAN - Bulky shield/hexagonal armored look
+// BLACK HOLE - Dark core with accretion ring
 function renderGuardianDrone(ctx, x, y, radius, color, time, isTargeting) {
-	const r = radius * 1.1; // Slightly larger
+	const r = radius * 1.15;
+	const pulse = 0.85 + 0.15 * Math.sin(time / 120);
+	const rotation = time / 220;
 	
-	// Outer shield ring
-	ctx.strokeStyle = hexToRgba(color, 0.5);
-	ctx.lineWidth = 3;
+	// Soft outer glow
+	ctx.shadowBlur = 16;
+	ctx.shadowColor = hexToRgba(color, 0.6);
+	ctx.fillStyle = hexToRgba(color, 0.2);
 	ctx.beginPath();
-	ctx.arc(x, y, r, 0, Math.PI * 2);
-	ctx.stroke();
-	
-	// Main octagonal body
-	ctx.fillStyle = hexToRgba(color, 0.9);
-	ctx.beginPath();
-	for (let i = 0; i < 8; i++) {
-		const angle = (i / 8) * Math.PI * 2 - Math.PI / 8;
-		const px = x + Math.cos(angle) * radius * 0.85;
-		const py = y + Math.sin(angle) * radius * 0.85;
-		if (i === 0) ctx.moveTo(px, py);
-		else ctx.lineTo(px, py);
-	}
-	ctx.closePath();
+	ctx.arc(x, y, r * 1.1, 0, Math.PI * 2);
 	ctx.fill();
 	
-	ctx.strokeStyle = shadeColor(color, -40);
+	// Accretion ring
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(rotation);
+	ctx.strokeStyle = hexToRgba('#8FB7FF', 0.55);
 	ctx.lineWidth = 2.5;
-	ctx.stroke();
-	
-	// Inner shield emblem
-	ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
 	ctx.beginPath();
-	ctx.moveTo(x, y - radius * 0.4);
-	ctx.lineTo(x + radius * 0.35, y);
-	ctx.lineTo(x + radius * 0.25, y + radius * 0.4);
-	ctx.lineTo(x - radius * 0.25, y + radius * 0.4);
-	ctx.lineTo(x - radius * 0.35, y);
-	ctx.closePath();
+	ctx.ellipse(0, 0, r * 0.95, r * 0.45, 0, 0.3, Math.PI * 1.6);
+	ctx.stroke();
+	ctx.restore();
+	
+	// Dark core
+	ctx.shadowBlur = 0;
+	ctx.fillStyle = 'rgba(8, 8, 12, 0.95)';
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.55 * pulse, 0, Math.PI * 2);
 	ctx.fill();
 	
-	// Pulse effect when targeting
+	// Inner glow ring
+	ctx.strokeStyle = 'rgba(120, 140, 255, 0.35)';
+	ctx.lineWidth = 2;
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.38 * pulse, 0, Math.PI * 2);
+	ctx.stroke();
+	
+	// Targeting pulse
 	if (isTargeting) {
-		const pulse = 0.3 + 0.3 * Math.sin(time / 150);
-		ctx.strokeStyle = `rgba(255, 255, 255, ${pulse})`;
+		const halo = 0.35 + 0.35 * Math.sin(time / 140);
+		ctx.strokeStyle = `rgba(140, 170, 255, ${halo})`;
 		ctx.lineWidth = 2;
 		ctx.beginPath();
-		ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+		ctx.arc(x, y, r * 1.15, 0, Math.PI * 2);
 		ctx.stroke();
 	}
 }
@@ -5392,58 +5714,67 @@ function renderSkirmisherDrone(ctx, x, y, radius, color, time, isTargeting) {
 	}
 }
 
-// SUPPORT - Satellite dish / radar design with wide coverage visual
-function renderSupportDrone(ctx, x, y, radius, color, time, isTargeting) {
-	const r = radius * 1.15; // Wider
+// FLAME - Larger burner core with animated plume
+function renderSupportDrone(ctx, x, y, radius, color, time, isTargeting, engineAngle) {
+	const r = radius * 1.1;
+	const plumeLen = radius * 1.65;
+	const wobble = Math.sin(time / 170) * 0.18;
+	const baseAngle = (engineAngle != null ? engineAngle : Math.PI / 2) - (Math.PI * (75 / 180));
+	const angle = wobble + baseAngle;
 	
-	// Radar sweep effect
-	const sweepAngle = (time / 800) % (Math.PI * 2);
-	ctx.fillStyle = hexToRgba(color, 0.2);
+	// Burner core
+	ctx.fillStyle = hexToRgba(color, 0.85);
 	ctx.beginPath();
-	ctx.moveTo(x, y);
-	ctx.arc(x, y, r, sweepAngle, sweepAngle + Math.PI / 3);
+	ctx.arc(x, y, r * 0.5, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.strokeStyle = shadeColor(color, -30);
+	ctx.lineWidth = 2;
+	ctx.stroke();
+
+	// Inner nozzle ring
+	ctx.fillStyle = hexToRgba(shadeColor(color, 30), 0.9);
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.22, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.strokeStyle = shadeColor(color, -50);
+	ctx.lineWidth = 1.5;
+	ctx.stroke();
+	
+	// Flame plume
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(angle);
+	const grad = ctx.createLinearGradient(0, -plumeLen * 0.2, 0, plumeLen);
+	grad.addColorStop(0, 'rgba(200,235,255,0.95)');
+	grad.addColorStop(0.55, 'rgba(90,170,255,0.75)');
+	grad.addColorStop(1, 'rgba(40,120,255,0.1)');
+	ctx.fillStyle = grad;
+	ctx.shadowBlur = 18;
+	ctx.shadowColor = 'rgba(80,150,255,0.8)';
+	ctx.beginPath();
+	ctx.moveTo(0, -r * 0.25);
+	ctx.quadraticCurveTo(plumeLen * 0.4, plumeLen * 0.3, 0, plumeLen);
+	ctx.quadraticCurveTo(-plumeLen * 0.4, plumeLen * 0.3, 0, -r * 0.25);
 	ctx.closePath();
 	ctx.fill();
 	
-	// Concentric rings
-	ctx.strokeStyle = hexToRgba(color, 0.4);
-	ctx.lineWidth = 1;
+	// Inner hot tongue
+	ctx.shadowBlur = 0;
+	ctx.fillStyle = 'rgba(180,220,255,0.75)';
 	ctx.beginPath();
-	ctx.arc(x, y, r * 0.9, 0, Math.PI * 2);
-	ctx.stroke();
-	ctx.beginPath();
-	ctx.arc(x, y, r * 0.6, 0, Math.PI * 2);
-	ctx.stroke();
-	
-	// Main dish body (half circle facing up)
-	ctx.fillStyle = hexToRgba(color, 0.9);
-	ctx.beginPath();
-	ctx.arc(x, y, radius * 0.7, Math.PI, 0);
-	ctx.lineTo(x + radius * 0.7, y + radius * 0.3);
-	ctx.quadraticCurveTo(x, y + radius * 0.5, x - radius * 0.7, y + radius * 0.3);
+	ctx.moveTo(0, -r * 0.18);
+	ctx.quadraticCurveTo(plumeLen * 0.2, plumeLen * 0.35, 0, plumeLen * 0.75);
+	ctx.quadraticCurveTo(-plumeLen * 0.2, plumeLen * 0.35, 0, -r * 0.18);
 	ctx.closePath();
 	ctx.fill();
+	ctx.restore();
 	
-	ctx.strokeStyle = shadeColor(color, -40);
-	ctx.lineWidth = 2;
-	ctx.stroke();
-	
-	// Antenna
-	ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
-	ctx.lineWidth = 2;
-	ctx.beginPath();
-	ctx.moveTo(x, y - radius * 0.2);
-	ctx.lineTo(x, y - radius * 0.6);
-	ctx.stroke();
-	
-	// Signal pulse when targeting
+	// Targeting flare
 	if (isTargeting) {
-		const pulse = (time / 400) % 1;
-		ctx.strokeStyle = `rgba(255, 255, 255, ${1 - pulse})`;
-		ctx.lineWidth = 2;
+		ctx.fillStyle = 'rgba(255,255,255,0.6)';
 		ctx.beginPath();
-		ctx.arc(x, y, r * pulse, 0, Math.PI * 2);
-		ctx.stroke();
+		ctx.arc(x, y, r * 0.2, 0, Math.PI * 2);
+		ctx.fill();
 	}
 }
 
@@ -5520,9 +5851,10 @@ function renderAllDrones(ctx) {
 
 function renderDroneRangeCircle(ctx, player) {
 	const baseRange = consts.DRONE_RANGE || 200;
-	// Scale range with player size
+	// Scale range with player size and range upgrades
 	const sizeScale = player.sizeScale || 1.0;
-	const range = baseRange * sizeScale;
+	const rangeMult = (player.derivedStats && player.derivedStats.rangeMult) || 1.0;
+	const range = baseRange * sizeScale * rangeMult;
 	
 	ctx.save();
 	
@@ -5888,21 +6220,25 @@ export function healPackPickup(pack, healAmount) {
 	}
 }
 
-// Boost pickup handler (stamina/heal boost orbs)
+// Boost pickup handler (stamina/heal boost orbs and heal feedback)
 export function boostPickup(type, amount, x, y) {
-	// Play pickup sound
-	if (soundInitialized) {
+	// Play pickup sound (skip for lifesteal/vampire to reduce noise)
+	if (soundInitialized && type !== "lifesteal" && type !== "vampire") {
 		SoundManager.playCoinPickup();
 	}
 	
 	// Show floating number with appropriate color
-	// Yellow for stamina, green for heal
-	const isHeal = type === "heal";
-	if (isHeal) {
+	if (type === "heal") {
 		// Green heal number
 		addDamageNumber(x, y - 15, amount, false, true);
+	} else if (type === "lifesteal") {
+		// Pink lifesteal number (on enemy hit)
+		spawnDamageNumber(x, y - 15, "+" + amount, false, '#FF69B4', true);
+	} else if (type === "vampire") {
+		// Dark red vampire heal number (on enemy kill)
+		spawnDamageNumber(x, y - 15, "+" + amount, false, '#8B0000', true);
 	} else {
-		// Yellow stamina number (use custom color via spawnDamageNumber)
+		// Yellow stamina number
 		spawnDamageNumber(x, y - 15, amount, false, '#FFD700', false);
 	}
 }
@@ -5949,7 +6285,10 @@ export function playerWasKilled(killerName, killType) {
 }
 
 // Hitscan visual effect handler (called from game-client)
-export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typeColor, isCrit, isChain, isExplosion) {
+export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typeColor, isCrit, isChain, isExplosion, isBleedTick, isBurnTick) {
+	const isBleed = !!isBleedTick || attackType === 'bleed';
+	const isBurn = !!isBurnTick || attackType === 'burn';
+	const damageColor = isBurn ? (typeColor || '#FF7A1A') : typeColor;
 	// Track damage for DPS calculation (only for local player)
 	if (user && ownerId === user.num && damage > 0) {
 		const now = performance.now();
@@ -5975,14 +6314,18 @@ export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typ
 	if (isExplosion) {
 		spawnExplosionEffect(toX, toY);
 		// Show damage number for explosion hits
-		spawnDamageNumber(toX, toY, damage, isCrit, typeColor);
+		if (damage > 0) {
+			spawnDamageNumber(toX, toY, damage, isCrit, damageColor, false, false, isBleed);
+		}
 		return;
 	}
 	// Chain lightning always shows the animated lightning bolt effect
 	if (isChain) {
 		spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage, attackType, typeColor, true);
 		// Spawn damage number at hit location
-		spawnDamageNumber(toX, toY, damage, isCrit, typeColor);
+		if (damage > 0) {
+			spawnDamageNumber(toX, toY, damage, isCrit, damageColor, false, false, isBleed);
+		}
 		// Chain lightning uses laser impact sound
 		if (soundInitialized && user) {
 			const dx = toX - user.x;
@@ -6007,7 +6350,9 @@ export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typ
 	}
 	
 	// Spawn damage number at hit location
-	spawnDamageNumber(toX, toY, damage, isCrit, typeColor);
+	if (damage > 0) {
+		spawnDamageNumber(toX, toY, damage, isCrit, damageColor, false, false, isBleed);
+	}
 	
 	// Play per-attack-type sounds
 	if (soundInitialized && user) {
