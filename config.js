@@ -41,7 +41,7 @@ export const consts = {
 	"BOOST_SPAWN_RADIUS": 600,          // Spawn distance from player
 	"BOOST_SPAWN_MIN_DIST": 200,        // Minimum spawn distance from player
 	"BOOST_SPAWN_INTERVAL_SEC": 2.0,    // Seconds between boost orb spawn attempts
-	"MAX_BOOST_ORBS": 40               // Maximum stamina/heal boosts at once
+	"MAX_BOOST_ORBS": 40,               // Maximum stamina/heal boosts at once
 	
 	// ===== XP VALUES (Easy tuning knobs) =====
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)
@@ -62,7 +62,7 @@ export const consts = {
 	
 	// ===== XP / LEVELING SYSTEM =====
 	"XP_BASE_PER_LEVEL": 35,         // Base XP needed to level up (level 1 → 2)
-	"XP_GROWTH_RATE": 1.18,          // Exponential growth rate per level
+	"XP_GROWTH_RATE": 1.13,          // Exponential growth rate per level
 	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
 	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (5%)

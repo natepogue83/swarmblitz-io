@@ -40,7 +40,7 @@ export const ENEMY_TYPES = {
 	tank: {
 		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
 		radius: 18,
-		maxHp: 120,
+		maxHp: 110,
 		speed: 55,           // Very slow
 		contactDamage: 20,
 		xpDropValue: 10,
@@ -159,8 +159,8 @@ export const ENEMY_SCALING = {
 	hp: {
 		enabled: true,
 		startTime: 0,
-		perMinute: 0.64,
-		exponent: 1.6,
+		perMinute: 0.55,
+		exponent: 1.55,
 		maxMult: 9001.0
 	},
 	damage: {
