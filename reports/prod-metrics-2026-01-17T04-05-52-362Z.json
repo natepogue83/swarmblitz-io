@@ -1,0 +1,31 @@
+{
+  "startTime": "2026-01-17T04:05:52.358Z",
+  "environment": "production",
+  "config": {
+    "botLevels": [
+      50
+    ],
+    "durationPerLevelMs": 60000,
+    "warmupMs": 60000,
+    "wsUrl": "wss://swarmblitz.dev-1dd.workers.dev/room/loadtest",
+    "workerName": "swarmblitz"
+  },
+  "levels": [
+    {
+      "botCount": 50,
+      "startTime": "2026-01-17T04:05:57.366Z",
+      "metrics": [],
+      "errors": [
+        "Connection failed: Unexpected server response: 500"
+      ],
+      "aggregate": null
+    }
+  ],
+  "endTime": "2026-01-17T04:06:25.853Z",
+  "status": "complete",
+  "summary": {
+    "levelsCompleted": 0,
+    "totalSamples": 0,
+    "scalingCurve": []
+  }
+}

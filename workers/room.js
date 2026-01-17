@@ -43,7 +43,7 @@ const EMPTY_ROOM_CLEANUP_MS = 60000; // 60 seconds
 
 // Bot configuration
 const BOT_COUNT = config.bots || 10;
-const BOT_RESPAWN_DELAY = 3000; // 3 seconds before respawning dead bot
+const BOT_RESPAWN_DELAY = 0; // Instant respawn for stable bot counts during load testing
 
 // AOI radius for visibility
 const AOI_RADIUS = 800;
@@ -54,6 +54,13 @@ const METRICS_LOG_INTERVAL_MS = 60000;
 /**
  * Metrics Logger for production monitoring
  * Logs JSON lines once per minute with comprehensive stats
+ * 
+ * Phase timing breakdown for capacity planning:
+ * - botMs: Bot AI updates
+ * - simMs: World simulation tick
+ * - aoiMs: AOI queries (getPlayersInAOI, getCoinsInAOI)
+ * - buildMs: Packet building (serialize)
+ * - sendMs: WebSocket send calls
  */
 class MetricsLogger {
   constructor(roomId) {
@@ -68,10 +75,23 @@ class MetricsLogger {
     this.outboundBytes = 0;
     this.doRequests = 0;
     
-    // Tick timing stats
+    // Tick timing stats - total tick time
     this.tickTimes = []; // Array of tick CPU times in ms
     this.simTickCount = 0;
     this.netTickCount = 0;
+    
+    // Phase-level timing for capacity planning (ms per tick)
+    // These help compute marginal cost per player
+    this.phaseTimes = {
+      bot: [],    // Bot AI update time
+      sim: [],    // World.tick() simulation time
+      aoi: [],    // AOI query time (getPlayersInAOI, getCoinsInAOI)
+      build: [],  // Packet building/serialization time
+      send: [],   // WebSocket send time
+    };
+    
+    // Player count samples (for regression analysis)
+    this.playerCountSamples = []; // { players, bots, tickMs, phases }
     
     // Message type byte tracking
     this.messageTypeSizes = {
@@ -103,11 +123,35 @@ class MetricsLogger {
     category.totalBytes += bytes;
   }
   
-  // Track tick CPU time
+  // Track tick CPU time (legacy - total only)
   trackTick(cpuTimeMs, isSim, isNet) {
     this.tickTimes.push(cpuTimeMs);
     if (isSim) this.simTickCount++;
     if (isNet) this.netTickCount++;
+  }
+  
+  // Track detailed tick with phase breakdown
+  trackTickDetailed(totalMs, phases, playerCount, botCount) {
+    this.tickTimes.push(totalMs);
+    this.simTickCount++;
+    
+    // Track phase times
+    if (phases.bot !== undefined) this.phaseTimes.bot.push(phases.bot);
+    if (phases.sim !== undefined) this.phaseTimes.sim.push(phases.sim);
+    if (phases.aoi !== undefined) this.phaseTimes.aoi.push(phases.aoi);
+    if (phases.build !== undefined) this.phaseTimes.build.push(phases.build);
+    if (phases.send !== undefined) this.phaseTimes.send.push(phases.send);
+    
+    // Sample for regression (every 10th tick to avoid bloat)
+    if (this.playerCountSamples.length < 360) { // Max 6 samples/sec for 1 min
+      this.playerCountSamples.push({
+        players: playerCount,
+        bots: botCount,
+        total: playerCount + botCount,
+        tickMs: totalMs,
+        phases,
+      });
+    }
   }
   
   // Track DO request
@@ -122,15 +166,8 @@ class MetricsLogger {
     return sortedArr[Math.max(0, idx)];
   }
   
-  // Generate and log metrics (returns true if logged)
-  maybeLog(activeConnections, activePlayers, botCount) {
-    const now = Date.now();
-    const elapsed = now - this.lastLogTime;
-    
-    if (elapsed < METRICS_LOG_INTERVAL_MS) {
-      return false;
-    }
-    
+  buildMetrics(activeConnections, activePlayers, botCount, now = Date.now()) {
+    const elapsed = Math.max(1, now - this.lastLogTime);
     const elapsedSec = elapsed / 1000;
     const elapsedMin = elapsed / 60000;
     const uptimeSec = (now - this.startTime) / 1000;
@@ -167,8 +204,41 @@ class MetricsLogger {
       }
     }
     
+    // Calculate phase timing averages
+    const phaseAvg = {};
+    const phaseP95 = {};
+    for (const [phase, times] of Object.entries(this.phaseTimes)) {
+      if (times.length > 0) {
+        const sorted = [...times].sort((a, b) => a - b);
+        phaseAvg[phase] = Math.round((sorted.reduce((a, b) => a + b, 0) / sorted.length) * 100) / 100;
+        phaseP95[phase] = Math.round(this.percentile(sorted, 0.95) * 100) / 100;
+      }
+    }
+    
+    // Compute capacity estimates using linear regression
+    // avgTickMs ≈ baseTickMs + (msPerEntity * N)
+    // Solve for max N given budget: N_max = (budgetMs - baseTickMs) / msPerEntity
+    let capacityEstimate = null;
+    if (this.playerCountSamples.length >= 10) {
+      const regression = this.computeLinearRegression(this.playerCountSamples);
+      if (regression) {
+        const TICK_BUDGET_MS = 50; // Conservative budget (100ms at 10Hz, use 50ms for headroom)
+        const maxEntitiesAvg = regression.baseMs > 0 && regression.msPerEntity > 0
+          ? Math.floor((TICK_BUDGET_MS - regression.baseMs) / regression.msPerEntity)
+          : null;
+        
+        capacityEstimate = {
+          baseMs: Math.round(regression.baseMs * 100) / 100,
+          msPerEntity: Math.round(regression.msPerEntity * 1000) / 1000, // More precision
+          r2: Math.round(regression.r2 * 1000) / 1000,
+          maxEntitiesAt50ms: maxEntitiesAvg,
+          sampleCount: this.playerCountSamples.length,
+        };
+      }
+    }
+    
     // Build metrics object
-    const metrics = {
+    return {
       ts: new Date().toISOString(),
       roomId: this.roomId,
       uptimeSec: Math.round(uptimeSec),
@@ -179,16 +249,25 @@ class MetricsLogger {
       actualSimHz: Math.round(actualSimTickRate * 10) / 10,
       actualNetHz: Math.round(actualNetTickRate * 10) / 10,
       
-      // Tick CPU time (ms)
+      // Tick CPU time (ms) - total
       avgTickMs: Math.round(avgTickMs * 100) / 100,
       p95TickMs: Math.round(p95TickMs * 100) / 100,
       maxTickMs: Math.round(maxTickMs * 100) / 100,
       tickSamples: sortedTicks.length,
       
+      // Phase breakdown (ms) - for capacity planning
+      // bot: Bot AI, sim: World.tick(), aoi: AOI queries, build: packet serialize, send: WS send
+      phaseAvgMs: phaseAvg,
+      phaseP95Ms: phaseP95,
+      
+      // Capacity estimate (linear regression: tickMs = base + k*N)
+      capacity: capacityEstimate,
+      
       // Connections
       connections: activeConnections,
       players: activePlayers,
       bots: botCount,
+      entities: entityCount,
       
       // Per-minute message counts
       wsInPerMin: Math.round(this.inboundWsMessages / elapsedMin),
@@ -212,10 +291,9 @@ class MetricsLogger {
       // Packet size estimates
       packetSizes,
     };
-    
-    // Log as single JSON line
-    console.log('[METRICS]', JSON.stringify(metrics));
-    
+  }
+
+  reset(now = Date.now()) {
     // Reset counters
     this.lastLogTime = now;
     this.inboundWsMessages = 0;
@@ -227,13 +305,76 @@ class MetricsLogger {
     this.simTickCount = 0;
     this.netTickCount = 0;
     
+    // Reset phase times
+    for (const phase of Object.keys(this.phaseTimes)) {
+      this.phaseTimes[phase] = [];
+    }
+    this.playerCountSamples = [];
+    
     // Reset message type tracking
     for (const stats of Object.values(this.messageTypeSizes)) {
       stats.count = 0;
       stats.totalBytes = 0;
     }
-    
+  }
+
+  // Generate and log metrics (returns true if logged)
+  maybeLog(activeConnections, activePlayers, botCount) {
+    const now = Date.now();
+    const elapsed = now - this.lastLogTime;
+
+    if (elapsed < METRICS_LOG_INTERVAL_MS) {
+      return false;
+    }
+
+    const metrics = this.buildMetrics(activeConnections, activePlayers, botCount, now);
+    console.log('[METRICS]', JSON.stringify(metrics));
+    this.reset(now);
     return true;
+  }
+  
+  /**
+   * Compute linear regression: tickMs = baseMs + msPerEntity * N
+   * Returns { baseMs, msPerEntity, r2 } or null if insufficient data
+   */
+  computeLinearRegression(samples) {
+    if (samples.length < 5) return null;
+    
+    // Use entity count (players + bots) as X, tickMs as Y
+    const n = samples.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+    
+    for (const s of samples) {
+      const x = s.total; // players + bots
+      const y = s.tickMs;
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumX2 += x * x;
+      sumY2 += y * y;
+    }
+    
+    const denom = n * sumX2 - sumX * sumX;
+    if (Math.abs(denom) < 0.0001) return null;
+    
+    const slope = (n * sumXY - sumX * sumY) / denom;
+    const intercept = (sumY - slope * sumX) / n;
+    
+    // Calculate R² (coefficient of determination)
+    const meanY = sumY / n;
+    let ssRes = 0, ssTot = 0;
+    for (const s of samples) {
+      const predicted = intercept + slope * s.total;
+      ssRes += (s.tickMs - predicted) ** 2;
+      ssTot += (s.tickMs - meanY) ** 2;
+    }
+    const r2 = ssTot > 0 ? 1 - (ssRes / ssTot) : 0;
+    
+    return {
+      baseMs: Math.max(0, intercept), // Base cost shouldn't be negative
+      msPerEntity: Math.max(0, slope), // Cost per entity shouldn't be negative
+      r2,
+    };
   }
 }
 
@@ -281,6 +422,7 @@ export class Room {
     this.cleanupTimer = null;     // setTimeout handle for empty room cleanup
     this.running = false;         // Guard to prevent multiple tick loops
     this.pendingConnections = 0;  // WebSocket connections awaiting hello handshake
+    this.roomName = null;         // Set from first request URL (e.g., "default", "loadtest")
     
     // Metrics logging (enabled via METRICS_ENABLED env var or always in dev)
     this.metricsEnabled = env.METRICS_ENABLED === 'true' || env.METRICS_ENABLED === '1';
@@ -292,6 +434,18 @@ export class Room {
    */
   async fetch(request) {
     const url = new URL(request.url);
+
+    // Prefer room name passed by the Worker router (see `workers/index.js`).
+    const headerRoomName = request.headers.get('X-Room-Name');
+    if (headerRoomName && !this.roomName) {
+      this.roomName = headerRoomName;
+    }
+
+    // Cache the room name (best-effort) for gating debug endpoints.
+    // `workers/index.js` forwards `/room/<name>` requests directly to this DO.
+    if (!this.roomName && url.pathname.startsWith('/room/')) {
+      this.roomName = url.pathname.split('/')[2] || 'default';
+    }
     
     // Track DO fetch invocation for metrics (this is a real DO request)
     if (this.metrics) {
@@ -304,24 +458,37 @@ export class Room {
       const [client, server] = Object.values(pair);
       
       // Accept and configure
-      server.accept();
+      // Prefer Durable Object "hibernatable websockets" so the connection isn't dropped when the DO is evicted/hibernates.
+      // Fall back to `server.accept()` for older runtimes / local simulators.
+      let usingHibernatable = false;
+      if (typeof this.state.acceptWebSocket === 'function') {
+        this.state.acceptWebSocket(server);
+        usingHibernatable = true;
+      } else {
+        server.accept();
+      }
       
-      // Handle messages
-      server.addEventListener('message', (event) => {
-        this.handleMessage(server, event.data);
-      });
-      
-      server.addEventListener('close', () => {
-        this.handleDisconnect(server);
-      });
-      
-      server.addEventListener('error', (err) => {
-        console.error('WebSocket error:', err);
-        this.handleDisconnect(server);
-      });
+      // For hibernatable websockets, events are delivered via DO class methods:
+      // `webSocketMessage`, `webSocketClose`, `webSocketError`.
+      // Only attach event listeners for non-hibernatable fallback.
+      if (!usingHibernatable) {
+        server.addEventListener('message', (event) => {
+          this.handleMessage(server, event.data);
+        });
+        
+        server.addEventListener('close', () => {
+          this.handleDisconnect(server);
+        });
+        
+        server.addEventListener('error', (err) => {
+          console.error('WebSocket error:', err);
+          this.handleDisconnect(server);
+        });
+      }
       
       // Track pending connection (will be decremented when hello is received or on disconnect)
       this.pendingConnections++;
+      console.log(`[ROOM] New WebSocket connection, pendingConnections=${this.pendingConnections}, clients=${this.clients.size}`);
       
       // Cancel any pending cleanup - a new connection arrived
       // This is race-safe: if cleanup was about to run, we cancel it
@@ -348,6 +515,25 @@ export class Room {
     }
     
     return new Response('Not found', { status: 404 });
+  }
+
+  // Hibernatable WebSocket handlers (Cloudflare Durable Objects)
+  webSocketMessage(ws, message) {
+    this.handleMessage(ws, message);
+  }
+
+  webSocketClose(ws, code, reason, wasClean) {
+    if (this.roomName === 'loadtest') {
+      try {
+        console.log(`[ROOM] WebSocketClose code=${code} clean=${wasClean} reason=${reason ? String(reason) : ''}`);
+      } catch (_) {}
+    }
+    this.handleDisconnect(ws);
+  }
+
+  webSocketError(ws, error) {
+    console.error('WebSocket error:', error);
+    this.handleDisconnect(ws);
   }
   
   /**
@@ -463,31 +649,48 @@ export class Room {
    */
   tick() {
     if (!this.running) return;
-    
-    const tickStart = performance.now();
+
+    try {
+      const tickStart = performance.now();
     const now = Date.now();
     
-    // Initialize bots on first tick (after world is ready)
+    // Phase timing for capacity planning
+    const phases = {};
+    let phaseStart;
+    
+    // Initialize bots gradually (not all at once to avoid blocking)
     if (!this.botsInitialized) {
-      this.initializeBots();
-      this.botsInitialized = true;
+      // Initialize a batch of bots per tick to avoid blocking the event loop
+      const BOTS_PER_TICK = 10;
+      const currentBots = this.botManager.count;
+      
+      if (currentBots < BOT_COUNT) {
+        const toSpawn = Math.min(BOTS_PER_TICK, BOT_COUNT - currentBots);
+        for (let i = 0; i < toSpawn; i++) {
+          this.spawnBot(this.generateBotName());
+        }
+        
+        if (currentBots + toSpawn >= BOT_COUNT) {
+          this.botsInitialized = true;
+          console.log(`Initialized ${BOT_COUNT} bots (pendingConnections=${this.pendingConnections}, clients=${this.clients.size})`);
+        }
+      } else {
+        this.botsInitialized = true;
+      }
     }
     
-    // Handle bot respawns
-    this.processBotRespawns(now);
-    
-    // Update bot AI (runs at 4Hz internally)
+    // === BOT PHASE ===
+    phaseStart = performance.now();
     this.botManager.update(this.world, now);
-    
-    // Check for dead bots and schedule respawns
-    this.checkDeadBots(now);
+    phases.bot = performance.now() - phaseStart;
     
     // Simulation tick
     const simDelta = now - this.lastSimTick;
     this.lastSimTick = now;
     this.simAccumulator += simDelta;
     
-    // Run simulation at fixed timestep
+    // === SIM PHASE ===
+    phaseStart = performance.now();
     let simCount = 0;
     const maxSimTicks = 10;
     while (this.simAccumulator >= SIM_TICK_MS && simCount < maxSimTicks) {
@@ -495,6 +698,12 @@ export class Room {
       this.simAccumulator -= SIM_TICK_MS;
       simCount++;
     }
+    phases.sim = performance.now() - phaseStart;
+    
+    // Check for dead bots AFTER world tick (so deaths are detected)
+    // Then process respawns (so dead bots are removed before spawning new ones)
+    this.checkDeadBots(now);
+    this.processBotRespawns(now);
     
     // If we're still behind after max ticks, drop the excess time
     if (this.simAccumulator > SIM_TICK_MS * 2) {
@@ -506,32 +715,63 @@ export class Room {
     const netDelta = now - this.lastNetTick;
     if (netDelta >= NETWORK_TICK_MS) {
       this.lastNetTick = now;
-      this.broadcastFrame();
+      // broadcastFrame tracks AOI, build, and send phases internally
+      const netPhases = this.broadcastFrame();
+      if (netPhases) {
+        phases.aoi = netPhases.aoi;
+        phases.build = netPhases.build;
+        phases.send = netPhases.send;
+      }
       didNetTick = true;
     }
     
-    // Track tick timing for metrics
-    if (this.metrics) {
-      const tickEnd = performance.now();
-      const tickCpuMs = tickEnd - tickStart;
-      this.metrics.trackTick(tickCpuMs, simCount > 0, didNetTick);
-      
-      // Log metrics once per minute
-      const humanPlayers = Array.from(this.clients.values()).filter(c => !c.isSpectator).length;
-      this.metrics.maybeLog(this.clients.size, humanPlayers, this.botManager.count);
-    }
-    
-    // Continue running if there are active connections OR pending connections (awaiting hello)
-    const hasActiveConnections = this.clients.size > 0 || this.pendingConnections > 0;
-    
-    if (hasActiveConnections) {
-      this.scheduleNextTick();
-    } else {
-      // No connections - immediately stop tick loop (DO becomes idle)
-      // Don't clear state yet - schedule cleanup after timeout
-      console.log('[ROOM] No active connections, stopping tick loop immediately');
+      // Track tick timing for metrics
+      if (this.metrics) {
+        const tickEnd = performance.now();
+        const tickCpuMs = tickEnd - tickStart;
+
+        // Use detailed tracking with phase breakdown
+        const humanPlayers = Array.from(this.clients.values()).filter(c => !c.isSpectator).length;
+        this.metrics.trackTickDetailed(tickCpuMs, phases, humanPlayers, this.botManager.count);
+
+        // Log metrics once per minute
+        this.metrics.maybeLog(this.clients.size, humanPlayers, this.botManager.count);
+      }
+
+      // Continue running if there are active connections OR pending connections (awaiting hello)
+      const hasActiveConnections = this.clients.size > 0 || this.pendingConnections > 0;
+
+      if (hasActiveConnections) {
+        this.scheduleNextTick();
+      } else {
+        // No connections - immediately stop tick loop (DO becomes idle)
+        // Don't clear state yet - schedule cleanup after timeout
+        console.log(`[ROOM] No active connections, stopping tick loop immediately (clients=${this.clients.size}, pending=${this.pendingConnections})`);
+        this.stopTickLoop();
+        this.scheduleCleanup();
+      }
+    } catch (err) {
+      console.error('[ROOM] Tick loop error:', err?.stack || err);
+
+      // For load testing, surface the error to the client before closing (so we can debug 1006s).
+      if (this.roomName === 'loadtest') {
+        const payload = JSON.stringify({
+          type: 'serverError',
+          where: 'tick',
+          error: String(err?.message || err),
+        });
+        for (const ws of this.clients.keys()) {
+          try {
+            ws.send(payload);
+          } catch (_) {}
+          try {
+            ws.close(1011, 'server_error');
+          } catch (_) {}
+        }
+      }
+
+      // Stop the loop to avoid tight crash loops.
       this.stopTickLoop();
-      this.scheduleCleanup();
     }
   }
   
@@ -553,23 +793,10 @@ export class Room {
   /**
    * Initialize bots at game start
    */
-  initializeBots() {
-    const prefixes = consts.PREFIXES.split(' ');
-    const names = consts.NAMES.split(' ');
-    
-    for (let i = 0; i < BOT_COUNT; i++) {
-      const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-      const name = names[Math.floor(Math.random() * names.length)];
-      const botName = `[BOT] ${prefix} ${name}`;
-      
-      this.spawnBot(botName);
-    }
-    
-    console.log(`Initialized ${BOT_COUNT} bots`);
-  }
   
   /**
    * Spawn a single bot
+   * @returns {string|null} Player ID if successful, null if spawn failed
    */
   spawnBot(name) {
     const result = this.world.addPlayer(name);
@@ -580,6 +807,8 @@ export class Room {
       this.botManager.addBot(player.id);
       return player.id;
     }
+    // Spawn failed - log the reason with world state
+    console.log(`[BOTS] Spawn failed for ${name}: ${result.error} (worldPlayers=${this.world.players.size}, maxPlayers=${consts.MAX_PLAYERS})`);
     return null;
   }
   
@@ -620,20 +849,65 @@ export class Room {
   }
   
   /**
-   * Process pending bot respawns
+   * Process pending bot respawns and maintain target bot count
    */
   processBotRespawns(now) {
     const stillPending = [];
+    const failedSpawns = [];
+    let respawned = 0;
+    let failed = 0;
     
     for (const respawn of this.pendingBotRespawns) {
       if (now >= respawn.respawnTime) {
-        this.spawnBot(respawn.name);
+        const playerId = this.spawnBot(respawn.name);
+        if (!playerId) {
+          // Spawn failed, re-queue with small delay
+          failedSpawns.push({
+            respawnTime: now + 100, // Retry in 100ms
+            name: respawn.name,
+          });
+          failed++;
+        } else {
+          respawned++;
+        }
       } else {
         stillPending.push(respawn);
       }
     }
     
-    this.pendingBotRespawns = stillPending;
+    this.pendingBotRespawns = [...stillPending, ...failedSpawns];
+    
+    // Maintain target bot count - spawn new bots if we're below target
+    // This handles cases where bots die faster than they can be tracked for respawn
+    const currentBotCount = this.botManager.count;
+    const pendingCount = this.pendingBotRespawns.length;
+    const totalExpected = currentBotCount + pendingCount;
+    
+    let newSpawns = 0;
+    let newFailed = 0;
+    if (totalExpected < BOT_COUNT) {
+      const toSpawn = BOT_COUNT - totalExpected;
+      for (let i = 0; i < toSpawn; i++) {
+        const playerId = this.spawnBot(this.generateBotName());
+        if (!playerId) {
+          // Spawn failed, queue for retry
+          this.pendingBotRespawns.push({
+            respawnTime: now + 100,
+            name: this.generateBotName(),
+          });
+          newFailed++;
+        } else {
+          newSpawns++;
+        }
+      }
+    }
+    
+    // Log bot status periodically (every ~10 seconds)
+    if (!this.lastBotLog || now - this.lastBotLog > 10000) {
+      this.lastBotLog = now;
+      const worldBots = Array.from(this.world.players.values()).filter(p => this.botManager.bots.has(p.id)).length;
+      console.log(`[BOTS] target=${BOT_COUNT} manager=${currentBotCount} world=${worldBots} pending=${pendingCount} respawned=${respawned} failed=${failed} newSpawns=${newSpawns} newFailed=${newFailed}`);
+    }
   }
   
   /**
@@ -677,11 +951,17 @@ export class Room {
       
       switch (msg.type) {
         case 'hello':
+          console.log(`[ROOM] Received hello from client (pendingConnections=${this.pendingConnections}, clients=${this.clients.size}, worldPlayers=${this.world.players.size})`);
           this.handleHello(ws, msg);
+          console.log(`[ROOM] After handleHello (pendingConnections=${this.pendingConnections}, clients=${this.clients.size})`);
           break;
           
         case 'ping':
           this.handlePing(ws, msg);
+          break;
+
+        case 'getMetrics':
+          this.handleGetMetrics(ws);
           break;
           
         case 'reset':
@@ -691,6 +971,26 @@ export class Room {
     } catch (err) {
       console.error('Message error:', err);
     }
+  }
+
+  /**
+   * Load-test-only: return a metrics snapshot directly to the client.
+   * This avoids relying on `wrangler tail`, and keeps metrics off normal rooms.
+   */
+  handleGetMetrics(ws) {
+    if (this.roomName !== 'loadtest') {
+      this.trackedSend(ws, JSON.stringify({ type: 'metrics', error: 'not_allowed' }), 'OTHER');
+      return;
+    }
+
+    if (!this.metrics) {
+      this.trackedSend(ws, JSON.stringify({ type: 'metrics', error: 'disabled' }), 'OTHER');
+      return;
+    }
+
+    const humanPlayers = Array.from(this.clients.values()).filter(c => !c.isSpectator).length;
+    const snapshot = this.metrics.buildMetrics(this.clients.size, humanPlayers, this.botManager.count);
+    this.trackedSend(ws, JSON.stringify({ type: 'metrics', metrics: snapshot }), 'OTHER');
   }
   
   /**
@@ -732,6 +1032,7 @@ export class Room {
     const result = this.world.addPlayer(name);
     
     if (!result.ok) {
+      console.log(`[ROOM] Failed to add player: ${result.error}`);
       this.trackedSend(ws, JSON.stringify({ type: 'error', error: result.error }), 'OTHER');
       ws.close();
       return;
@@ -754,7 +1055,9 @@ export class Room {
       coins: this.world.getAllCoins().map(c => ({ id: c.id, x: c.x, y: c.y, value: c.value })),
     };
     
-    this.trackedSend(ws, JSON.stringify(initData), 'INIT');
+    const initJson = JSON.stringify(initData);
+    console.log(`[ROOM] Sending init packet (${initJson.length} bytes, ${initData.players.length} players, ${initData.coins.length} coins)`);
+    this.trackedSend(ws, initJson, 'INIT');
     
     // Broadcast join to others
     this.broadcastEvent({
@@ -926,16 +1229,29 @@ export class Room {
     // Clear events after capturing them (they'll be sent to all clients)
     this.world.pendingEvents = [];
     
+    // Phase timing for capacity planning
+    let aoiTime = 0;
+    let buildTime = 0;
+    let sendTime = 0;
+    let phaseStart;
+    
     for (const [ws, client] of this.clients) {
       try {
         // Spectators see everything
         if (client.isSpectator) {
+          phaseStart = performance.now();
           const allPlayers = this.world.getAllPlayers();
           const allCoins = this.world.getAllCoins();
+          aoiTime += performance.now() - phaseStart;
+          
+          phaseStart = performance.now();
           const packet = this.buildSpectatorFramePacket(client, allPlayers, allCoins, events, frame);
+          buildTime += performance.now() - phaseStart;
           
           if (packet.byteLength > 1) {
+            phaseStart = performance.now();
             this.trackedSend(ws, packet, 'FRAME');
+            sendTime += performance.now() - phaseStart;
           }
           client.lastSentFrame = frame;
           continue;
@@ -944,15 +1260,22 @@ export class Room {
         const player = this.world.getPlayer(client.playerId);
         if (!player) continue;
         
-        // Get entities in AOI
+        // === AOI PHASE ===
+        phaseStart = performance.now();
         const nearbyPlayers = this.world.getPlayersInAOI(player.x, player.y, AOI_RADIUS);
         const nearbyCoins = this.world.getCoinsInAOI(player.x, player.y, AOI_RADIUS);
+        aoiTime += performance.now() - phaseStart;
         
-        // Build frame packet
+        // === BUILD PHASE ===
+        phaseStart = performance.now();
         const packet = this.buildFramePacket(client, player, nearbyPlayers, nearbyCoins, events, frame);
+        buildTime += performance.now() - phaseStart;
         
         if (packet.byteLength > 1) {
+          // === SEND PHASE ===
+          phaseStart = performance.now();
           this.trackedSend(ws, packet, 'FRAME');
+          sendTime += performance.now() - phaseStart;
         }
         
         client.lastSentFrame = frame;
@@ -960,6 +1283,13 @@ export class Room {
         console.error('Broadcast error:', err);
       }
     }
+    
+    // Return phase timings for metrics
+    return {
+      aoi: aoiTime,
+      build: buildTime,
+      send: sendTime,
+    };
   }
   
   /**

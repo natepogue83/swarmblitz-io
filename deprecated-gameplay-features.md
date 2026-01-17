@@ -38,3 +38,6 @@ This list is derived from `deprecated/` and compares against the current `src/` 
 -[done] Settings panel wiring for audio volume sliders from `deprecated/mode/player.js`.
 -[done] `/api/playlist` endpoint for music playback from `deprecated/server.js`.
 
+
+
+

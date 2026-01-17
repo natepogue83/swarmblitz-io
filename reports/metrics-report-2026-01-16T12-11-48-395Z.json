@@ -1,0 +1,149 @@
+{
+  "startTime": "2026-01-16T12:11:48.391Z",
+  "config": {
+    "botLevels": [
+      50,
+      100,
+      150,
+      200,
+      250,
+      300,
+      350,
+      400,
+      450,
+      500
+    ],
+    "durationPerLevelMs": 600000,
+    "warmupMs": 30000
+  },
+  "levels": [
+    {
+      "botCount": 50,
+      "startTime": "2026-01-16T12:11:48.396Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:11:49.590Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 100,
+      "startTime": "2026-01-16T12:11:54.591Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:11:56.474Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 150,
+      "startTime": "2026-01-16T12:12:01.481Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:02.807Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 200,
+      "startTime": "2026-01-16T12:12:07.808Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:09.159Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 250,
+      "startTime": "2026-01-16T12:12:14.159Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:15.230Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 300,
+      "startTime": "2026-01-16T12:12:20.231Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:21.280Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 350,
+      "startTime": "2026-01-16T12:12:26.282Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:27.225Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 400,
+      "startTime": "2026-01-16T12:12:32.227Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:33.201Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 450,
+      "startTime": "2026-01-16T12:12:38.203Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:39.176Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 500,
+      "startTime": "2026-01-16T12:12:44.177Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T12:12:45.145Z",
+      "exitCode": 1
+    }
+  ],
+  "endTime": "2026-01-16T12:12:50.147Z",
+  "status": "complete",
+  "summary": {
+    "levelsCompleted": 10,
+    "totalSamples": 0,
+    "scalingCurve": [
+      {
+        "bots": 50,
+        "samples": 0
+      },
+      {
+        "bots": 100,
+        "samples": 0
+      },
+      {
+        "bots": 150,
+        "samples": 0
+      },
+      {
+        "bots": 200,
+        "samples": 0
+      },
+      {
+        "bots": 250,
+        "samples": 0
+      },
+      {
+        "bots": 300,
+        "samples": 0
+      },
+      {
+        "bots": 350,
+        "samples": 0
+      },
+      {
+        "bots": 400,
+        "samples": 0
+      },
+      {
+        "bots": 450,
+        "samples": 0
+      },
+      {
+        "bots": 500,
+        "samples": 0
+      }
+    ]
+  }
+}

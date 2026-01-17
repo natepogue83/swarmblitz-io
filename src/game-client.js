@@ -621,7 +621,7 @@ class LevelUpTextEffect {
     // Scale up then back down
     if (progress < 0.3) {
       this.scale = 0.5 + (progress / 0.3) * 1.0;
-    } else {
+		} else {
       this.scale = 1.5 - (progress - 0.3) * 0.5;
     }
     
@@ -750,7 +750,7 @@ class LootCoin {
         this.x = this.targetX;
         this.y = this.targetY;
       }
-    } else {
+	} else {
       // Bounce and settle animation
       const landElapsed = now - this.landTime;
       const bounceProgress = Math.min(1, landElapsed / 400);
@@ -952,6 +952,13 @@ export default class GameClient {
     
     // Periodic cleanup timer (to catch orphaned trails/state)
     this.lastCleanupTime = 0;
+    
+    // Spawn fade-in effect (covers the initial sync delay)
+    this.spawnFade = {
+      active: false,
+      startTime: 0,
+      duration: 800, // ms - fade from black to clear
+    };
     this.cleanupIntervalMs = 2000; // Run cleanup every 2 seconds
     
     // Bind methods
@@ -1305,16 +1312,16 @@ export default class GameClient {
     if (e.key === 'F3') {
       this.debugMode = !this.debugMode;
       console.log('Debug mode:', this.debugMode ? 'ON' : 'OFF');
-      return;
-    }
-
+		return;
+	}
+	
     // R = Reset room (debug)
     if (key === 'r') {
       console.log('%c🔄 RESETTING ROOM...', 'color: orange; font-weight: bold;');
       this.net.sendReset();
-      return;
-    }
-
+		return;
+	}
+	
     if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
       this.setKeyState(key, true);
     }
@@ -1455,6 +1462,10 @@ export default class GameClient {
         this.cameraTargetX = player.x;
         this.cameraTargetY = player.y;
       }
+      
+      // Start spawn fade-in effect (covers sync delay)
+      this.spawnFade.active = true;
+      this.spawnFade.startTime = performance.now();
     }
     
     // Start game loop
@@ -1726,9 +1737,12 @@ export default class GameClient {
    */
   update(deltaMs) {
     const localPlayer = this.players.get(this.playerId);
+    
+    // During spawn fade, freeze all movement and input
+    const isSpawning = this.spawnFade.active;
 
     // In spectate mode, we don't control a player
-    if (!this.spectateMode) {
+    if (!this.spectateMode && !isSpawning) {
       // Update local input angle (WASD or mouse) and send to server at the net client's throttle rate.
       if (localPlayer && !localPlayer.dead) {
         const nextAngle = this.computeInputAngle(localPlayer, deltaMs);
@@ -1739,13 +1753,16 @@ export default class GameClient {
       }
     }
     
-    for (const [id, player] of this.players) {
-      if (!this.spectateMode && id === this.playerId && localPlayer && !localPlayer.dead) {
-        // Local player: use client-side prediction
-        player.predict(deltaMs, consts.SPEED, this.mapSize, this.targetAngle);
-      } else {
-        // Other players (or all players in spectate mode): extrapolate movement + gentle correction
-        player.interpolateOther(deltaMs, consts.SPEED);
+    // Skip movement updates during spawn fade
+    if (!isSpawning) {
+      for (const [id, player] of this.players) {
+        if (!this.spectateMode && id === this.playerId && localPlayer && !localPlayer.dead) {
+          // Local player: use client-side prediction
+          player.predict(deltaMs, consts.SPEED, this.mapSize, this.targetAngle);
+        } else {
+          // Other players (or all players in spectate mode): extrapolate movement + gentle correction
+          player.interpolateOther(deltaMs, consts.SPEED);
+        }
       }
     }
     
@@ -1842,7 +1859,7 @@ export default class GameClient {
         const trailStart = player.trail[0];
         const dx = trailStart.x - player.x;
         const dy = trailStart.y - player.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+				const dist = Math.sqrt(dx * dx + dy * dy);
         
         // If trail start is more than 500 units from player, it's likely stale
         if (dist > 500) {
@@ -1979,7 +1996,7 @@ export default class GameClient {
             state.speedRushActive = false;
           }
         }
-      } else {
+				} else {
         // Player is in territory - reset
         state.trailStartTime = null;
         state.lastSpeedBuff = 1.0;
@@ -2534,6 +2551,38 @@ export default class GameClient {
     if (this.debugMode) {
       this.drawDebugHUD(ctx);
     }
+    
+    // Spawn fade-in overlay (covers initial sync delay)
+    if (this.spawnFade.active) {
+      const elapsed = performance.now() - this.spawnFade.startTime;
+      const progress = Math.min(1, elapsed / this.spawnFade.duration);
+      
+      if (progress < 1) {
+        // Ease out - starts opaque, fades to transparent
+        const alpha = 1 - this.easeOutCubic(progress);
+        ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+        ctx.fillRect(0, 0, width, height);
+        
+        // Optional: "SPAWNING..." text during fade
+        if (alpha > 0.3) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.font = 'bold 24px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('SPAWNING...', width / 2, height / 2);
+        }
+      } else {
+        // Fade complete
+        this.spawnFade.active = false;
+      }
+    }
+  }
+  
+  /**
+   * Ease out cubic - fast start, slow end
+   */
+  easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
   }
   
   /**
@@ -2720,8 +2769,8 @@ export default class GameClient {
 
         // Burning fuse spark (ported vibe from deprecated/core/player.js)
         this._drawFuseSpark(ctx, fuse.fusePos, fuse.remainingPoints, player.num);
-        return;
-      }
+			return;
+		}
       
       // Fallback for snipped enemies without proper fuse state:
       // Render a simple fuse effect starting from trail[0] toward player

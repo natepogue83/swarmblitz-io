@@ -1,0 +1,114 @@
+{
+  "startTime": "2026-01-16T19:34:04.224Z",
+  "config": {
+    "botLevels": [
+      50,
+      100,
+      150,
+      200,
+      250,
+      300,
+      350,
+      400,
+      450,
+      500
+    ],
+    "durationPerLevelMs": 600000,
+    "warmupMs": 30000
+  },
+  "levels": [
+    {
+      "botCount": 50,
+      "startTime": "2026-01-16T19:34:04.229Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:07.602Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 100,
+      "startTime": "2026-01-16T19:34:12.602Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:13.594Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 150,
+      "startTime": "2026-01-16T19:34:18.594Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:19.674Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 200,
+      "startTime": "2026-01-16T19:34:24.674Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:25.568Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 250,
+      "startTime": "2026-01-16T19:34:30.570Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:31.683Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 300,
+      "startTime": "2026-01-16T19:34:36.684Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:37.620Z",
+      "exitCode": 1
+    },
+    {
+      "botCount": 350,
+      "startTime": "2026-01-16T19:34:42.621Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:34:43.822Z",
+      "exitCode": 1
+    }
+  ],
+  "lastSaveTime": "2026-01-16T19:34:43.822Z",
+  "status": "in_progress",
+  "summary": {
+    "levelsCompleted": 7,
+    "levelsInProgress": 0,
+    "totalSamples": 0,
+    "scalingCurve": [
+      {
+        "bots": 50,
+        "samples": 0
+      },
+      {
+        "bots": 100,
+        "samples": 0
+      },
+      {
+        "bots": 150,
+        "samples": 0
+      },
+      {
+        "bots": 200,
+        "samples": 0
+      },
+      {
+        "bots": 250,
+        "samples": 0
+      },
+      {
+        "bots": 300,
+        "samples": 0
+      },
+      {
+        "bots": 350,
+        "samples": 0
+      }
+    ]
+  }
+}

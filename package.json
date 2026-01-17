@@ -18,6 +18,10 @@
     "load:test": "node tools/load-test.js",
     "load:test:50": "node tools/load-test.js 50 ws://localhost:8787/room/default 30000",
     "load:test:100": "node tools/load-test.js 100 ws://localhost:8787/room/default 60000",
+    "dev:autometrics": "node tools/auto-load-test.js",
+    "dev:autometrics:quick": "node tools/auto-load-test.js --quick",
+    "test:prod-load": "node tools/prod-load-test.js",
+    "test:prod-load:quick": "node tools/prod-load-test.js --quick",
     "deprecated:start": "node deprecated/server.js",
     "deprecated:dev": "nodemon --watch deprecated/ deprecated/server.js"
   },

@@ -1,0 +1,31 @@
+{
+  "startTime": "2026-01-16T20:05:52.676Z",
+  "config": {
+    "botLevels": [
+      100
+    ],
+    "durationPerLevelMs": 120000,
+    "warmupMs": 30000
+  },
+  "levels": [
+    {
+      "botCount": 100,
+      "startTime": "2026-01-16T20:05:52.716Z",
+      "metrics": [],
+      "errors": []
+    }
+  ],
+  "lastSaveTime": "2026-01-16T20:05:52.716Z",
+  "status": "in_progress",
+  "summary": {
+    "levelsCompleted": 0,
+    "levelsInProgress": 1,
+    "totalSamples": 0,
+    "scalingCurve": [
+      {
+        "bots": 100,
+        "samples": 0
+      }
+    ]
+  }
+}

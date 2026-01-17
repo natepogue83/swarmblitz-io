@@ -1,0 +1,42 @@
+{
+  "startTime": "2026-01-17T00:40:24.424Z",
+  "environment": "production",
+  "config": {
+    "botLevels": [
+      50,
+      100,
+      150,
+      200
+    ],
+    "durationPerLevelMs": 180000,
+    "warmupMs": 60000,
+    "wsUrl": "wss://swarmblitz.dev-1dd.workers.dev/room/loadtest",
+    "workerName": "swarmblitz"
+  },
+  "levels": [
+    {
+      "botCount": 50,
+      "startTime": "2026-01-17T00:40:29.429Z",
+      "metrics": [],
+      "errors": [],
+      "aggregate": null,
+      "endTime": "2026-01-17T00:43:49.249Z"
+    },
+    {
+      "botCount": 100,
+      "startTime": "2026-01-17T00:43:59.252Z",
+      "metrics": [],
+      "errors": [],
+      "aggregate": null,
+      "endTime": "2026-01-17T00:47:17.652Z"
+    },
+    {
+      "botCount": 150,
+      "startTime": "2026-01-17T00:47:27.655Z",
+      "metrics": [],
+      "errors": [],
+      "aggregate": null,
+      "endTime": "2026-01-17T00:50:47.168Z"
+    }
+  ]
+}

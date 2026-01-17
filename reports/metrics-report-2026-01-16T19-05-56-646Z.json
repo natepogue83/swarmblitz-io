@@ -1,0 +1,32 @@
+{
+  "startTime": "2026-01-16T19:05:56.644Z",
+  "config": {
+    "botLevels": [
+      100
+    ],
+    "durationPerLevelMs": 120000,
+    "warmupMs": 30000
+  },
+  "levels": [
+    {
+      "botCount": 100,
+      "startTime": "2026-01-16T19:05:56.647Z",
+      "metrics": [],
+      "errors": [],
+      "endTime": "2026-01-16T19:05:57.733Z",
+      "exitCode": 1
+    }
+  ],
+  "endTime": "2026-01-16T19:06:02.735Z",
+  "status": "complete",
+  "summary": {
+    "levelsCompleted": 1,
+    "totalSamples": 0,
+    "scalingCurve": [
+      {
+        "bots": 100,
+        "samples": 0
+      }
+    ]
+  }
+}

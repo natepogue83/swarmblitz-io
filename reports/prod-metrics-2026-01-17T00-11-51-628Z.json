@@ -1,0 +1,225 @@
+{
+  "startTime": "2026-01-17T00:11:51.625Z",
+  "environment": "production",
+  "config": {
+    "botLevels": [
+      50
+    ],
+    "durationPerLevelMs": 120000,
+    "warmupMs": 60000,
+    "wsUrl": "wss://swarmblitz.dev-1dd.workers.dev/room/loadtest",
+    "workerName": "swarmblitz"
+  },
+  "levels": [
+    {
+      "botCount": 50,
+      "startTime": "2026-01-17T00:11:56.632Z",
+      "metrics": [
+        {
+          "ts": "2026-01-17T00:13:12.270Z",
+          "roomId": "d13eb8534cc24c575281df0b7ae717fc62b7d0e8870be27f8f863e96c72636ec",
+          "uptimeSec": 59,
+          "targetSimHz": 60,
+          "targetNetHz": 10,
+          "actualSimHz": 62.5,
+          "actualNetHz": 0,
+          "avgTickMs": 0,
+          "p95TickMs": 0,
+          "maxTickMs": 0,
+          "tickSamples": 3658,
+          "phaseAvgMs": {
+            "bot": 0,
+            "sim": 0,
+            "aoi": 0,
+            "build": 0,
+            "send": 0
+          },
+          "phaseP95Ms": {
+            "bot": 0,
+            "sim": 0,
+            "aoi": 0,
+            "build": 0,
+            "send": 0
+          },
+          "capacity": {
+            "baseMs": 0,
+            "msPerEntity": 0,
+            "r2": 0,
+            "maxEntitiesAt50ms": null,
+            "sampleCount": 360
+          },
+          "connections": 1,
+          "players": 1,
+          "bots": 50,
+          "entities": 51,
+          "wsInPerMin": 8,
+          "wsOutPerMin": 540,
+          "doReqPerMin": 1,
+          "bytesInPerMin": 259,
+          "bytesOutPerMin": 584443,
+          "bytesInPerHumanHour": 15562,
+          "bytesOutPerHumanHour": 35066601,
+          "bytesInPerConnHour": 15562,
+          "bytesOutPerConnHour": 35066601,
+          "bytesOutPerEntityHour": 687580,
+          "packetSizes": {
+            "FRAME": {
+              "avgBytes": 1004,
+              "count": 520
+            },
+            "PING": {
+              "avgBytes": 33,
+              "count": 6
+            },
+            "PONG": {
+              "avgBytes": 33,
+              "count": 6
+            },
+            "HELLO": {
+              "avgBytes": 34,
+              "count": 1
+            },
+            "INIT": {
+              "avgBytes": 47654,
+              "count": 1
+            },
+            "OTHER": {
+              "avgBytes": 21,
+              "count": 1
+            }
+          }
+        },
+        {
+          "ts": "2026-01-17T00:13:42.738Z",
+          "roomId": "d13eb8534cc24c575281df0b7ae717fc62b7d0e8870be27f8f863e96c72636ec",
+          "uptimeSec": 89,
+          "targetSimHz": 60,
+          "targetNetHz": 10,
+          "actualSimHz": 62.5,
+          "actualNetHz": 0,
+          "avgTickMs": 0,
+          "p95TickMs": 0,
+          "maxTickMs": 0,
+          "tickSamples": 1812,
+          "phaseAvgMs": {
+            "bot": 0,
+            "sim": 0,
+            "aoi": 0,
+            "build": 0,
+            "send": 0
+          },
+          "phaseP95Ms": {
+            "bot": 0,
+            "sim": 0,
+            "aoi": 0,
+            "build": 0,
+            "send": 0
+          },
+          "capacity": null,
+          "connections": 1,
+          "players": 1,
+          "bots": 50,
+          "entities": 51,
+          "wsInPerMin": 8,
+          "wsOutPerMin": 542,
+          "doReqPerMin": 0,
+          "bytesInPerMin": 248,
+          "bytesOutPerMin": 493686,
+          "bytesInPerHumanHour": 14899,
+          "bytesOutPerHumanHour": 29621162,
+          "bytesInPerConnHour": 14899,
+          "bytesOutPerConnHour": 29621162,
+          "bytesOutPerEntityHour": 580807,
+          "packetSizes": {
+            "FRAME": {
+              "avgBytes": 921,
+              "count": 259
+            },
+            "PING": {
+              "avgBytes": 33,
+              "count": 3
+            },
+            "PONG": {
+              "avgBytes": 33,
+              "count": 3
+            },
+            "OTHER": {
+              "avgBytes": 21,
+              "count": 1
+            }
+          }
+        },
+        {
+          "ts": "2026-01-17T00:14:12.519Z",
+          "roomId": "d13eb8534cc24c575281df0b7ae717fc62b7d0e8870be27f8f863e96c72636ec",
+          "uptimeSec": 119,
+          "targetSimHz": 60,
+          "targetNetHz": 10,
+          "actualSimHz": 62.5,
+          "actualNetHz": 0,
+          "avgTickMs": 0,
+          "p95TickMs": 0,
+          "maxTickMs": 0,
+          "tickSamples": 3673,
+          "phaseAvgMs": {
+            "bot": 0,
+            "sim": 0,
+            "aoi": 0,
+            "build": 0,
+            "send": 0
+          },
+          "phaseP95Ms": {
+            "bot": 0,
+            "sim": 0,
+            "aoi": 0,
+            "build": 0,
+            "send": 0
+          },
+          "capacity": null,
+          "connections": 1,
+          "players": 1,
+          "bots": 50,
+          "entities": 51,
+          "wsInPerMin": 8,
+          "wsOutPerMin": 543,
+          "doReqPerMin": 0,
+          "bytesInPerMin": 245,
+          "bytesOutPerMin": 579514,
+          "bytesInPerHumanHour": 14700,
+          "bytesOutPerHumanHour": 34770866,
+          "bytesInPerConnHour": 14700,
+          "bytesOutPerConnHour": 34770866,
+          "bytesOutPerEntityHour": 681782,
+          "packetSizes": {
+            "FRAME": {
+              "avgBytes": 1079,
+              "count": 525
+            },
+            "PING": {
+              "avgBytes": 33,
+              "count": 6
+            },
+            "PONG": {
+              "avgBytes": 33,
+              "count": 6
+            },
+            "OTHER": {
+              "avgBytes": 301,
+              "count": 3
+            }
+          }
+        }
+      ],
+      "errors": [],
+      "aggregate": null,
+      "endTime": "2026-01-17T00:14:15.525Z"
+    }
+  ],
+  "endTime": "2026-01-17T00:14:25.528Z",
+  "status": "complete",
+  "summary": {
+    "levelsCompleted": 1,
+    "totalSamples": 3,
+    "scalingCurve": []
+  }
+}

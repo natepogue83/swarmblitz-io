@@ -1,0 +1,61 @@
+{
+  "startTime": "2026-01-17T03:48:08.087Z",
+  "environment": "production",
+  "config": {
+    "botLevels": [
+      50,
+      100,
+      150,
+      200
+    ],
+    "durationPerLevelMs": 180000,
+    "warmupMs": 60000,
+    "wsUrl": "wss://swarmblitz.dev-1dd.workers.dev/room/loadtest",
+    "workerName": "swarmblitz"
+  },
+  "levels": [
+    {
+      "botCount": 50,
+      "startTime": "2026-01-17T03:48:13.094Z",
+      "metrics": [],
+      "errors": [
+        "Warmup aborted: WebSocket closed during wait (code: 1006)"
+      ],
+      "aggregate": null
+    },
+    {
+      "botCount": 100,
+      "startTime": "2026-01-17T03:49:37.101Z",
+      "metrics": [],
+      "errors": [
+        "Warmup aborted: WebSocket closed during wait (code: 1006)"
+      ],
+      "aggregate": null
+    },
+    {
+      "botCount": 150,
+      "startTime": "2026-01-17T03:50:21.927Z",
+      "metrics": [],
+      "errors": [
+        "Warmup aborted: WebSocket closed during wait (code: 1006)"
+      ],
+      "aggregate": null
+    },
+    {
+      "botCount": 200,
+      "startTime": "2026-01-17T03:50:54.100Z",
+      "metrics": [],
+      "errors": [
+        "Warmup aborted: WebSocket closed during wait (code: 1006)"
+      ],
+      "aggregate": null
+    }
+  ],
+  "endTime": "2026-01-17T03:51:25.212Z",
+  "status": "complete",
+  "summary": {
+    "levelsCompleted": 0,
+    "totalSamples": 0,
+    "scalingCurve": []
+  }
+}

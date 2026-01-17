@@ -45,14 +45,37 @@ export default {
     
     // Route to room
     if (url.pathname.startsWith('/room/')) {
-      const roomId = url.pathname.split('/')[2] || 'default';
+      const parts = url.pathname.split('/');
+      const roomId = parts[2] || 'default';
       
       // Get or create Room Durable Object
       const id = env.ROOM.idFromName(roomId);
       const room = env.ROOM.get(id);
-      
-      // Forward request to room
-      return room.fetch(request);
+
+      // WebSocket upgrades are sensitive: avoid rewriting the URL/body for upgrade requests.
+      // Forward the original upgrade request untouched (no header mutation / cloning).
+      // The DO can infer room name from the URL path (`/room/<name>`).
+      if (request.headers.get('Upgrade') === 'websocket') {
+        return room.fetch(request);
+      }
+
+      // Rewrite path so the DO sees clean routes like `/status` instead of `/room/<id>/status`.
+      const rest = parts.slice(3).join('/');
+      const rewrittenUrl = new URL(request.url);
+      rewrittenUrl.pathname = '/' + rest; // rest may be empty -> "/"
+      if (rewrittenUrl.pathname === '//') rewrittenUrl.pathname = '/';
+
+      // Keep the room name via a header so the DO can gate loadtest-only behavior on HTTP endpoints.
+      const headers = new Headers(request.headers);
+      headers.set('X-Room-Name', roomId);
+
+      return room.fetch(new Request(rewrittenUrl.toString(), {
+        method: request.method,
+        headers,
+        // Only include a body for non-GET/HEAD methods.
+        body: (request.method === 'GET' || request.method === 'HEAD') ? undefined : request.body,
+        redirect: request.redirect,
+      }));
     }
     
     // Health check
