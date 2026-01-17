@@ -18,7 +18,7 @@ export const ENEMY_TYPES = {
 		maxHp: 20,
 		speed: 75,
 		contactDamage: 10,
-		xpDropValue: 2,
+		xpDropValue: 2.5,
 		spawnWeight: 50,     // Higher = more common
 		color: "rgba(200, 60, 60, 0.9)",
 		outline: "rgba(90, 20, 20, 0.9)"
@@ -32,7 +32,7 @@ export const ENEMY_TYPES = {
 		chargeSpeed: 450,    // Speed when charging
 		chargeCooldown: 2,   // Seconds between charges
 		chargeDistance: 180, // Distance to trigger charge
-		xpDropValue: 3,
+		xpDropValue: 3.5,
 		spawnWeight: 30,
 		color: "rgba(255, 140, 0, 0.9)",
 		outline: "rgba(140, 70, 0, 0.9)"
@@ -46,8 +46,8 @@ export const ENEMY_TYPES = {
 		swarmBurstCount: 2,   // Shoots out swarm enemies
 		swarmBurstCooldown: 8, // Seconds between bursts
 		swarmBurstSpread: 24,  // Spawn spread radius
-		xpDropValue: 5,
-		spawnWeight: 15,
+		xpDropValue: 10,
+		spawnWeight: 5,
 		color: "rgba(100, 100, 180, 0.9)",
 		outline: "rgba(40, 40, 100, 0.9)"
 	},
@@ -92,7 +92,7 @@ export const BOSS_TYPES = {
 	titan: {
 		// Giant slow boss with massive HP
 		radius: 40,
-		maxHp: 1500,
+		maxHp: 800,
 		speed: 80,
 		contactDamage: 45,
 		xpDropValue: 25,
@@ -103,12 +103,12 @@ export const BOSS_TYPES = {
 	berserker: {
 		// Medium boss that charges repeatedly
 		radius: 28,
-		maxHp: 750,
+		maxHp: 600,
 		speed: 110,
 		contactDamage: 25,
 		chargeSpeed: 250,
 		chargeCooldown: 2,
-		chargeDistance: 250,
+		chargeDistance: 3250,
 		xpDropValue: 25,
 		spawnWeight: 35,
 		color: "rgba(220, 50, 50, 0.95)",
@@ -117,11 +117,11 @@ export const BOSS_TYPES = {
 	summoner: {
 		// Boss that spawns minions
 		radius: 32,
-		maxHp: 1100,
+		maxHp: 500,
 		speed: 125,
 		contactDamage: 15,
-		summonCooldown: 4,    // Seconds between summons
-		summonCount: 3,       // Enemies spawned per summon
+		summonCooldown: 2,    // Seconds between summons
+		summonCount: 10,       // Enemies spawned per summon
 		preferredDistance: 300, // Tries to stay away
 		xpDropValue: 25,
 		spawnWeight: 25,

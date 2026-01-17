@@ -49,7 +49,7 @@ export const DRONE_TYPES = [
 		color: '#FF6B6B',
 		opacity: 1.0,             // Full opacity
 		damageMult: 1,
-		cooldownMult: 1,       // ~0.5s base cooldown
+		cooldownMult: .75,       // ~0.5s base cooldown
 		rangeMult: 1.0,
 		accuracy: .75,
 		orbitRadiusMult: .8,
@@ -59,7 +59,7 @@ export const DRONE_TYPES = [
 		projectileSpeed: 450,     // pixels per second
 		projectileLifetime: 0,    // seconds (0 = use range-based lifetime)
 		pierceCount: 0,
-		projectileSize: 5,
+		projectileSize: 6,
 		procCoefficient: 1.2,
 		// PASSIVE: Ramps damage on same target
 		rampsTargetDamage: true,
