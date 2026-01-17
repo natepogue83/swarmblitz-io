@@ -25,7 +25,7 @@
  * - Assault: rampsTargetDamage - successive hits on same target deal more damage
  * - Rapid: chainHitsNearby - hits splash to nearby enemies for % damage
  * - Sniper: pierceDamageScaling - damage increases per enemy pierced
- * - Guardian: blackHolePull - projectile pulls enemies toward it
+ * - Black Hole: blackHolePull - projectile pulls enemies toward it
  * - Skirmisher: rampsFireRate - fire rate increases while continuously shooting
  * - Support: appliesBurn - hits apply stacking burn DOT
  * - Swarm: appliesBleed - hits apply stacking bleed DOT
@@ -116,11 +116,11 @@ export const DRONE_TYPES = [
 	},
 	{
 		id: 'guardian',
-		name: 'Guardian',
-		description: 'Slow plasma orbs. Sucks in nearby enemies like a black hole.',
-		color: '#3498DB',
+		name: 'Black Hole',
+		description: 'Slow singularity orb that pulls enemies inward.',
+		color: '#3B2A5A',
 		opacity: 0.3,            // Slightly glowy/transparent plasma
-		damageMult: 1.6,         // High damage
+		damageMult: .75,         // High damage
 		cooldownMult: 2.5,       // Slow fire rate
 		rangeMult: 1.2,           // Short range
 		accuracy: .6,
@@ -131,12 +131,18 @@ export const DRONE_TYPES = [
 		projectileSpeed: 100,     // Slow, chunky projectile
 		projectileLifetime: 2,
 		pierceCount: 10,
-		projectileSize: 14,
+		projectileSize: 28,
 		procCoefficient: 0.8,
 		// PASSIVE: Black hole pull
 		blackHolePull: true,
-		blackHolePullRadius: 100,    // Radius of pull effect
-		blackHolePullStrength: 70  // Pull strength (pixels per second)
+		blackHolePullRadius: 180,    // Radius of pull effect
+		blackHolePullStrength: 120,  // Pull strength (pixels per second)
+		blackHolePulseInterval: 0.35, // Seconds between damage pulses
+		blackHolePulseRadiusMult: 0.5, // Pulse radius as % of pull radius
+		blackHolePulseDamageMult: 0.5, // Pulse damage as % of base damage
+		blackHolePulseMin: 0.25,     // Pulse multiplier min
+		blackHolePulseMax: 0.9,      // Pulse multiplier max
+		blackHolePulseSpeed: 5       // Pulse speed (radians/sec)
 	},
 	{
 		id: 'skirmisher',
@@ -169,7 +175,7 @@ export const DRONE_TYPES = [
 		description: 'Short-range flame stream that ignites enemies.',
 		color: '#FF7A1A',
 		opacity: 0.15,
-		damageMult: 0.05,
+		damageMult: 0.01,
 		cooldownMult: 0.075,
 		rangeMult: 0.9,           // Short range
 		accuracy: .25,
@@ -355,6 +361,12 @@ export function applyDroneType(drone, typeId, baseStats) {
 		drone.blackHolePull = true;
 		drone.blackHolePullRadius = type.blackHolePullRadius ?? 80;
 		drone.blackHolePullStrength = type.blackHolePullStrength ?? 120;
+		drone.blackHolePulseInterval = type.blackHolePulseInterval ?? 0.35;
+		drone.blackHolePulseRadiusMult = type.blackHolePulseRadiusMult ?? 0.5;
+		drone.blackHolePulseDamageMult = type.blackHolePulseDamageMult ?? 0.25;
+		drone.blackHolePulseMin = type.blackHolePulseMin ?? 0.25;
+		drone.blackHolePulseMax = type.blackHolePulseMax ?? 0.9;
+		drone.blackHolePulseSpeed = type.blackHolePulseSpeed ?? 5;
 	}
 	
 	// PASSIVE: Skirmisher - Ramping fire rate

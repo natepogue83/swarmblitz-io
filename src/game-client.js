@@ -634,6 +634,7 @@ function processFrame(data) {
 				opacity: proj.opacity,
 				size: proj.size,
 				ownerId: proj.ownerId,
+				blackHolePull: proj.blackHolePull,
 				isPlayerShot: proj.isPlayerShot,
 				spawnTime: Date.now()
 			});

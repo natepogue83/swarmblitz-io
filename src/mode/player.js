@@ -572,7 +572,7 @@ function createDevConsole() {
 						<option value="assault" style="color:#FF6B6B">Assault - Balanced bullets</option>
 						<option value="rapid" style="color:#4ECDC4">Rapid - Fast hitscan laser</option>
 						<option value="sniper" style="color:#9B59B6">Sniper - Slow piercing railgun</option>
-						<option value="guardian" style="color:#3498DB">Guardian - Close-range plasma</option>
+						<option value="guardian" style="color:#3B2A5A">Black Hole - Singularity orb</option>
 						<option value="skirmisher" style="color:#F39C12">Skirmisher - Fast bullets</option>
 						<option value="support" style="color:#FF7A1A">Flame - Burning stream</option>
 						<option value="swarm" style="color:#E74C3C">Swarm - Tiny rapid lasers</option>
@@ -4803,7 +4803,11 @@ function renderProjectiles(ctx) {
 		
 		switch (attackType) {
 			case 'plasma':
-				renderPlasmaProjectile(ctx, proj.x, proj.y, size, rgba, rgbaLight);
+				if (proj.blackHolePull) {
+					renderBlackHoleProjectile(ctx, proj.x, proj.y, size, rgba, rgbaLight, proj.spawnTime);
+				} else {
+					renderPlasmaProjectile(ctx, proj.x, proj.y, size, rgba, rgbaLight);
+				}
 				break;
 			case 'railgun':
 				renderRailgunProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight);
@@ -4963,6 +4967,48 @@ function renderPlasmaProjectile(ctx, x, y, size, rgba, rgbaLight) {
 	ctx.fill();
 	
 	ctx.shadowBlur = 0;
+}
+
+// Render a black hole projectile - dark core with accretion ring
+function renderBlackHoleProjectile(ctx, x, y, size, rgba, rgbaLight, spawnTime) {
+	const t = (Date.now() - (spawnTime || Date.now())) / 1000;
+	const pulse = 0.85 + 0.15 * Math.sin(t * 4);
+	const coreSize = size * 0.65 * pulse;
+	const ringSize = size * 1.5 * (0.9 + 0.1 * Math.sin(t * 2.2));
+	const rotation = t * 1.8;
+	
+	// Outer glow
+	ctx.shadowBlur = 18;
+	ctx.shadowColor = rgba(0.4);
+	ctx.fillStyle = rgba(0.25);
+	ctx.beginPath();
+	ctx.arc(x, y, ringSize * 1.05, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Accretion ring
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(rotation);
+	ctx.strokeStyle = rgbaLight(0.6);
+	ctx.lineWidth = Math.max(2, size * 0.25);
+	ctx.beginPath();
+	ctx.ellipse(0, 0, ringSize, ringSize * 0.55, 0, 0.2, Math.PI * 1.4);
+	ctx.stroke();
+	ctx.restore();
+	
+	// Dark core
+	ctx.shadowBlur = 0;
+	ctx.fillStyle = 'rgba(10, 10, 15, 0.95)';
+	ctx.beginPath();
+	ctx.arc(x, y, coreSize, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Inner event horizon glow
+	ctx.strokeStyle = 'rgba(120, 140, 255, 0.35)';
+	ctx.lineWidth = Math.max(1, size * 0.1);
+	ctx.beginPath();
+	ctx.arc(x, y, coreSize * 0.75, 0, Math.PI * 2);
+	ctx.stroke();
 }
 
 // Render a railgun projectile - DIAMOND shape (elongated)
@@ -5571,52 +5617,52 @@ function renderSniperDrone(ctx, x, y, radius, color, time, isTargeting) {
 	}
 }
 
-// GUARDIAN - Bulky shield/hexagonal armored look
+// BLACK HOLE - Dark core with accretion ring
 function renderGuardianDrone(ctx, x, y, radius, color, time, isTargeting) {
-	const r = radius * 1.1; // Slightly larger
+	const r = radius * 1.15;
+	const pulse = 0.85 + 0.15 * Math.sin(time / 120);
+	const rotation = time / 220;
 	
-	// Outer shield ring
-	ctx.strokeStyle = hexToRgba(color, 0.5);
-	ctx.lineWidth = 3;
+	// Soft outer glow
+	ctx.shadowBlur = 16;
+	ctx.shadowColor = hexToRgba(color, 0.6);
+	ctx.fillStyle = hexToRgba(color, 0.2);
 	ctx.beginPath();
-	ctx.arc(x, y, r, 0, Math.PI * 2);
-	ctx.stroke();
-	
-	// Main octagonal body
-	ctx.fillStyle = hexToRgba(color, 0.9);
-	ctx.beginPath();
-	for (let i = 0; i < 8; i++) {
-		const angle = (i / 8) * Math.PI * 2 - Math.PI / 8;
-		const px = x + Math.cos(angle) * radius * 0.85;
-		const py = y + Math.sin(angle) * radius * 0.85;
-		if (i === 0) ctx.moveTo(px, py);
-		else ctx.lineTo(px, py);
-	}
-	ctx.closePath();
+	ctx.arc(x, y, r * 1.1, 0, Math.PI * 2);
 	ctx.fill();
 	
-	ctx.strokeStyle = shadeColor(color, -40);
+	// Accretion ring
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(rotation);
+	ctx.strokeStyle = hexToRgba('#8FB7FF', 0.55);
 	ctx.lineWidth = 2.5;
-	ctx.stroke();
-	
-	// Inner shield emblem
-	ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
 	ctx.beginPath();
-	ctx.moveTo(x, y - radius * 0.4);
-	ctx.lineTo(x + radius * 0.35, y);
-	ctx.lineTo(x + radius * 0.25, y + radius * 0.4);
-	ctx.lineTo(x - radius * 0.25, y + radius * 0.4);
-	ctx.lineTo(x - radius * 0.35, y);
-	ctx.closePath();
+	ctx.ellipse(0, 0, r * 0.95, r * 0.45, 0, 0.3, Math.PI * 1.6);
+	ctx.stroke();
+	ctx.restore();
+	
+	// Dark core
+	ctx.shadowBlur = 0;
+	ctx.fillStyle = 'rgba(8, 8, 12, 0.95)';
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.55 * pulse, 0, Math.PI * 2);
 	ctx.fill();
 	
-	// Pulse effect when targeting
+	// Inner glow ring
+	ctx.strokeStyle = 'rgba(120, 140, 255, 0.35)';
+	ctx.lineWidth = 2;
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.38 * pulse, 0, Math.PI * 2);
+	ctx.stroke();
+	
+	// Targeting pulse
 	if (isTargeting) {
-		const pulse = 0.3 + 0.3 * Math.sin(time / 150);
-		ctx.strokeStyle = `rgba(255, 255, 255, ${pulse})`;
+		const halo = 0.35 + 0.35 * Math.sin(time / 140);
+		ctx.strokeStyle = `rgba(140, 170, 255, ${halo})`;
 		ctx.lineWidth = 2;
 		ctx.beginPath();
-		ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+		ctx.arc(x, y, r * 1.15, 0, Math.PI * 2);
 		ctx.stroke();
 	}
 }
@@ -5673,7 +5719,7 @@ function renderSupportDrone(ctx, x, y, radius, color, time, isTargeting, engineA
 	const r = radius * 1.1;
 	const plumeLen = radius * 1.65;
 	const wobble = Math.sin(time / 170) * 0.18;
-	const baseAngle = (engineAngle != null ? engineAngle : Math.PI / 2) - (Math.PI * (80 / 180));
+	const baseAngle = (engineAngle != null ? engineAngle : Math.PI / 2) - (Math.PI * (75 / 180));
 	const angle = wobble + baseAngle;
 	
 	// Burner core

@@ -1435,6 +1435,12 @@ function Game(id) {
 				blackHolePull: droneType.blackHolePull || false,
 				blackHolePullRadius: droneType.blackHolePullRadius || 80,
 				blackHolePullStrength: droneType.blackHolePullStrength || 120,
+				blackHolePulseInterval: droneType.blackHolePulseInterval ?? 0.35,
+				blackHolePulseRadiusMult: droneType.blackHolePulseRadiusMult ?? 0.5,
+				blackHolePulseDamageMult: droneType.blackHolePulseDamageMult ?? 0.25,
+				blackHolePulseMin: droneType.blackHolePulseMin ?? 0.25,
+				blackHolePulseMax: droneType.blackHolePulseMax ?? 0.9,
+				blackHolePulseSpeed: droneType.blackHolePulseSpeed ?? 5,
 				dropsHealPack: droneType.dropsHealPack || false,
 				healPackPercent: droneType.healPackPercent || 0.05,
 				healPackMin: droneType.healPackMin || 10,
@@ -1509,7 +1515,8 @@ function Game(id) {
 				opacity: proj.opacity,
 				size: proj.size,
 				ownerId: proj.ownerId,
-				isPlayerShot: proj.isPlayerShot
+				isPlayerShot: proj.isPlayerShot,
+				blackHolePull: proj.blackHolePull || false
 			});
 		}
 
@@ -1554,7 +1561,7 @@ function Game(id) {
 				proj.y += moveY;
 				proj.distanceTraveled += Math.hypot(moveX, moveY);
 				
-				// PASSIVE: Guardian - Black hole pull (apply before checking removal)
+				// PASSIVE: Black hole pull (apply before checking removal)
 				if (proj.blackHolePull) {
 					for (const enemy of enemies) {
 						if (enemy.dead || enemy.hp <= 0) continue;
@@ -1566,6 +1573,50 @@ function Game(id) {
 							const pullDirY = (proj.y - enemy.y) / pullDist;
 							enemy.x += pullDirX * pullStrength;
 							enemy.y += pullDirY * pullStrength;
+						}
+					}
+					
+					// Pulsing damage aura around the singularity
+					const pulseInterval = proj.blackHolePulseInterval ?? 0.35;
+					if (!proj.lastBlackHolePulse) proj.lastBlackHolePulse = runTime;
+					if (runTime - proj.lastBlackHolePulse >= pulseInterval) {
+						proj.lastBlackHolePulse = runTime;
+						const pulsePhase = (runTime - proj.spawnTime) * (proj.blackHolePulseSpeed ?? 5);
+						const pulseMin = proj.blackHolePulseMin ?? 0.25;
+						const pulseMax = proj.blackHolePulseMax ?? 0.9;
+						const pulse = pulseMin + (pulseMax - pulseMin) * (0.5 + 0.5 * Math.sin(pulsePhase));
+						const pulseDamage = proj.damage * (proj.blackHolePulseDamageMult ?? 0.25) * pulse;
+						const pulseRadius = proj.blackHolePullRadius * (proj.blackHolePulseRadiusMult ?? 0.5);
+						
+						if (!economyDeltas.hitscanEvents) economyDeltas.hitscanEvents = [];
+						for (const enemy of enemies) {
+							if (enemy.dead || enemy.hp <= 0) continue;
+							const dist = Math.hypot(enemy.x - proj.x, enemy.y - proj.y);
+							if (dist > pulseRadius) continue;
+							
+							enemy.hp -= pulseDamage;
+							if (enemy.hp < 0) enemy.hp = 0;
+							markEnemyHit(enemy);
+							
+							economyDeltas.hitscanEvents.push({
+								fromX: proj.x,
+								fromY: proj.y,
+								toX: enemy.x,
+								toY: enemy.y,
+								ownerId: proj.ownerId,
+								targetEnemyId: enemy.id,
+								damage: pulseDamage,
+								remainingHp: enemy.hp,
+								isCrit: false,
+								attackType: proj.attackType,
+								typeColor: proj.typeColor,
+								isProjectileHit: true
+							});
+							
+							if (enemy.hp <= 0) {
+								const owner = players.find(p => p.num === proj.ownerId);
+								handleEnemyDeath(enemy, owner);
+							}
 						}
 					}
 				}
@@ -1618,6 +1669,10 @@ function Game(id) {
 						// Calculate damage with Hunter bonus
 						// Note: proj.damage already includes player's damageMult (with Territorial/Berserker) from creation time
 						let finalDamage = proj.damage;
+						if (proj.blackHolePull) {
+							const pulse = 0.75 + 0.25 * Math.sin((runTime - proj.spawnTime) * 4);
+							finalDamage *= pulse;
+						}
 						if (ownerStats.hasHunter && enemy.hp < enemy.maxHp * UPGRADE_KNOBS.HUNTER.enemyHpThreshold) {
 							finalDamage *= (1 + UPGRADE_KNOBS.HUNTER.damageBonus);
 						}
