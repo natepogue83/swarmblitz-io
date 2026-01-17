@@ -86,6 +86,7 @@ function createEconomyDeltas() {
 		coinSpawns: [],
 		coinRemovals: [],
 		coinUpdates: [],
+		boostPickups: [],
 		gameMessages: [],
 		xpUpdates: [],
 		levelUps: [],
@@ -111,6 +112,7 @@ function mergeEconomyDeltas(target, source) {
 	target.coinSpawns.push(...source.coinSpawns);
 	target.coinRemovals.push(...source.coinRemovals);
 	target.coinUpdates.push(...source.coinUpdates);
+	target.boostPickups.push(...source.boostPickups);
 	target.gameMessages.push(...source.gameMessages);
 	target.xpUpdates.push(...source.xpUpdates);
 	target.levelUps.push(...source.levelUps);
@@ -913,19 +915,47 @@ function Game(id) {
 		
 		const economyDeltas = createEconomyDeltas();
 		
-		// Coin spawning
+		// Stamina boost spawning (near player, outside territory)
 		coinSpawnCooldown -= deltaSeconds;
-		if (coinSpawnCooldown <= 0 && coins.length < consts.MAX_COINS) {
-			const x = Math.random() * (mapSize - 2 * consts.BORDER_WIDTH) + consts.BORDER_WIDTH;
-			const y = Math.random() * (mapSize - 2 * consts.BORDER_WIDTH) + consts.BORDER_WIDTH;
-			const newCoin = {
-				id: nextCoinId++,
-				x,
-				y,
-				value: consts.COIN_VALUE
-			};
-			coins.push(newCoin);
-			economyDeltas.coinSpawns.push(newCoin);
+		const activePlayer = players.find(p => !p.dead && !p.disconnected) || null;
+		if (coinSpawnCooldown <= 0 && coins.length < consts.MAX_COINS && activePlayer) {
+			// Try to spawn stamina boost near player but outside their territory
+			const spawnRadius = consts.BOOST_SPAWN_RADIUS || 300;
+			const minDist = consts.BOOST_SPAWN_MIN_DIST || 100;
+			let spawnX = null, spawnY = null;
+			
+			for (let attempt = 0; attempt < 10; attempt++) {
+				const angle = Math.random() * Math.PI * 2;
+				const dist = minDist + Math.random() * (spawnRadius - minDist);
+				const tryX = activePlayer.x + Math.cos(angle) * dist;
+				const tryY = activePlayer.y + Math.sin(angle) * dist;
+				
+				// Clamp to map bounds
+				const x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, tryX));
+				const y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, tryY));
+				
+				// Check if outside player's territory
+				const inPlayerTerritory = activePlayer.territory && activePlayer.territory.length >= 3 &&
+					pointInPolygon({ x, y }, activePlayer.territory);
+				
+				if (!inPlayerTerritory) {
+					spawnX = x;
+					spawnY = y;
+					break;
+				}
+			}
+			
+			if (spawnX !== null && spawnY !== null) {
+				const newCoin = {
+					id: nextCoinId++,
+					x: spawnX,
+					y: spawnY,
+					type: "stamina",
+					value: consts.STAMINA_BOOST_AMOUNT || 20
+				};
+				coins.push(newCoin);
+				economyDeltas.coinSpawns.push(newCoin);
+			}
 			coinSpawnCooldown = consts.COIN_SPAWN_INTERVAL_SEC;
 		}
 		
@@ -960,6 +990,7 @@ function Game(id) {
 			if (pendingDeltas.coinSpawns.length > 0) data.coinSpawns = pendingDeltas.coinSpawns;
 			if (pendingDeltas.coinRemovals.length > 0) data.coinRemovals = pendingDeltas.coinRemovals;
 			if (pendingDeltas.coinUpdates.length > 0) data.coinUpdates = pendingDeltas.coinUpdates;
+			if (pendingDeltas.boostPickups.length > 0) data.boostPickups = pendingDeltas.boostPickups;
 			if (pendingDeltas.gameMessages.length > 0) data.gameMessages = pendingDeltas.gameMessages;
 			if (pendingDeltas.xpUpdates.length > 0) data.xpUpdates = pendingDeltas.xpUpdates;
 			if (pendingDeltas.levelUps.length > 0) data.levelUps = pendingDeltas.levelUps;
@@ -3343,7 +3374,7 @@ function Game(id) {
 				changed = true;
 			}
 
-			// 1. XP pickups (coins) -> add directly to XP
+			// 1. XP pickups (coins) and boost pickups
 			// Pickup radius is based on drone orbit radius (where drones circle), scaled with player size
 			const droneOrbitRadius = consts.DRONE_ORBIT_RADIUS || 55;
 			const playerSizeScale = p.sizeScale || 1.0;
@@ -3353,14 +3384,44 @@ function Game(id) {
 				const coin = coins[i];
 				const dist = Math.hypot(p.x - coin.x, p.y - coin.y);
 				if (dist < effectivePickupRadius) {
-					p.xp += coin.value;
-					if (coin.type === "boss") {
-						const rewardText = applyBossOrbReward(p);
-						if (rewardText) {
-							economyDeltas.gameMessages.push({
-								text: rewardText,
-								duration: 2.0
-							});
+					// Handle different boost/orb types
+					if (coin.type === "stamina") {
+						// Stamina boost: add temporary stamina (clamped to max)
+						const boostAmount = coin.value || consts.STAMINA_BOOST_AMOUNT || 20;
+						p.stamina = Math.min(p.maxStamina || 100, (p.stamina || 0) + boostAmount);
+						economyDeltas.boostPickups = economyDeltas.boostPickups || [];
+						economyDeltas.boostPickups.push({
+							type: "stamina",
+							amount: boostAmount,
+							x: coin.x,
+							y: coin.y,
+							playerNum: p.num
+						});
+					} else if (coin.type === "heal") {
+						// Heal boost: heal for 20*(minutes+1)
+						const minutes = Math.floor(runTime / 60);
+						const healBase = consts.HEAL_BOOST_BASE || 20;
+						const healAmount = healBase * (minutes + 1);
+						p.hp = Math.min(p.maxHp || 100, (p.hp || 0) + healAmount);
+						economyDeltas.boostPickups = economyDeltas.boostPickups || [];
+						economyDeltas.boostPickups.push({
+							type: "heal",
+							amount: healAmount,
+							x: coin.x,
+							y: coin.y,
+							playerNum: p.num
+						});
+					} else {
+						// XP orbs (enemy, boss, default)
+						p.xp += coin.value;
+						if (coin.type === "boss") {
+							const rewardText = applyBossOrbReward(p);
+							if (rewardText) {
+								economyDeltas.gameMessages.push({
+									text: rewardText,
+									duration: 2.0
+								});
+							}
 						}
 					}
 					economyDeltas.coinRemovals.push(coin.id);
@@ -3369,23 +3430,34 @@ function Game(id) {
 				}
 			}
 
-			// 2. Territory rewards -> add directly to XP
+			// 2. Territory rewards -> convert stamina boosts to heal boosts
 			if (p._pendingTerritoryAreaGained > 0) {
-				// Auto-collect gold coins inside newly claimed territory (not enemy XP orbs)
+				// Convert stamina boosts inside newly claimed territory to heal boosts
 				if (p.territory && p.territory.length >= 3) {
-					let territoryXp = 0;
 					for (let i = coins.length - 1; i >= 0; i--) {
 						const coin = coins[i];
+						// Skip enemy/boss XP orbs - they don't convert
 						if (coin.type === "enemy" || coin.type === "boss") continue;
+						// Skip heal boosts - already converted
+						if (coin.type === "heal") continue;
+						
 						if (pointInPolygon({ x: coin.x, y: coin.y }, p.territory)) {
-							territoryXp += coin.value;
-							economyDeltas.coinRemovals.push(coin.id);
-							coins.splice(i, 1);
+							if (coin.type === "stamina") {
+								// Convert stamina boost to heal boost
+								coin.type = "heal";
+								// Update the value for heal scaling (base heal amount)
+								coin.value = consts.HEAL_BOOST_BASE || 20;
+								// Notify client of the type change
+								economyDeltas.coinUpdates.push({
+									id: coin.id,
+									x: coin.x,
+									y: coin.y,
+									type: "heal",
+									value: coin.value
+								});
+							}
+							// Note: we no longer auto-collect gold coins since they're now stamina boosts
 						}
-					}
-					if (territoryXp > 0) {
-						p.xp += territoryXp;
-						changed = true;
 					}
 				}
 

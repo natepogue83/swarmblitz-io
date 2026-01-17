@@ -2546,8 +2546,70 @@ function paint(ctx) {
 			ctx.beginPath();
 			ctx.arc(coin.x, coin.y, orbRadius, 0, Math.PI * 2);
 			ctx.fill();
+		} else if (coin.type === "stamina" || coin.type === "heal") {
+			// Stamina/Heal boost orb - yellow with plus sign and sparkles
+			const isHeal = coin.type === "heal";
+			const baseRadius = consts.COIN_RADIUS * 1.4;
+			const pulse = 0.9 + 0.1 * Math.sin(t * 4 + (coin.id || 0) * 0.5);
+			const orbRadius = baseRadius * pulse;
+			
+			// Color: yellow for stamina, green-tinted for heal
+			const mainColor = isHeal ? "rgba(100, 255, 150, 0.9)" : "rgba(255, 230, 80, 0.95)";
+			const glowColor = isHeal ? "rgba(80, 255, 120, 0.5)" : "rgba(255, 215, 0, 0.6)";
+			const coreColor = isHeal ? "rgba(180, 255, 200, 0.95)" : "rgba(255, 255, 200, 0.95)";
+			
+			// Outer glow
+			const glowRadius = orbRadius * 2.5;
+			const glow = ctx.createRadialGradient(
+				coin.x, coin.y, 0,
+				coin.x, coin.y, glowRadius
+			);
+			glow.addColorStop(0, coreColor);
+			glow.addColorStop(0.3, glowColor);
+			glow.addColorStop(0.6, isHeal ? "rgba(80, 255, 120, 0.15)" : "rgba(255, 215, 0, 0.15)");
+			glow.addColorStop(1, "rgba(255, 255, 0, 0)");
+			ctx.fillStyle = glow;
+			ctx.beginPath();
+			ctx.arc(coin.x, coin.y, glowRadius, 0, Math.PI * 2);
+			ctx.fill();
+			
+			// Main orb body
+			ctx.fillStyle = mainColor;
+			ctx.beginPath();
+			ctx.arc(coin.x, coin.y, orbRadius, 0, Math.PI * 2);
+			ctx.fill();
+			
+			// Inner bright core
+			ctx.fillStyle = coreColor;
+			ctx.beginPath();
+			ctx.arc(coin.x, coin.y, orbRadius * 0.5, 0, Math.PI * 2);
+			ctx.fill();
+			
+			// Plus sign
+			const plusSize = orbRadius * 0.6;
+			const plusThickness = orbRadius * 0.25;
+			ctx.fillStyle = isHeal ? "rgba(255, 255, 255, 0.95)" : "rgba(255, 255, 255, 0.9)";
+			// Horizontal bar
+			ctx.fillRect(coin.x - plusSize, coin.y - plusThickness / 2, plusSize * 2, plusThickness);
+			// Vertical bar
+			ctx.fillRect(coin.x - plusThickness / 2, coin.y - plusSize, plusThickness, plusSize * 2);
+			
+			// Sparkles orbiting around
+			const sparkleCount = 4;
+			for (let i = 0; i < sparkleCount; i++) {
+				const angle = t * 3 + i * (Math.PI * 2 / sparkleCount) + (coin.id || 0) * 0.3;
+				const dist = orbRadius * (1.4 + 0.2 * Math.sin(t * 5 + i));
+				const sx = coin.x + Math.cos(angle) * dist;
+				const sy = coin.y + Math.sin(angle) * dist;
+				const sparkleSize = 2 + 1.5 * Math.sin(t * 6 + i);
+				const sparkleAlpha = 0.6 + 0.3 * Math.sin(t * 7 + i);
+				ctx.fillStyle = `rgba(255, 255, 255, ${sparkleAlpha})`;
+				ctx.beginPath();
+				ctx.arc(sx, sy, Math.max(1, sparkleSize), 0, Math.PI * 2);
+				ctx.fill();
+			}
 		} else {
-			// Default gold coin
+			// Default gold coin (legacy fallback)
 			ctx.fillStyle = "#FFD700";
 			ctx.shadowBlur = 5;
 			ctx.shadowColor = "rgba(0, 0, 0, 0.3)";
@@ -5751,6 +5813,25 @@ export function healPackPickup(pack, healAmount) {
 	const user = client.getUser();
 	if (user && pack) {
 		addDamageNumber(pack.x, pack.y - 20, healAmount, false, true); // isHeal = true
+	}
+}
+
+// Boost pickup handler (stamina/heal boost orbs)
+export function boostPickup(type, amount, x, y) {
+	// Play pickup sound
+	if (soundInitialized) {
+		SoundManager.playCoinPickup();
+	}
+	
+	// Show floating number with appropriate color
+	// Yellow for stamina, green for heal
+	const isHeal = type === "heal";
+	if (isHeal) {
+		// Green heal number
+		addDamageNumber(x, y - 15, amount, false, true);
+	} else {
+		// Yellow stamina number (use custom color via spawnDamageNumber)
+		spawnDamageNumber(x, y - 15, amount, false, '#FFD700', false);
 	}
 }
 
