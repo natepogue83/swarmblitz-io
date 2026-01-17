@@ -41,12 +41,15 @@ export const consts = {
 	"BOOST_SPAWN_RADIUS": 600,          // Spawn distance from player
 	"BOOST_SPAWN_MIN_DIST": 200,        // Minimum spawn distance from player
 	"BOOST_SPAWN_INTERVAL_SEC": 2.0,    // Seconds between boost orb spawn attempts
-	"MAX_BOOST_ORBS": 40               // Maximum stamina/heal boosts at once
+	"MAX_BOOST_ORBS": 10,               // Maximum stamina/heal boosts at once
+	"BOOST_ORB_LIFETIME_SEC": 15,       // Seconds before boost orbs disappear
+	"BOOST_ORB_BLINK_TIME": 3,          // Seconds before disappearing when orb blinks
 	
 	// ===== XP VALUES (Easy tuning knobs) =====
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)
 	"ENEMY_XP_DROP_VALUE": 3,          // XP from picking up enemy death drops (red orbs)
 	"TERRITORY_XP_PER_AREA": 0.00018,  // XP gained per unit of area captured (territory)
+	"TERRITORY_XP_SCALE": .5,         // Simple multiplier for territory XP (1.0 = default, 2.0 = double, 0.5 = half)
 	
 	// ===== DEATH XP TRANSFER =====
 	"COIN_DROP_PERCENT": 0.15,         // Percentage of XP dropped as loot on death
@@ -65,8 +68,9 @@ export const consts = {
 	"XP_GROWTH_RATE": 1.18,          // Exponential growth rate per level
 	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
 	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
-	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (5%)
+	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (1%)
 	"PLAYER_SIZE_SCALE_MAX": 1.6,     // Maximum size multiplier
+	"ZOOM_SCALE_RATE": 0.2,           // How much zoom scales with size (0 = no zoom, 1 = full zoom)
 	
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)

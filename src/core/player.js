@@ -3,7 +3,7 @@ import { consts } from "../../config.js";
 import polygonClipping from "polygon-clipping";
 import * as UPGRADE_KNOBS from "./upgrade-knobs.js";
 
-export const PLAYER_RADIUS = 15;
+export const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
 const TRAIL_MIN_DIST = 10;
 const SHADOW_OFFSET = 10;
 
@@ -1397,6 +1397,19 @@ Player.prototype.renderBody = function(ctx, fade, skipTrail) {
 	ctx.beginPath();
 	ctx.arc(this.x, this.y, scaledRadius, 0, Math.PI * 2);
 	ctx.fill();
+	
+	// Damage flash overlay
+	if (this.damageFlashUntil && now < this.damageFlashUntil) {
+		const duration = this.damageFlashDuration || 200;
+		const flash = Math.max(0, (this.damageFlashUntil - now) / duration);
+		ctx.save();
+		ctx.globalAlpha = 0.6 * flash;
+		ctx.fillStyle = 'rgba(255, 80, 80, 0.9)';
+		ctx.beginPath();
+		ctx.arc(this.x, this.y, scaledRadius, 0, Math.PI * 2);
+		ctx.fill();
+		ctx.restore();
+	}
 	
 	// Green-to-gold glow effect when in own territory (safety indicator)
 	if (inOwnTerritory && !this.isSnipped) {

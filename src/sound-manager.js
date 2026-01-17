@@ -10,15 +10,15 @@ let initialized = false;
 // Sound settings - individual volume knobs for each sound type
 const settings = {
     masterVolume: 0.6,
-    sfxVolume: 0.8,
-    musicVolume: 0.3,
+    sfxVolume: 0.15,
+    musicVolume: 0.2,
     enabled: true,
     
     // Individual sound volumes (0.0 - 1.0)
     // Adjust these to balance sound levels
     volumes: {
-        playerLaser: 0.3,    // Your drone laser shots (legacy)
-        enemyLaser: 0.2,     // Enemy drone laser shots (legacy)
+        playerLaser: 0.2,    // Your drone laser shots (legacy)
+        enemyLaser: 0.1,     // Enemy drone laser shots (legacy)
         playerFuse: 1.0,     // Your fuse when snipped
         enemyFuse: 0.7,      // Enemy fuse when you snip them
         capture: 1.0,        // Territory capture sound
@@ -29,8 +29,8 @@ const settings = {
         coinPickup: .1,     // XP orb pickup
         hit: 1.5,            // Taking damage
         trailing: 0.4,       // Legacy (unused)
-        speedRush: 0.3,      // Speed rush sound (plays at 10%+ speed buff)
-        momentum: 0.4,       // Momentum start cue
+        speedRush: 0.2,      // Speed rush sound (plays at 10%+ speed buff)
+        momentum: 0.2,       // Momentum start cue
         
         // Per-attack-type fire sounds (drone shoots)
         // Lower for spammy weapons, higher for impactful slow weapons
@@ -39,13 +39,15 @@ const settings = {
         railgun_fire: 0.35,  // Sniper - high, slow and heavy
         plasma_fire: 0.20,   // Guardian - medium-high, slow chunky
         pulse_fire: 0.15,    // Support - moderate, slow
+        flame_fire: 0.12,    // Flame - soft hiss
         
         // Per-attack-type impact sounds (projectile hits)
         bullet_impact: 0.18,
         laser_impact: 0.08,  // Very quiet - lots of these
         railgun_impact: 0.30,
         plasma_impact: 0.30,
-        pulse_impact: 0.18
+        pulse_impact: 0.18,
+        flame_impact: 0.14
     }
 };
 
@@ -64,6 +66,7 @@ const voiceLimiter = {
         railgun_fire:  { maxVoices: 2, minInterval: 250 },  // Sniper - slow, let it be heard
         plasma_fire:   { maxVoices: 2, minInterval: 100 },  // Guardian - chunky
         pulse_fire:    { maxVoices: 3, minInterval: 70 },   // Support
+        flame_fire:    { maxVoices: 4, minInterval: 55 },   // Flame stream
         
         // Impact sounds - more restrictive to prevent audio mud
         bullet_impact:  { maxVoices: 4, minInterval: 50 },
@@ -71,6 +74,7 @@ const voiceLimiter = {
         railgun_impact: { maxVoices: 2, minInterval: 180 }, // Heavy, distinctive
         plasma_impact:  { maxVoices: 2, minInterval: 90 },
         pulse_impact:   { maxVoices: 3, minInterval: 60 },
+        flame_impact:   { maxVoices: 4, minInterval: 50 },
         
         // Important game events - less restrictive, should always be heard
         coinPickup:  { maxVoices: 4, minInterval: 40 },
@@ -476,7 +480,7 @@ export function playEnemyLaser(distance, maxDistance = 800) {
 
 /**
  * Play projectile fire sound based on attack type
- * @param {string} attackType - 'bullet', 'laser', 'railgun', 'plasma', 'pulse'
+ * @param {string} attackType - 'bullet', 'laser', 'railgun', 'plasma', 'pulse', 'flame'
  * @param {number} distance - Distance from local player (for volume falloff)
  * @param {boolean} isPlayerShot - True if this is the local player's shot
  */
@@ -514,6 +518,9 @@ export function playProjectileFire(attackType, distance = 0, isPlayerShot = fals
         case 'pulse':
             playPulseFire(vol * distVol, isPlayerShot);
             break;
+        case 'flame':
+            playPulseFire(vol * distVol, isPlayerShot);
+            break;
         default:
             // Fallback to generic laser
             playLaserFire(vol * distVol, isPlayerShot);
@@ -524,7 +531,7 @@ export function playProjectileFire(attackType, distance = 0, isPlayerShot = fals
 
 /**
  * Play projectile impact sound based on attack type
- * @param {string} attackType - 'bullet', 'laser', 'railgun', 'plasma', 'pulse'
+ * @param {string} attackType - 'bullet', 'laser', 'railgun', 'plasma', 'pulse', 'flame'
  * @param {number} distance - Distance from local player
  */
 export function playProjectileImpact(attackType, distance = 0) {
@@ -558,6 +565,9 @@ export function playProjectileImpact(attackType, distance = 0) {
             playPlasmaImpact(vol * distVol);
             break;
         case 'pulse':
+            playPulseImpact(vol * distVol);
+            break;
+        case 'flame':
             playPulseImpact(vol * distVol);
             break;
         default:
