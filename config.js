@@ -49,7 +49,7 @@ export const consts = {
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)
 	"ENEMY_XP_DROP_VALUE": 3,          // XP from picking up enemy death drops (red orbs)
 	"XP_ORB_LIFETIME_SEC": 30,         // Seconds before enemy XP orbs disappear (0 = never)
-	"TERRITORY_XP_PER_AREA": 0.00018,  // XP gained per unit of area captured (territory)
+	"TERRITORY_XP_PER_AREA": 0.0002,  // XP gained per unit of area captured (territory)
 	"TERRITORY_XP_SCALE": .55,         // Simple multiplier for territory XP (1.0 = default, 2.0 = double, 0.5 = half)
 	"TERRITORY_XP_SCALE_CAP_MIN": 5,  // Minutes after which territory XP stops scaling with level (0 = no cap)
 	
