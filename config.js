@@ -67,7 +67,7 @@ export const consts = {
 	
 	// ===== XP / LEVELING SYSTEM =====
 	"XP_BASE_PER_LEVEL": 35,         // Base XP needed to level up (level 1 → 2)
-	"XP_GROWTH_RATE": 1.18,          // Exponential growth rate per level
+	"XP_GROWTH_RATE": 1.13,          // Exponential growth rate per level
 	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
 	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (1%)
