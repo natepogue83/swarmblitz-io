@@ -15,10 +15,10 @@ export const ENEMY_TYPES = {
 	basic: {
 		unlockTime: 0,       // Available from start
 		radius: 10,
-		maxHp: 25,
+		maxHp: 20,
 		speed: 75,
-		contactDamage: 8,
-		xpDropValue: 3,
+		contactDamage: 10,
+		xpDropValue: 2,
 		spawnWeight: 50,     // Higher = more common
 		color: "rgba(200, 60, 60, 0.9)",
 		outline: "rgba(90, 20, 20, 0.9)"
@@ -28,11 +28,11 @@ export const ENEMY_TYPES = {
 		radius: 12,
 		maxHp: 30,
 		speed: 55,           // Base speed (slower), but charges fast
-		contactDamage: 15,
-		chargeSpeed: 200,    // Speed when charging
-		chargeCooldown: 3,   // Seconds between charges
+		contactDamage: 25,
+		chargeSpeed: 450,    // Speed when charging
+		chargeCooldown: 2,   // Seconds between charges
 		chargeDistance: 180, // Distance to trigger charge
-		xpDropValue: 4,
+		xpDropValue: 3,
 		spawnWeight: 30,
 		color: "rgba(255, 140, 0, 0.9)",
 		outline: "rgba(140, 70, 0, 0.9)"
@@ -40,10 +40,13 @@ export const ENEMY_TYPES = {
 	tank: {
 		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
 		radius: 18,
-		maxHp: 110,
-		speed: 55,           // Very slow
+		maxHp: 80,
+		speed: 45,           // Very slow
 		contactDamage: 20,
-		xpDropValue: 10,
+		swarmBurstCount: 2,   // Shoots out swarm enemies
+		swarmBurstCooldown: 8, // Seconds between bursts
+		swarmBurstSpread: 24,  // Spawn spread radius
+		xpDropValue: 5,
 		spawnWeight: 15,
 		color: "rgba(100, 100, 180, 0.9)",
 		outline: "rgba(40, 40, 100, 0.9)"
@@ -51,25 +54,33 @@ export const ENEMY_TYPES = {
 	swarm: {
 		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
 		radius: 6,
-		maxHp: 5,
+		maxHp: 2,
 		speed: 200,           // Fast
 		contactDamage: 6,
+		swarmSpawnCount: 2,   // Spawn in large swarms
+		swarmSpawnSpread: 28, // Cluster spread radius
+		chaseRampSeconds: 12,  // Seconds to reach cap speed
+		chaseSpeedCapMult: 1.10, // 101% of player speed
 		xpDropValue: 1,
-		spawnWeight: 60,     // Very common when unlocked
+		spawnWeight: 30,     // Very common when unlocked
 		color: "rgba(150, 220, 80, 0.9)",
 		outline: "rgba(70, 120, 30, 0.9)"
 	},
 	sniper: {
 		unlockTime: 90,      // Unlocks at 90 seconds (60+30)
 		radius: 9,
-		maxHp: 20,
-		speed: 60,           // Moves to maintain distance
+		maxHp: 25,
+		speed: 75,           // Moves to maintain distance
 		contactDamage: 5,
+		healRadius: 200,
+		healAmount: 5,
+		healPercent: 0.10,
+		healCooldown: 0.75,
 		preferredDistance: 200,  // Distance it tries to maintain from player
 		xpDropValue: 10,
-		spawnWeight: 20,
-		color: "rgba(180, 60, 180, 0.9)",
-		outline: "rgba(90, 20, 90, 0.9)"
+		spawnWeight: 15,
+		color: "rgba(220, 245, 255, 0.95)",
+		outline: "rgba(80, 170, 255, 0.95)"
 	}
 };
 
@@ -143,7 +154,7 @@ export const ENEMY_SPAWN_RATE = {
 export const ENEMY_SPAWN_LIMITS = {
 	// Maximum number of enemies of each type that can be alive at once.
 	// Prevents performance issues from excessive enemy buildup.
-	maxPerType: 50
+	maxPerType: 40
 };
 
 // ============================================================================
@@ -159,7 +170,7 @@ export const ENEMY_SCALING = {
 	hp: {
 		enabled: true,
 		startTime: 0,
-		perMinute: 0.55,
+		perMinute: 0.60,
 		exponent: 1.55,
 		maxMult: 9001.0
 	},
@@ -169,6 +180,15 @@ export const ENEMY_SCALING = {
 		perMinute: 0.25,
 		exponent: 1.6,
 		maxMult: 99999
+	},
+	speed: {
+		enabled: true,
+		startTime: 0,
+		perMinute: 0.05, // ~25% faster at 5 minutes
+		exponent: 1.0,
+		softCap: 2,
+		softCapFalloff: 0.35,
+		maxMult: 2.5
 	},
 	// Extra "late-game ramp" that kicks in after a certain time
 	lateGameRamp: {

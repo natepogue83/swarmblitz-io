@@ -206,11 +206,34 @@ function getEnemyScalingMultiplier(runTimeSeconds, scaling) {
 	
 	const linearMult = 1 + minutes * perMinute;
 	const mult = Math.pow(linearMult, exponent);
+	let finalMult = mult;
+	
+	if (scaling.softCap !== undefined && finalMult > scaling.softCap) {
+		const falloff = scaling.softCapFalloff ?? 0.5;
+		finalMult = scaling.softCap + (finalMult - scaling.softCap) * falloff;
+	}
 	
 	if (scaling.maxMult !== undefined) {
-		return Math.min(scaling.maxMult, mult);
+		return Math.min(scaling.maxMult, finalMult);
 	}
-	return mult;
+	return finalMult;
+}
+
+function getPlayerMoveSpeed(player) {
+	if (!player) return consts.SPEED || 4;
+	const baseSpeed = player.speed || consts.SPEED || 4;
+	const stats = player.derivedStats || {};
+	let upgradeSpeedMult = stats.moveSpeedMult || 1.0;
+	
+	if ((player.adrenalineTimer || 0) > 0) {
+		upgradeSpeedMult += UPGRADE_KNOBS.ADRENALINE.speedBonus;
+	}
+	if ((player.momentumStacks || 0) > 0) {
+		upgradeSpeedMult += (player.momentumStacks * UPGRADE_KNOBS.MOMENTUM.speedPerSecond);
+	}
+	
+	const trailSpeedMult = player.currentSpeedBuff || 1.0;
+	return baseSpeed * 60 * trailSpeedMult * upgradeSpeedMult;
 }
 
 // ===== DRONE SYSTEM =====
@@ -445,6 +468,8 @@ function Game(id) {
 	let runTime = 0;
 	let timeSpeedMultiplier = 1; // Dev tool: speeds up runTime without affecting simulation
 	const enemyLifetimeSeconds = consts.ENEMY_LIFETIME_SECONDS ?? 15;
+	const enemyDespawnDistance = consts.ENEMY_DESPAWN_DISTANCE
+		?? ((consts.AOI_MIN_RADIUS ?? 400) + (consts.AOI_BUFFER ?? 900));
 
 	function markEnemyHit(enemy) {
 		if (!enemy || enemy.isBoss) return;
@@ -495,8 +520,10 @@ function Game(id) {
 		if (!enemy) return;
 		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
 		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+		const speedScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.speed);
 		const baseMaxHp = enemy.baseMaxHp ?? enemy.maxHp ?? 1;
 		const baseDamage = enemy.baseContactDamage ?? enemy.contactDamage ?? 0;
+		const baseSpeed = enemy.baseSpeed ?? enemy.speed ?? 0;
 		const newMaxHp = Math.max(1, baseMaxHp * hpScale);
 		if (enemy.maxHp !== newMaxHp) {
 			const hpRatio = enemy.maxHp > 0 ? (enemy.hp / enemy.maxHp) : 1;
@@ -504,6 +531,175 @@ function Game(id) {
 			enemy.hp = Math.max(0, Math.min(newMaxHp, hpRatio * newMaxHp));
 		}
 		enemy.contactDamage = baseDamage * damageScale;
+		enemy.speed = baseSpeed * speedScale;
+		if (enemy.baseSpeed === undefined) {
+			enemy.baseSpeed = baseSpeed;
+		}
+	}
+
+	function spawnSwarmEnemyAt(x, y) {
+		const maxPerType = ENEMY_SPAWN_LIMITS.maxPerType;
+		const currentCount = enemies.filter(e => !e.isBoss && e.type === 'swarm').length;
+		if (currentCount >= maxPerType) return false;
+		
+		const typeData = ENEMY_TYPES.swarm;
+		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+		const maxHp = Math.max(1, typeData.maxHp * hpScale);
+		const contactDamage = typeData.contactDamage * damageScale;
+		const xpDropValue = typeData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
+		
+		const minion = new Enemy({
+			id: `enemy-${nextEnemyId++}`,
+			x,
+			y,
+			type: 'swarm',
+			radius: typeData.radius,
+			maxHp: maxHp,
+			hp: maxHp,
+			speed: typeData.speed,
+			contactDamage: contactDamage,
+			xpDropValue: xpDropValue
+		});
+		minion.baseMaxHp = typeData.maxHp;
+		minion.baseContactDamage = typeData.contactDamage;
+		minion.baseSpeed = typeData.speed;
+		minion.spawnTime = runTime;
+		minion.lastDamagedAt = runTime;
+		enemies.push(minion);
+		return true;
+	}
+
+	function spawnEnemyOfType(typeName, x, y) {
+		const typeData = (ENEMY_TYPES[typeName] || ENEMY_TYPES.basic);
+		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+		const maxHp = Math.max(1, typeData.maxHp * hpScale);
+		const contactDamage = typeData.contactDamage * damageScale;
+		const xpDropValue = typeData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
+		
+		const enemy = new Enemy({
+			id: `enemy-${nextEnemyId++}`,
+			x,
+			y,
+			type: typeName,
+			radius: typeData.radius,
+			maxHp: maxHp,
+			hp: maxHp,
+			speed: typeData.speed,
+			contactDamage: contactDamage,
+			xpDropValue: xpDropValue
+		});
+		enemy.baseMaxHp = typeData.maxHp;
+		enemy.baseContactDamage = typeData.contactDamage;
+		enemy.baseSpeed = typeData.speed;
+		enemy.spawnTime = runTime;
+		enemy.lastDamagedAt = runTime;
+		
+		if (typeName === 'charger') {
+			enemy.chargeSpeed = typeData.chargeSpeed;
+			enemy.chargeCooldown = typeData.chargeCooldown;
+			enemy.chargeDistance = typeData.chargeDistance;
+			enemy.lastChargeTime = 0;
+			enemy.isCharging = false;
+			enemy.chargeTargetX = 0;
+			enemy.chargeTargetY = 0;
+		} else if (typeName === 'sniper') {
+			enemy.preferredDistance = typeData.preferredDistance;
+			enemy.healRadius = typeData.healRadius;
+			enemy.healAmount = typeData.healAmount;
+			enemy.healCooldown = typeData.healCooldown;
+			enemy.healPercent = typeData.healPercent;
+			enemy.lastHealAt = 0;
+		} else if (typeName === 'tank') {
+			enemy.swarmBurstCount = typeData.swarmBurstCount;
+			enemy.swarmBurstCooldown = typeData.swarmBurstCooldown;
+			enemy.swarmBurstSpread = typeData.swarmBurstSpread;
+			enemy.lastSwarmBurst = 0;
+		}
+		
+		enemies.push(enemy);
+		return enemy;
+	}
+
+	function applyEnemyDamageToPlayer(player, enemy, baseDamage, deltas, deadList) {
+		if (!player || !enemy || baseDamage <= 0) return 0;
+		let damage = baseDamage;
+		
+		const inTerritory = player.territory && player.territory.length >= 3 &&
+			pointInPolygon({ x: player.x, y: player.y }, player.territory);
+		if (inTerritory) {
+			const reduction = consts.TERRITORY_DAMAGE_REDUCTION ?? 0.5;
+			damage *= (1 - reduction);
+		}
+		
+		const playerStats = player.derivedStats || {};
+		
+		if (playerStats.hasPhaseShift) {
+			if (player.phaseShiftCooldown === undefined) player.phaseShiftCooldown = 0;
+			if (player.phaseShiftCooldown <= 0) {
+				player.phaseShiftCooldown = UPGRADE_KNOBS.PHASE_SHIFT.cooldownSeconds;
+				deltas.phaseShiftEvents.push({
+					playerNum: player.num,
+					x: player.x,
+					y: player.y
+				});
+				enemy.lastHitAt = runTime;
+				return 0;
+			}
+		}
+		
+		if (playerStats.hasLastStand && player.hp < player.maxHp * UPGRADE_KNOBS.LAST_STAND.hpThreshold) {
+			damage *= (1 - UPGRADE_KNOBS.LAST_STAND.damageReduction);
+		}
+		
+		const damageReduction = playerStats.damageReduction || 0;
+		damage *= (1 - damageReduction);
+		
+		const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
+		const hpPerLevel = consts.HP_PER_LEVEL || 10;
+		const level = player.level || 1;
+		const levelBonusHp = (level - 1) * hpPerLevel;
+		const flatMaxHp = playerStats.flatMaxHp || 0;
+		const maxHpMult = playerStats.maxHpMult || 1.0;
+		player.maxHp = (baseMaxHp + levelBonusHp + flatMaxHp) * maxHpMult;
+		
+		player.hp -= damage;
+		if (player.hp < 0) player.hp = 0;
+		enemy.lastHitAt = runTime;
+		
+		if (playerStats.thornsMult > 0) {
+			const reflectDamage = damage * playerStats.thornsMult;
+			enemy.hp -= reflectDamage;
+			markEnemyHit(enemy);
+			if (enemy.hp <= 0) {
+				handleEnemyDeath(enemy, player);
+			}
+		}
+		
+		if (playerStats.hasAdrenaline) {
+			const wasActive = player.adrenalineTimer > 0;
+			player.adrenalineTimer = UPGRADE_KNOBS.ADRENALINE.durationSeconds;
+			if (!wasActive) {
+				deltas.adrenalineEvents.push({
+					playerNum: player.num,
+					duration: UPGRADE_KNOBS.ADRENALINE.durationSeconds
+				});
+			}
+		}
+		
+		if (player.hp <= 0 && !player.dead) {
+			player.die();
+			if (deadList) deadList.push(player);
+			deltas.killEvents.push({
+				killerNum: -1,
+				victimNum: player.num,
+				victimName: player.name || "Player",
+				killType: "enemy"
+			});
+		}
+		
+		return damage;
 	}
 	
 	// Upgrade system pause state
@@ -656,6 +852,12 @@ function Game(id) {
 			lastHitAt: enemy.lastHitAt,
 			type: enemy.type
 		};
+		if (enemy.type === 'sniper') {
+			data.healRadius = enemy.healRadius;
+		}
+		if (enemy.healGlowUntil) {
+			data.healGlowUntil = enemy.healGlowUntil;
+		}
 		// Include charging state for client rendering
 		if (enemy.isCharging) {
 			data.isCharging = true;
@@ -680,10 +882,15 @@ function Game(id) {
 		const xpNeeded = getXpForLevel(sampleLevel);
 		const baseXpNeeded = getXpForLevel(1);
 		const levelRatio = baseXpNeeded > 0 ? (xpNeeded / baseXpNeeded) : 1;
-		// Stop scaling after cap time (default 5 minutes)
+		// Freeze at cap time value (matches actual calculation)
 		const scaleCapMin = consts.TERRITORY_XP_SCALE_CAP_MIN ?? 5;
 		const minutes = runTime / 60;
-		const levelScale = (scaleCapMin > 0 && minutes >= scaleCapMin) ? 1 : Math.sqrt(levelRatio);
+		let levelScale;
+		if (scaleCapMin > 0 && minutes >= scaleCapMin && activePlayer?._frozenTerritoryScale !== undefined) {
+			levelScale = activePlayer._frozenTerritoryScale;
+		} else {
+			levelScale = Math.sqrt(levelRatio);
+		}
 		const territoryXpScale = consts.TERRITORY_XP_SCALE ?? 1.0;
 		const territoryXpMult = levelScale * territoryXpScale;
 		
@@ -980,6 +1187,22 @@ function Game(id) {
 					console.log(`[DEV] ${player.name} set time speed to ${multiplier}x`);
 				} else {
 					console.warn(`[DEV] Invalid time speed multiplier: ${payload.multiplier}`);
+				}
+				break;
+			}
+			
+			case 'spawnEnemy': {
+				const typeName = payload.type || 'basic';
+				const count = Math.max(1, Math.min(50, parseInt(payload.count, 10) || 1));
+				const spawnRadiusMin = 80;
+				const spawnRadiusMax = 140;
+				
+				for (let i = 0; i < count; i++) {
+					const angle = Math.random() * Math.PI * 2;
+					const radius = spawnRadiusMin + Math.random() * (spawnRadiusMax - spawnRadiusMin);
+					const x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, player.x + Math.cos(angle) * radius));
+					const y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, player.y + Math.sin(angle) * radius));
+					spawnEnemyOfType(typeName, x, y);
 				}
 				break;
 			}
@@ -2205,14 +2428,22 @@ function Game(id) {
 	// Spawn regular enemies
 	for (const spawn of enemySpawns) {
 		const typeName = spawn.type || 'basic';
-		
-		// Check if we've hit the limit for this type
-		const currentCount = enemyCountByType.get(typeName) || 0;
-		if (currentCount >= ENEMY_SPAWN_LIMITS.maxPerType) {
-			continue; // Skip spawning this enemy
-		}
-		
 		const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
+		const spawnCount = typeName === 'swarm' ? (typeData.swarmSpawnCount || 1) : 1;
+		const spawnSpread = typeName === 'swarm' ? (typeData.swarmSpawnSpread || 0) : 0;
+		
+		for (let s = 0; s < spawnCount; s++) {
+			// Check if we've hit the limit for this type
+			const currentCount = enemyCountByType.get(typeName) || 0;
+			if (currentCount >= ENEMY_SPAWN_LIMITS.maxPerType) {
+				break; // Skip additional spawns for this type
+			}
+			
+			const angle = spawnSpread > 0 ? Math.random() * Math.PI * 2 : 0;
+			const radius = spawnSpread > 0 ? Math.random() * spawnSpread : 0;
+			const spawnX = spawn.x + Math.cos(angle) * radius;
+			const spawnY = spawn.y + Math.sin(angle) * radius;
+			
 			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
 			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
 			const maxHp = Math.max(1, typeData.maxHp * hpScale);
@@ -2221,8 +2452,8 @@ function Game(id) {
 			
 			const enemy = new Enemy({
 				id: `enemy-${nextEnemyId++}`,
-				x: spawn.x,
-				y: spawn.y,
+				x: spawnX,
+				y: spawnY,
 				type: typeName,
 				radius: typeData.radius,
 				maxHp: maxHp,
@@ -2233,6 +2464,8 @@ function Game(id) {
 			});
 			enemy.baseMaxHp = typeData.maxHp;
 			enemy.baseContactDamage = typeData.contactDamage;
+			enemy.baseSpeed = typeData.speed;
+			enemy.spawnTime = runTime;
 			enemy.lastDamagedAt = runTime;
 			
 			// Type-specific properties
@@ -2244,13 +2477,24 @@ function Game(id) {
 				enemy.isCharging = false;
 				enemy.chargeTargetX = 0;
 				enemy.chargeTargetY = 0;
-		} else if (typeName === 'sniper') {
-			enemy.preferredDistance = typeData.preferredDistance;
+			} else if (typeName === 'sniper') {
+				enemy.preferredDistance = typeData.preferredDistance;
+				enemy.healRadius = typeData.healRadius;
+				enemy.healAmount = typeData.healAmount;
+				enemy.healCooldown = typeData.healCooldown;
+				enemy.healPercent = typeData.healPercent;
+				enemy.lastHealAt = 0;
+			} else if (typeName === 'tank') {
+				enemy.swarmBurstCount = typeData.swarmBurstCount;
+				enemy.swarmBurstCooldown = typeData.swarmBurstCooldown;
+				enemy.swarmBurstSpread = typeData.swarmBurstSpread;
+				enemy.lastSwarmBurst = 0;
+			}
+			
+			enemies.push(enemy);
+			// Update count for this type
+			enemyCountByType.set(typeName, (enemyCountByType.get(typeName) || 0) + 1);
 		}
-		
-		enemies.push(enemy);
-		// Update count for this type
-		enemyCountByType.set(typeName, (enemyCountByType.get(typeName) || 0) + 1);
 	}
 		
 	// Count existing bosses by type (for spawn limit)
@@ -2292,6 +2536,8 @@ function Game(id) {
 			});
 			boss.baseMaxHp = bossData.maxHp;
 			boss.baseContactDamage = bossData.contactDamage;
+			boss.baseSpeed = bossData.speed;
+			boss.spawnTime = runTime;
 			
 			boss.isBoss = true;
 			
@@ -2328,25 +2574,28 @@ function Game(id) {
 			for (const enemy of enemies) {
 				if (enemy.dead) continue;
 				applyEnemyScaling(enemy);
-				if (!enemy.isBoss) {
-					if (enemy.lastDamagedAt === undefined) {
-						enemy.lastDamagedAt = runTime;
-					}
-					if (runTime - enemy.lastDamagedAt >= enemyLifetimeSeconds) {
-						enemy.dead = true;
-						continue;
-					}
-				}
-				
 				const dx = activePlayer.x - enemy.x;
 				const dy = activePlayer.y - enemy.y;
 				const dist = Math.hypot(dx, dy);
 				const norm = dist > 0 ? 1 / dist : 0;
 				
+				if (!enemy.isBoss) {
+					if (enemy.lastDamagedAt === undefined) {
+						enemy.lastDamagedAt = runTime;
+					}
+					if (runTime - enemy.lastDamagedAt >= enemyLifetimeSeconds
+						&& dist >= enemyDespawnDistance) {
+						enemy.dead = true;
+						continue;
+					}
+				}
+				
 				// Apply slow debuff if active
 				let effectiveSpeed = enemy.speed;
+				let slowMult = 1.0;
 				if (enemy.slowExpires && runTime < enemy.slowExpires) {
-					effectiveSpeed *= (1 - (enemy.slowAmount || 0));
+					slowMult = 1 - (enemy.slowAmount || 0);
+					effectiveSpeed *= slowMult;
 				} else {
 					enemy.slowAmount = 0;
 				}
@@ -2425,29 +2674,30 @@ function Game(id) {
 								const spawnDist = enemy.radius + 20;
 								const minionX = enemy.x + Math.cos(angle) * spawnDist;
 								const minionY = enemy.y + Math.sin(angle) * spawnDist;
-								const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
-								const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
-								const minionMaxHp = Math.max(1, ENEMY_TYPES.swarm.maxHp * hpScale);
-								const minionContactDamage = ENEMY_TYPES.swarm.contactDamage * damageScale;
-								const xpDropValue = ENEMY_TYPES.swarm.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
-								
-								// Spawn basic enemies as minions
-								const minion = new Enemy({
-									id: `enemy-${nextEnemyId++}`,
-									x: minionX,
-									y: minionY,
-									type: 'swarm', // Summons swarm enemies
-									radius: ENEMY_TYPES.swarm.radius,
-									maxHp: minionMaxHp,
-									hp: minionMaxHp,
-									speed: ENEMY_TYPES.swarm.speed,
-									contactDamage: minionContactDamage,
-									xpDropValue: xpDropValue
-								});
-								minion.baseMaxHp = ENEMY_TYPES.swarm.maxHp;
-								minion.baseContactDamage = ENEMY_TYPES.swarm.contactDamage;
-								minion.lastDamagedAt = runTime;
-								enemies.push(minion);
+								spawnSwarmEnemyAt(minionX, minionY);
+							}
+						}
+					}
+					
+					if (enemy.type === 'sniper') {
+						const healRadius = enemy.healRadius || 240;
+						const healAmount = enemy.healAmount || 2.5;
+						const healPercent = enemy.healPercent || 0.10;
+						const healCooldown = enemy.healCooldown || 0.8;
+						if ((runTime - (enemy.lastHealAt || 0)) >= healCooldown) {
+							enemy.lastHealAt = runTime;
+							const healGlowDuration = 0.6;
+							for (const target of enemies) {
+								if (target.dead || target === enemy) continue;
+								const healDist = Math.hypot(target.x - enemy.x, target.y - enemy.y);
+								if (healDist > healRadius) continue;
+								const beforeHp = target.hp;
+								const healTotal = healAmount + target.maxHp * healPercent;
+								target.hp = Math.min(target.maxHp, target.hp + healTotal);
+								if (target.hp > beforeHp) {
+									markEnemyHit(target);
+									target.healGlowUntil = runTime + healGlowDuration;
+								}
 							}
 						}
 					}
@@ -2474,7 +2724,34 @@ function Game(id) {
 						enemy.chargeTargetY = activePlayer.y;
 					}
 				}
+				
+				if (enemy.type === 'tank' && enemy.swarmBurstCooldown) {
+					const burstReady = (runTime - (enemy.lastSwarmBurst || 0)) >= enemy.swarmBurstCooldown;
+					if (burstReady) {
+						enemy.lastSwarmBurst = runTime;
+						const burstCount = enemy.swarmBurstCount || 5;
+						const spread = enemy.swarmBurstSpread || 24;
+						for (let s = 0; s < burstCount; s++) {
+							const angle = (s / burstCount) * Math.PI * 2;
+							const radius = enemy.radius + Math.random() * spread;
+							const minionX = enemy.x + Math.cos(angle) * radius;
+							const minionY = enemy.y + Math.sin(angle) * radius;
+							spawnSwarmEnemyAt(minionX, minionY);
+						}
+					}
+				}
 				// Basic, tank, swarm, titan all use default "move toward player" behavior
+				
+				if (enemy.type === 'swarm') {
+					if (enemy.spawnTime === undefined) enemy.spawnTime = runTime;
+					const rampSeconds = ENEMY_TYPES.swarm.chaseRampSeconds || 7;
+					const capMult = ENEMY_TYPES.swarm.chaseSpeedCapMult || 1.01;
+					const playerSpeed = getPlayerMoveSpeed(activePlayer);
+					const capSpeed = playerSpeed * capMult;
+					const startSpeed = Math.min(enemy.speed, capSpeed);
+					const t = rampSeconds > 0 ? Math.min(1, (runTime - enemy.spawnTime) / rampSeconds) : 1;
+					effectiveSpeed = (startSpeed + (capSpeed - startSpeed) * t) * slowMult;
+				}
 				
 				enemy.vx = moveX * effectiveSpeed;
 				enemy.vy = moveY * effectiveSpeed;
@@ -2567,87 +2844,7 @@ function Game(id) {
 				const hitRadius = playerRadius + enemy.radius;
 				
 				if (hitDist < hitRadius && (runTime - enemy.lastHitAt) >= hitCooldown) {
-					let damage = enemy.contactDamage;
-					const inTerritory = activePlayer.territory && activePlayer.territory.length >= 3 &&
-						pointInPolygon({ x: activePlayer.x, y: activePlayer.y }, activePlayer.territory);
-					if (inTerritory) {
-						const reduction = consts.TERRITORY_DAMAGE_REDUCTION ?? 0.5;
-						damage *= (1 - reduction);
-					}
-					
-					// Get player stats from upgrades
-					const playerStats = activePlayer.derivedStats || {};
-					
-					// Phase Shift: First hit every X seconds deals no damage
-					if (playerStats.hasPhaseShift) {
-						if (activePlayer.phaseShiftCooldown === undefined) activePlayer.phaseShiftCooldown = 0;
-						if (activePlayer.phaseShiftCooldown <= 0) {
-							// Nullify this hit
-							activePlayer.phaseShiftCooldown = UPGRADE_KNOBS.PHASE_SHIFT.cooldownSeconds;
-							economyDeltas.phaseShiftEvents.push({
-								playerNum: activePlayer.num,
-								x: activePlayer.x,
-								y: activePlayer.y
-							});
-							enemy.lastHitAt = runTime;
-							continue; // Skip this damage entirely
-						}
-					}
-					
-					// Last Stand: Below threshold HP, take less damage
-					if (playerStats.hasLastStand && activePlayer.hp < activePlayer.maxHp * UPGRADE_KNOBS.LAST_STAND.hpThreshold) {
-						damage *= (1 - UPGRADE_KNOBS.LAST_STAND.damageReduction);
-					}
-					
-					// Apply general damage reduction (if any)
-					const damageReduction = playerStats.damageReduction || 0;
-					damage *= (1 - damageReduction);
-					
-					// Get effective max HP from level + upgrades
-					const baseMaxHp = consts.PLAYER_MAX_HP ?? 100;
-					const hpPerLevel = consts.HP_PER_LEVEL || 10;
-					const level = activePlayer.level || 1;
-					const levelBonusHp = (level - 1) * hpPerLevel;
-					const flatMaxHp = playerStats.flatMaxHp || 0;
-					const maxHpMult = playerStats.maxHpMult || 1.0;
-					activePlayer.maxHp = (baseMaxHp + levelBonusHp + flatMaxHp) * maxHpMult;
-					
-					activePlayer.hp -= damage;
-					if (activePlayer.hp < 0) activePlayer.hp = 0;
-					enemy.lastHitAt = runTime;
-					
-					// Thorns: Reflect 30% damage back to attacker
-					if (playerStats.thornsMult > 0) {
-						const reflectDamage = damage * playerStats.thornsMult;
-						enemy.hp -= reflectDamage;
-						markEnemyHit(enemy);
-						if (enemy.hp <= 0) {
-							handleEnemyDeath(enemy, activePlayer);
-						}
-					}
-					
-					// Adrenaline Rush: Gain move speed when hit
-					if (playerStats.hasAdrenaline) {
-						const wasActive = activePlayer.adrenalineTimer > 0;
-						activePlayer.adrenalineTimer = UPGRADE_KNOBS.ADRENALINE.durationSeconds;
-						if (!wasActive) {
-							economyDeltas.adrenalineEvents.push({
-								playerNum: activePlayer.num,
-								duration: UPGRADE_KNOBS.ADRENALINE.durationSeconds
-							});
-						}
-					}
-					
-					if (activePlayer.hp <= 0 && !activePlayer.dead) {
-						activePlayer.die();
-						dead.push(activePlayer);
-						economyDeltas.killEvents.push({
-							killerNum: -1,
-							victimNum: activePlayer.num,
-							victimName: activePlayer.name || "Player",
-							killType: "enemy"
-						});
-					}
+					applyEnemyDamageToPlayer(activePlayer, enemy, enemy.contactDamage, economyDeltas, dead);
 				}
 			}
 		}
@@ -3856,13 +4053,22 @@ function Game(id) {
 
 				const baseTerritoryXpPerArea = consts.TERRITORY_XP_PER_AREA || 0.00025;
 				const territoryXpScale = consts.TERRITORY_XP_SCALE ?? 1.0;
-				// Scale with sqrt of level ratio, but stop scaling after cap time
+				// Scale with sqrt of level ratio, freeze at cap time value
 				const scaleCapMin = consts.TERRITORY_XP_SCALE_CAP_MIN ?? 5;
 				const minutes = runTime / 60;
 				const xpNeeded = getXpForLevel(p.level || 1);
 				const baseXpNeeded = getXpForLevel(1);
 				const levelRatio = baseXpNeeded > 0 ? (xpNeeded / baseXpNeeded) : 1;
-				const levelScale = (scaleCapMin > 0 && minutes >= scaleCapMin) ? 1 : Math.sqrt(levelRatio);
+				let levelScale;
+				if (scaleCapMin > 0 && minutes >= scaleCapMin) {
+					// Freeze at the value when cap was reached
+					if (p._frozenTerritoryScale === undefined) {
+						p._frozenTerritoryScale = Math.sqrt(levelRatio);
+					}
+					levelScale = p._frozenTerritoryScale;
+				} else {
+					levelScale = Math.sqrt(levelRatio);
+				}
 				const territoryXpPerArea = baseTerritoryXpPerArea * levelScale * territoryXpScale;
 
 				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * territoryXpPerArea;

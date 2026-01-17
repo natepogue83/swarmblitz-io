@@ -585,6 +585,14 @@ function createDevConsole() {
 				</div>
 			</div>
 			<div class="dev-section">
+				<h3>Enemy Spawn</h3>
+				<div class="dev-row">
+					<select id="dev-enemy-select"></select>
+					<input type="number" id="dev-enemy-count" value="5" min="1" max="50">
+					<button id="dev-spawn-enemy">Spawn</button>
+				</div>
+			</div>
+			<div class="dev-section">
 				<h3>Time Speed (Scaling Test)</h3>
 				<div class="dev-row">
 					<button id="dev-time-1x" class="dev-time-btn active">1x</button>
@@ -615,6 +623,8 @@ function createDevConsole() {
 		z-index: 10000;
 		min-width: 400px;
 		max-width: 500px;
+		max-height: 80vh;
+		overflow: hidden;
 		font-family: 'Changa', sans-serif;
 		color: white;
 		box-shadow: 0 0 30px rgba(255, 215, 0, 0.3);
@@ -652,6 +662,8 @@ function createDevConsole() {
 		}
 		#dev-console .dev-console-content {
 			padding: 15px;
+			max-height: calc(80vh - 100px);
+			overflow-y: auto;
 		}
 		#dev-console .dev-section {
 			margin-bottom: 15px;
@@ -730,6 +742,7 @@ function createDevConsole() {
 	document.head.appendChild(style);
 	
 	populateDevUpgradeSelect();
+	populateDevEnemySelect();
 	
 	// Wire up event handlers
 	document.getElementById('dev-xp-100').onclick = () => client.devGiveXP(100);
@@ -750,6 +763,11 @@ function createDevConsole() {
 		client.devAddDrone(droneTypeId);
 	};
 	document.getElementById('dev-clear-drones').onclick = () => client.devClearDrones();
+	document.getElementById('dev-spawn-enemy').onclick = () => {
+		const type = document.getElementById('dev-enemy-select').value;
+		const count = parseInt(document.getElementById('dev-enemy-count').value, 10) || 1;
+		client.devSpawnEnemy(type, count);
+	};
 	
 	// Time speed buttons
 	const timeSpeedBtns = [
@@ -771,6 +789,32 @@ function createDevConsole() {
 	
 	// Close button handler
 	devConsoleElement.querySelector('.dev-close').onclick = () => closeDevConsole();
+}
+
+function populateDevEnemySelect() {
+	const select = document.getElementById('dev-enemy-select');
+	if (!select) return;
+	
+	select.innerHTML = "";
+	
+	for (const [id, data] of Object.entries(ENEMY_TYPES)) {
+		const option = document.createElement('option');
+		option.value = id;
+		option.textContent = id.charAt(0).toUpperCase() + id.slice(1);
+		if (data.color) {
+			option.style.color = data.color;
+		}
+		select.appendChild(option);
+	}
+	for (const [id, data] of Object.entries(BOSS_TYPES)) {
+		const option = document.createElement('option');
+		option.value = id;
+		option.textContent = `Boss: ${id.charAt(0).toUpperCase() + id.slice(1)}`;
+		if (data.color) {
+			option.style.color = data.color;
+		}
+		select.appendChild(option);
+	}
 }
 
 function populateDevUpgradeSelect() {
@@ -3846,6 +3890,8 @@ const MAX_HITSCAN_EFFECTS = 120;
 const ATTACK_DURATIONS = {
 	bullet: 120,
 	laser: 80,
+	laser_aim: 120,
+	heal_link: 180,
 	railgun: 300,
 	plasma: 180,
 	pulse: 200,
@@ -3962,6 +4008,12 @@ class HitscanEffect {
 		switch (this.attackType) {
 			case 'laser':
 				this.renderLaser(ctx);
+				break;
+			case 'laser_aim':
+				this.renderLaserAim(ctx);
+				break;
+			case 'heal_link':
+				this.renderHealLink(ctx);
 				break;
 			case 'railgun':
 				this.renderRailgun(ctx);
@@ -4144,6 +4196,48 @@ class HitscanEffect {
 		ctx.stroke();
 		
 		this.renderImpactSimple(ctx, 8);
+	}
+	
+	// LASER AIM - Low-opacity aiming line
+	renderLaserAim(ctx) {
+		const alpha = 0.18 + (0.12 * this.life);
+		ctx.strokeStyle = this.rgba(alpha);
+		ctx.lineWidth = 3 * this.life;
+		ctx.beginPath();
+		ctx.moveTo(this.fromX, this.fromY);
+		ctx.lineTo(this.toX, this.toY);
+		ctx.stroke();
+	}
+	
+	// HEAL LINK - Curvy sparkly line
+	renderHealLink(ctx) {
+		const progress = 1 - this.life;
+		const alpha = 0.25 * (1 - progress);
+		const midX = (this.fromX + this.toX) * 0.5;
+		const midY = (this.fromY + this.toY) * 0.5;
+		const wobble = 18 * Math.sin(Date.now() / 120 + this.fromX * 0.01);
+		const perpX = -Math.sin(this.angle);
+		const perpY = Math.cos(this.angle);
+		const ctrlX = midX + perpX * wobble;
+		const ctrlY = midY + perpY * wobble;
+		
+		ctx.strokeStyle = this.rgba(alpha);
+		ctx.lineWidth = 2.5 * this.life;
+		ctx.beginPath();
+		ctx.moveTo(this.fromX, this.fromY);
+		ctx.quadraticCurveTo(ctrlX, ctrlY, this.toX, this.toY);
+		ctx.stroke();
+		
+		// Sparkles along the curve
+		for (let i = 0; i < 3; i++) {
+			const t = (i + 1) / 4 + 0.1 * Math.sin(Date.now() / 90 + i);
+			const bx = (1 - t) * (1 - t) * this.fromX + 2 * (1 - t) * t * ctrlX + t * t * this.toX;
+			const by = (1 - t) * (1 - t) * this.fromY + 2 * (1 - t) * t * ctrlY + t * t * this.toY;
+			ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+			ctx.beginPath();
+			ctx.arc(bx, by, 2 * this.life, 0, Math.PI * 2);
+			ctx.fill();
+		}
 	}
 	
 	// RAILGUN - Thick traveling beam
@@ -5153,6 +5247,8 @@ function renderEnemy(ctx, enemy) {
 	const type = enemy.type || 'basic';
 	const style = ENEMY_STYLES[type] || ENEMY_STYLES.basic;
 	const isBoss = enemy.isBoss;
+	const stats = client.getEnemyStats();
+	const runTime = stats && stats.runTime != null ? stats.runTime : 0;
 	
 	// Get distance for LOD (Level of Detail)
 	const dist = enemy._renderDistance || 0;
@@ -5182,6 +5278,13 @@ function renderEnemy(ctx, enemy) {
 		const pulse = 0.5 + 0.5 * Math.sin(enemyTime / 80);
 		ctx.shadowBlur = 15 + pulse * 10;
 		ctx.shadowColor = style.color;
+	}
+	
+	// Heal glow when recently healed
+	if (enemy.healGlowUntil && runTime < enemy.healGlowUntil) {
+		const glowStrength = Math.max(0, (enemy.healGlowUntil - runTime) / 0.6);
+		ctx.shadowBlur = 12 + 8 * glowStrength;
+		ctx.shadowColor = `rgba(80, 255, 140, ${0.4 + glowStrength * 0.3})`;
 	}
 	
 	// Shadow (larger for bosses) - skip for distant enemies and high density
@@ -5258,23 +5361,27 @@ function renderEnemy(ctx, enemy) {
 			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.3, 0, Math.PI * 2);
 			ctx.fill();
 		} else if (type === 'sniper') {
-			// Crosshair/scope indicator for sniper
-			ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+			// Support healer: constant aura fill + outline, plus sign
+			const auraRadius = enemy.healRadius || enemy.radius * 6;
+			ctx.fillStyle = "rgba(120, 200, 255, 0.12)";
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, auraRadius, 0, Math.PI * 2);
+			ctx.fill();
+			
+			ctx.strokeStyle = "rgba(30, 120, 220, 0.55)";
 			ctx.lineWidth = 2;
-			const crossSize = enemy.radius * 0.7;
-			// Vertical line
+			ctx.beginPath();
+			ctx.arc(enemy.x, enemy.y, auraRadius, 0, Math.PI * 2);
+			ctx.stroke();
+			
+			ctx.strokeStyle = "rgba(240, 250, 255, 0.8)";
+			ctx.lineWidth = 3;
+			const crossSize = enemy.radius * 0.6;
 			ctx.beginPath();
 			ctx.moveTo(enemy.x, enemy.y - crossSize);
 			ctx.lineTo(enemy.x, enemy.y + crossSize);
-			ctx.stroke();
-			// Horizontal line
-			ctx.beginPath();
 			ctx.moveTo(enemy.x - crossSize, enemy.y);
 			ctx.lineTo(enemy.x + crossSize, enemy.y);
-			ctx.stroke();
-			// Small center circle
-			ctx.beginPath();
-			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25, 0, Math.PI * 2);
 			ctx.stroke();
 		}
 	}
@@ -6426,6 +6533,16 @@ export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typ
 			const distance = Math.sqrt(dx * dx + dy * dy);
 			SoundManager.playProjectileImpact('laser', distance);
 		}
+		return;
+	}
+	
+	if (attackType === 'laser_aim') {
+		spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage, attackType, typeColor);
+		return;
+	}
+	
+	if (attackType === 'heal_link') {
+		spawnHitscanEffect(fromX, fromY, toX, toY, ownerId, damage, attackType, typeColor);
 		return;
 	}
 	

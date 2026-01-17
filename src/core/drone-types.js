@@ -48,10 +48,10 @@ export const DRONE_TYPES = [
 		description: 'Balanced fighter. Successive hits on same target deal more damage.',
 		color: '#FF6B6B',
 		opacity: 1.0,             // Full opacity
-		damageMult: .8,
+		damageMult: 1,
 		cooldownMult: 1,       // ~0.5s base cooldown
 		rangeMult: 1.0,
-		accuracy: .6,
+		accuracy: .75,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
 		attackType: 'bullet',
@@ -74,7 +74,7 @@ export const DRONE_TYPES = [
 		color: '#4ECDC4',
 		opacity: 0.8,             // Slightly transparent lasers
 		damageMult: 0.4,         // Much lower damage per hit
-		cooldownMult: 0.425,       // Very fast fire rate (~8 shots/sec)
+		cooldownMult: 0.38,       // Very fast fire rate (~8 shots/sec)
 		rangeMult: 0.80,
 		accuracy: 1.0,
 		orbitRadiusMult: .8,
@@ -120,7 +120,7 @@ export const DRONE_TYPES = [
 		description: 'Slow singularity orb that pulls enemies inward.',
 		color: '#3B2A5A',
 		opacity: 0.3,            // Slightly glowy/transparent plasma
-		damageMult: .25,         // High damage
+		damageMult: .35,         // High damage
 		cooldownMult: 2.5,       // Slow fire rate
 		rangeMult: 1.2,           // Short range
 		accuracy: .6,
@@ -147,7 +147,7 @@ export const DRONE_TYPES = [
 	{
 		id: 'skirmisher',
 		name: 'Skirmisher',
-		description: 'Fast bullets that pierce 1 enemy. Fire rate ramps up to 2x while shooting.',
+		description: 'Fast bullets that pierce 3 enemy. Fire rate ramps up to 2x while shooting.',
 		color: '#F39C12',
 		opacity: 1.0,             // Full opacity
 		damageMult: 0.45,
@@ -160,7 +160,7 @@ export const DRONE_TYPES = [
 		isHitscan: false,
 		projectileSpeed: 300,     // Fast projectiles
 		projectileLifetime: 0,
-		pierceCount: 1,
+		pierceCount: 3,
 		projectileSize: 5,
 		procCoefficient: 0.6,
 		// PASSIVE: Ramping fire rate
@@ -175,7 +175,7 @@ export const DRONE_TYPES = [
 		description: 'Short-range flame stream that ignites enemies.',
 		color: '#FF7A1A',
 		opacity: 0.25,
-		damageMult: 0.25,
+		damageMult: 0.15,
 		cooldownMult: 0.5,
 		rangeMult: 0.9,           // Short range
 		accuracy: .1,
@@ -190,9 +190,9 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.15,
 		// PASSIVE: Burn stacks
 		appliesBurn: true,
-		burnDamagePerStack: 1,
-		burnDuration: 2.0,
-		burnMaxStacks: 75
+		burnDamagePerStack: 5,
+		burnDuration: 4.0,
+		burnMaxStacks: 100
 	},
 	{
 		id: 'swarm',

@@ -1005,6 +1005,11 @@ function devSetTimeSpeed(multiplier) {
 	sendMessage(MSG.DEV_CMD, { cmd: 'setTimeSpeed', multiplier });
 }
 
+function devSpawnEnemy(type, count) {
+	const spawnCount = Math.max(1, parseInt(count, 10) || 1);
+	sendMessage(MSG.DEV_CMD, { cmd: 'spawnEnemy', type, count: spawnCount });
+}
+
 // Export stuff
 export { 
 	connectGame, 
@@ -1041,7 +1046,8 @@ export {
 	devGodMode,
 	devAddDrone,
 	devClearDrones,
-	devSetTimeSpeed
+	devSetTimeSpeed,
+	devSpawnEnemy
 };
 
 export const allowAnimation = {

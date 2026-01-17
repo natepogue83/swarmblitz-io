@@ -109,6 +109,7 @@ export const consts = {
 	"ENEMY_SPAWN_BOOST_DURATION": 15, // Seconds of boosted spawns after a boss spawns
 	"ENEMY_SPAWN_BOOST_MULT": 0.4,    // Spawn interval multiplier during boost (lower = faster)
 	"ENEMY_LIFETIME_SECONDS": 15,     // Despawn non-boss enemies after inactivity
+	"ENEMY_DESPAWN_DISTANCE": 1300,  // Only despawn when this far from player
 	
 	// ===== HEAL PACKS (Support drone passive) =====
 	"HEAL_PACK_LIFETIME": 20,         // Seconds before heal pack disappears
