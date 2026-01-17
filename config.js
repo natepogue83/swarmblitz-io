@@ -35,6 +35,12 @@ export const consts = {
 	"XP_ORB_PULL_SPEED_MULT": 1.2,   // Enemy XP orb pull speed in territory
 	"XP_ORB_PULL_ACCEL_MULT": 1.25,   // Accel rate toward max pull speed
 	
+	// ===== STAMINA/HEAL BOOST ORBS =====
+	"STAMINA_BOOST_AMOUNT": 20,         // Stamina granted on pickup
+	"HEAL_BOOST_BASE": 20,              // Base heal amount (scaled by minutes+1)
+	"BOOST_SPAWN_RADIUS": 300,          // Spawn distance from player
+	"BOOST_SPAWN_MIN_DIST": 100,        // Minimum spawn distance from player
+	
 	// ===== XP VALUES (Easy tuning knobs) =====
 	"COIN_VALUE": 10,                   // XP from picking up world coins (gold orbs)
 	"ENEMY_XP_DROP_VALUE": 3,          // XP from picking up enemy death drops (red orbs)

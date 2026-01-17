@@ -454,6 +454,22 @@ function processFrame(data) {
 			if (coin) {
 				coin.x = update.x;
 				coin.y = update.y;
+				// Update type if changed (e.g., stamina -> heal on capture)
+				if (update.type !== undefined) {
+					coin.type = update.type;
+				}
+				if (update.value !== undefined) {
+					coin.value = update.value;
+				}
+			}
+		});
+	}
+	
+	// Handle boost pickup events (stamina/heal) for visual feedback
+	if (data.boostPickups) {
+		data.boostPickups.forEach(pickup => {
+			if (user && pickup.playerNum === user.num) {
+				invokeRenderer("boostPickup", [pickup.type, pickup.amount, pickup.x, pickup.y]);
 			}
 		});
 	}
