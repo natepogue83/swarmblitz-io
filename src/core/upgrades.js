@@ -57,6 +57,7 @@ export const UPGRADE_ICONS = {
 	base_damage: "sword",
 	attack_speed: "rapid",
 	crit_damage: "crit_x",
+	crit_multiplier: "crit_x",
 	focused_fire: "target",
 	precision_rounds: "scope",
 	sticky_charges: "bomb",
@@ -469,6 +470,20 @@ export const UPGRADE_CATALOG = [
 		},
 		apply: (player, stacks) => {
 			player.derivedStats.critMult += stacks * KNOBS.CRIT_DAMAGE.critMultPerStack;
+		}
+	},
+	{
+		id: 'crit_multiplier',
+		name: 'Deadlier Crits',
+		rarity: RARITY.BASIC,
+		maxStacks: Infinity,
+		description: (stacks) => {
+			const perStack = Math.round(KNOBS.CRIT_MULTIPLIER.critMultPerStack * 100);
+			const totalMult = 2.0 + stacks * KNOBS.CRIT_MULTIPLIER.critMultPerStack;
+			return `+${perStack}% crit multiplier\nTotal: ${totalMult.toFixed(1)}x crit`;
+		},
+		apply: (player, stacks) => {
+			player.derivedStats.critMult += stacks * KNOBS.CRIT_MULTIPLIER.critMultPerStack;
 		}
 	},
 	{

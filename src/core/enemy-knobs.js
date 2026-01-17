@@ -84,7 +84,7 @@ export const BOSS_TYPES = {
 		maxHp: 1500,
 		speed: 80,
 		contactDamage: 45,
-		xpDropValue: 50,
+		xpDropValue: 25,
 		spawnWeight: 40,
 		color: "rgba(80, 80, 80, 0.95)",
 		outline: "rgba(40, 40, 40, 0.95)"
@@ -98,7 +98,7 @@ export const BOSS_TYPES = {
 		chargeSpeed: 250,
 		chargeCooldown: 2,
 		chargeDistance: 250,
-		xpDropValue: 50,
+		xpDropValue: 25,
 		spawnWeight: 35,
 		color: "rgba(220, 50, 50, 0.95)",
 		outline: "rgba(120, 20, 20, 0.95)"
@@ -112,7 +112,7 @@ export const BOSS_TYPES = {
 		summonCooldown: 4,    // Seconds between summons
 		summonCount: 3,       // Enemies spawned per summon
 		preferredDistance: 300, // Tries to stay away
-		xpDropValue: 50,
+		xpDropValue: 25,
 		spawnWeight: 25,
 		color: "rgba(100, 50, 150, 0.95)",
 		outline: "rgba(50, 20, 80, 0.95)"
@@ -166,9 +166,9 @@ export const ENEMY_SCALING = {
 	damage: {
 		enabled: true,
 		startTime: 0,
-		perMinute: 0.15,
+		perMinute: 0.25,
 		exponent: 1.6,
-		maxMult: 30.0
+		maxMult: 99999
 	},
 	// Extra "late-game ramp" that kicks in after a certain time
 	lateGameRamp: {

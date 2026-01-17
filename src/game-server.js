@@ -680,7 +680,10 @@ function Game(id) {
 		const xpNeeded = getXpForLevel(sampleLevel);
 		const baseXpNeeded = getXpForLevel(1);
 		const levelRatio = baseXpNeeded > 0 ? (xpNeeded / baseXpNeeded) : 1;
-		const levelScale = Math.sqrt(levelRatio);
+		// Stop scaling after cap time (default 5 minutes)
+		const scaleCapMin = consts.TERRITORY_XP_SCALE_CAP_MIN ?? 5;
+		const minutes = runTime / 60;
+		const levelScale = (scaleCapMin > 0 && minutes >= scaleCapMin) ? 1 : Math.sqrt(levelRatio);
 		const territoryXpScale = consts.TERRITORY_XP_SCALE ?? 1.0;
 		const territoryXpMult = levelScale * territoryXpScale;
 		
@@ -1165,7 +1168,8 @@ function Game(id) {
 				y: Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, y)),
 				value: value ?? ENEMY_XP_DROP.defaultValue,
 				type,
-				isDoubleDrop: isDoubleDrop
+				isDoubleDrop: isDoubleDrop,
+				spawnTime: runTime
 			};
 			coins.push(newCoin);
 			economyDeltas.coinSpawns.push(newCoin);
@@ -3698,6 +3702,20 @@ function Game(id) {
 			}
 		}
 		
+		// Expire XP orbs after lifetime (0 = never expire)
+		const xpOrbLifetime = consts.XP_ORB_LIFETIME_SEC ?? 30;
+		if (xpOrbLifetime > 0) {
+			for (let i = coins.length - 1; i >= 0; i--) {
+				const coin = coins[i];
+				if (coin.type !== "enemy" && coin.type !== "boss") continue;
+				if (coin.spawnTime == null) coin.spawnTime = runTime;
+				if (runTime - coin.spawnTime >= xpOrbLifetime) {
+					economyDeltas.coinRemovals.push(coin.id);
+					coins.splice(i, 1);
+				}
+			}
+		}
+		
 		// Process alive players economy (XP/Leveling)
 		for (const p of players) {
 			if (p.dead) continue;
@@ -3838,11 +3856,13 @@ function Game(id) {
 
 				const baseTerritoryXpPerArea = consts.TERRITORY_XP_PER_AREA || 0.00025;
 				const territoryXpScale = consts.TERRITORY_XP_SCALE ?? 1.0;
-				// Scale with sqrt of level ratio so it stays relevant but doesn't explode
+				// Scale with sqrt of level ratio, but stop scaling after cap time
+				const scaleCapMin = consts.TERRITORY_XP_SCALE_CAP_MIN ?? 5;
+				const minutes = runTime / 60;
 				const xpNeeded = getXpForLevel(p.level || 1);
 				const baseXpNeeded = getXpForLevel(1);
 				const levelRatio = baseXpNeeded > 0 ? (xpNeeded / baseXpNeeded) : 1;
-				const levelScale = Math.sqrt(levelRatio);
+				const levelScale = (scaleCapMin > 0 && minutes >= scaleCapMin) ? 1 : Math.sqrt(levelRatio);
 				const territoryXpPerArea = baseTerritoryXpPerArea * levelScale * territoryXpScale;
 
 				p._territoryCoinCarry = (p._territoryCoinCarry || 0) + p._pendingTerritoryAreaGained * territoryXpPerArea;

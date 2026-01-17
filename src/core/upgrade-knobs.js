@@ -115,6 +115,10 @@ export const CRIT_DAMAGE = {
 	critMultPerStack: 0.25      // +25% crit damage per stack (additive to base 2x)
 };
 
+export const CRIT_MULTIPLIER = {
+	critMultPerStack: 0.10      // +10% crit damage per stack (additive to base 2x)
+};
+
 export const FOCUSED_FIRE = {
 	damagePerHitOnSameTarget: 0.10,  // +10% damage per consecutive hit on same target
 	maxStacks: 8,                     // Cap at +80% bonus

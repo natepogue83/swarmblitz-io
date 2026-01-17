@@ -51,7 +51,7 @@ export const DRONE_TYPES = [
 		damageMult: .8,
 		cooldownMult: 1,       // ~0.5s base cooldown
 		rangeMult: 1.0,
-		accuracy: .7,
+		accuracy: .6,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
 		attackType: 'bullet',
@@ -88,8 +88,8 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.25,
 		// PASSIVE: Chain hits nearby enemies
 		chainHitsNearby: true,
-		chainHitPercent: 0.20,      // 15% of original damage
-		chainHitRadius: 60          // Radius to splash damage
+		chainHitPercent: 0.3,      // 15% of original damage
+		chainHitRadius: 100          // Radius to splash damage
 	},
 	{
 		id: 'sniper',
@@ -97,9 +97,9 @@ export const DRONE_TYPES = [
 		description: 'Heavy railgun. Damage increases with each enemy pierced.',
 		color: '#9B59B6',
 		opacity: 1.0,             // Full opacity for heavy shots
-		damageMult: 2,         // High damage per shot
+		damageMult: 1.75,         // High damage per shot
 		cooldownMult: 2.75,       // Very slow fire (~0.8 shots/sec)
-		rangeMult: 2.5,             // Extra long range
+		rangeMult: 3,             // Extra long range
 		accuracy: 1.0,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
@@ -107,9 +107,9 @@ export const DRONE_TYPES = [
 		isHitscan: false,
 		projectileSpeed: 500,     // Fast projectile
 		projectileLifetime: 0,
-		pierceCount: 8,           // Pierce through 3 enemies
+		pierceCount: 5,           // Pierce through 3 enemies
 		projectileSize: 15,
-		procCoefficient: 1.0,
+		procCoefficient: .9,
 		// PASSIVE: Pierce damage scaling
 		pierceDamageScaling: true,
 		pierceDamageBonusPerEnemy: 0.10  // +10% damage per enemy already pierced
@@ -120,7 +120,7 @@ export const DRONE_TYPES = [
 		description: 'Slow singularity orb that pulls enemies inward.',
 		color: '#3B2A5A',
 		opacity: 0.3,            // Slightly glowy/transparent plasma
-		damageMult: .75,         // High damage
+		damageMult: .25,         // High damage
 		cooldownMult: 2.5,       // Slow fire rate
 		rangeMult: 1.2,           // Short range
 		accuracy: .6,
@@ -150,7 +150,7 @@ export const DRONE_TYPES = [
 		description: 'Fast bullets that pierce 1 enemy. Fire rate ramps up to 2x while shooting.',
 		color: '#F39C12',
 		opacity: 1.0,             // Full opacity
-		damageMult: 0.35,
+		damageMult: 0.45,
 		cooldownMult: 0.475,       // Fast fire rate
 		rangeMult: 1.00,
 		accuracy: .4,
@@ -165,29 +165,29 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.6,
 		// PASSIVE: Ramping fire rate
 		rampsFireRate: true,
-		fireRateRampMax: 2.0,       // Max 2x fire rate
+		fireRateRampMax: 3.0,       // Max 2x fire rate
 		fireRateRampTime: 3.0,      // Time to reach max ramp (seconds)
 		fireRateResetTime: 0.6      // Time without shooting to reset ramp
 	},
 	{
 		id: 'support',
-		name: 'Flame',
+		name: 'FlameThrower',
 		description: 'Short-range flame stream that ignites enemies.',
 		color: '#FF7A1A',
-		opacity: 0.15,
-		damageMult: 0.01,
-		cooldownMult: 0.075,
+		opacity: 0.25,
+		damageMult: 0.25,
+		cooldownMult: 0.5,
 		rangeMult: 0.9,           // Short range
-		accuracy: .25,
+		accuracy: .1,
 		orbitRadiusMult: .8,
 		orbitSpeedMult: .8,
 		attackType: 'flame',
 		isHitscan: false,          // Projectile stream
-		projectileSpeed: 160,
-		projectileLifetime: .425,
+		projectileSpeed: 360,
+		projectileLifetime: .25,
 		pierceCount: 12,
 		projectileSize: 25,
-		procCoefficient: 0.01,
+		procCoefficient: 0.15,
 		// PASSIVE: Burn stacks
 		appliesBurn: true,
 		burnDamagePerStack: 1,

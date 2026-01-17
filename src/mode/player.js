@@ -74,9 +74,10 @@ const damageNumbers = [];
 let showDamageNumbers = true; // Setting toggle
 let showEnemyHealthBars = true; // Setting toggle for enemy HP bars
 
-// Track per-player HP to detect damage locally
+// Track per-player HP to detect damage/heal changes locally
 const playerHpTracker = new Map();
 const damageNumberBuckets = new Map();
+const healNumberBuckets = new Map();
 
 // Capture feedback effects
 const captureEffects = [];
@@ -916,6 +917,7 @@ function reset() {
 	damageNumbers.length = 0;
 	playerHpTracker.clear();
 	damageNumberBuckets.clear();
+	healNumberBuckets.clear();
 	
 	// Clear capture effects
 	captureEffects.length = 0;
@@ -2988,6 +2990,7 @@ function update() {
 	updateSize();
 	trackPlayerDamage();
 	flushDamageNumberBuckets();
+	flushHealNumberBuckets();
 	
 	// Update death animation effects
 	updateDeathEffects();
@@ -4557,10 +4560,17 @@ function trackPlayerDamage() {
 		if (p.hp === undefined || p.hp === null) continue;
 		
 		const prevHp = playerHpTracker.get(p.num);
-		if (prevHp !== undefined && p.hp < prevHp) {
-			const dmg = prevHp - p.hp;
-			if (dmg > 0) {
-				playerDamaged(p.num, dmg, false);
+		if (prevHp !== undefined) {
+			if (p.hp < prevHp) {
+				const dmg = prevHp - p.hp;
+				if (dmg > 0) {
+					playerDamaged(p.num, dmg, false);
+				}
+			} else if (p.hp > prevHp) {
+				const healed = p.hp - prevHp;
+				if (healed > 0) {
+					playerHealed(p.num, healed);
+				}
 			}
 		}
 		playerHpTracker.set(p.num, p.hp);
@@ -4713,6 +4723,28 @@ function spawnPlayerDamageNumber(player, damage, isCrit) {
 	spawnDamageNumber(numberX, numberY, damage, isCrit, '#FF4444', false, true);
 }
 
+function spawnPlayerHealNumber(player, amount) {
+	const isLocalPlayer = client.getUser && player === client.getUser();
+	const sizeScale = player.sizeScale || 1.0;
+	const scaledRadius = PLAYER_RADIUS * sizeScale;
+	const sizeMult = isLocalPlayer ? 1.2 : 1.0;
+	const barWidth = scaledRadius * 2.5 * sizeMult;
+	const barHeight = 6 * sizeScale * sizeMult;
+	const barX = player.x - barWidth / 2;
+	const barY = player.y + scaledRadius + 8;
+	const hpRatio = Math.max(0, Math.min(1, (player.hp || 0) / (player.maxHp || 1)));
+	const numberX = barX + (barWidth * hpRatio);
+	
+	let numberY = barY + barHeight + 10;
+	if (isLocalPlayer && player.stamina !== undefined) {
+		const staminaBarHeight = 4 * sizeScale * sizeMult;
+		const staminaBarY = barY + barHeight + 2;
+		numberY = staminaBarY + staminaBarHeight + 10;
+	}
+	
+	spawnDamageNumber(numberX, numberY, amount, false, '#2ECC71', true, true);
+}
+
 function flushDamageNumberBuckets() {
 	const now = Date.now();
 	const minInterval = 1000 / DAMAGE_NUMBER_MAX_PER_SEC;
@@ -4737,6 +4769,32 @@ function flushDamageNumberBuckets() {
 			bucket.isCrit = false;
 			bucket.lastSpawn = now;
 			spawnPlayerDamageNumber(player, amount, isCrit);
+		}
+	}
+}
+
+function flushHealNumberBuckets() {
+	const now = Date.now();
+	const minInterval = 1000 / DAMAGE_NUMBER_MAX_PER_SEC;
+	const players = client.getPlayers();
+	const playerById = new Map(players.map(p => [p.num, p]));
+	
+	for (const [playerNum, bucket] of healNumberBuckets.entries()) {
+		const player = playerById.get(playerNum);
+		if (!player) {
+			healNumberBuckets.delete(playerNum);
+			continue;
+		}
+		
+		const shouldFlush = bucket.pending > 0
+			&& (now - bucket.lastHeal) >= DAMAGE_NUMBER_MERGE_WINDOW
+			&& (now - bucket.lastSpawn) >= minInterval;
+		
+		if (shouldFlush) {
+			const amount = bucket.pending;
+			bucket.pending = 0;
+			bucket.lastSpawn = now;
+			spawnPlayerHealNumber(player, amount);
 		}
 	}
 }
@@ -4772,6 +4830,31 @@ export function playerDamaged(playerNum, damage, isCrit = false) {
 	}
 	
 	damageNumberBuckets.set(player.num, bucket);
+}
+
+export function playerHealed(playerNum, amount) {
+	const players = client.getPlayers();
+	const player = players.find(p => p.num === playerNum);
+	if (!player || amount <= 0) return;
+	
+	const now = Date.now();
+	const bucket = healNumberBuckets.get(player.num) || {
+		pending: 0,
+		lastSpawn: 0,
+		lastHeal: 0
+	};
+	bucket.pending += amount;
+	bucket.lastHeal = now;
+	
+	const minInterval = 1000 / DAMAGE_NUMBER_MAX_PER_SEC;
+	if (now - bucket.lastSpawn >= minInterval) {
+		const healAmount = bucket.pending;
+		bucket.pending = 0;
+		bucket.lastSpawn = now;
+		spawnPlayerHealNumber(player, healAmount);
+	}
+	
+	healNumberBuckets.set(player.num, bucket);
 }
 
 // ===== PROJECTILE RENDERING (actual traveling projectiles from server) =====
@@ -6232,11 +6315,21 @@ export function boostPickup(type, amount, x, y) {
 		// Green heal number
 		addDamageNumber(x, y - 15, amount, false, true);
 	} else if (type === "lifesteal") {
-		// Pink lifesteal number (on enemy hit)
-		spawnDamageNumber(x, y - 15, "+" + amount, false, '#FF69B4', true);
+		// Lifesteal number under the player's healthbar
+		const player = client.getUser && client.getUser();
+		if (player) {
+			spawnPlayerHealNumber(player, amount);
+		} else {
+			addDamageNumber(x, y - 15, amount, false, true);
+		}
 	} else if (type === "vampire") {
-		// Dark red vampire heal number (on enemy kill)
-		spawnDamageNumber(x, y - 15, "+" + amount, false, '#8B0000', true);
+		// Vampire heal number under the player's healthbar
+		const player = client.getUser && client.getUser();
+		if (player) {
+			spawnPlayerHealNumber(player, amount);
+		} else {
+			addDamageNumber(x, y - 15, amount, false, true);
+		}
 	} else {
 		// Yellow stamina number
 		spawnDamageNumber(x, y - 15, amount, false, '#FFD700', false);
