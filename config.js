@@ -51,12 +51,12 @@ export const consts = {
 	"TRAIL_SPEED_BUFF_EASE": 2,       // Easing exponent (1 = linear, 2 = quadratic ease-in, higher = slower start)
 	
 	// ===== XP / LEVELING SYSTEM =====
-	"XP_BASE_PER_LEVEL": 25,         // Base XP needed to level up (level 1 → 2)
-	"XP_INCREMENT_PER_LEVEL": 15,    // XP cost increases by this * level each level
-	// Formula: XP needed for level L = BASE + (L-1) * INCREMENT
-	// Level 1→2: 50, Level 2→3: 65, Level 3→4: 80, etc.
-	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.04,  // Size increase per level (5%)
-	"PLAYER_SIZE_SCALE_MAX": 2.5,     // Maximum size multiplier
+	"XP_BASE_PER_LEVEL": 35,         // Base XP needed to level up (level 1 → 2)
+	"XP_GROWTH_RATE": 1.25,          // Exponential growth rate per level
+	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
+	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
+	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (5%)
+	"PLAYER_SIZE_SCALE_MAX": 1.6,     // Maximum size multiplier
 	
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)

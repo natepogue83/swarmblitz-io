@@ -234,7 +234,7 @@ export default function Player(sdata) {
 
 	// XP + Leveling System
 	this.level = sdata.level ?? 1;    // Starts at level 1
-	this.xp = sdata.xp ?? 0;          // Current XP (0 to XP_PER_LEVEL-1)
+	this.xp = sdata.xp ?? 0;          // Current XP toward next level
 	
 	// Size scaling based on level: sizeScale = clamp(1.0 + (level-1)*0.05, 1.0, 1.6)
 	const sizeScalePerLevel = consts.PLAYER_SIZE_SCALE_PER_LEVEL ?? 0.05;

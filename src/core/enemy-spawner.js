@@ -1,5 +1,5 @@
 import { consts } from "../../config.js";
-import { ENEMY_TYPES, BOSS_TYPES, ENEMY_SPAWN_RATE } from "./enemy-knobs.js";
+import { ENEMY_TYPES, BOSS_TYPES, ENEMY_SPAWN_RATE, ENEMY_TYPE_WEIGHTING } from "./enemy-knobs.js";
 
 export { ENEMY_TYPES, BOSS_TYPES };
 
@@ -155,14 +155,41 @@ export default class EnemySpawner {
 	
 	selectEnemyType() {
 		// Weighted random selection from unlocked types
+		const weighting = ENEMY_TYPE_WEIGHTING || {};
+		const minutes = this.runTime / 60;
+		const perMinute = weighting.perMinute ?? 0;
+		const maxBonus = weighting.maxBonus ?? 0;
+		const useWeighting = weighting.enabled && perMinute > 0 && maxBonus > 0;
+
 		let totalWeight = 0;
 		for (const typeName of this.unlockedTypes) {
-			totalWeight += ENEMY_TYPES[typeName].spawnWeight;
+			const baseWeight = ENEMY_TYPES[typeName].spawnWeight;
+			if (!useWeighting) {
+				totalWeight += baseWeight;
+				continue;
+			}
+
+			const typeIndex = UNLOCK_ORDER.indexOf(typeName);
+			const difficultyFactor = Math.max(0, typeIndex) / Math.max(1, MAX_TYPES - 1);
+			const bonus = Math.min(maxBonus, minutes * perMinute * difficultyFactor);
+			totalWeight += baseWeight * (1 + bonus);
 		}
 		
 		let roll = Math.random() * totalWeight;
 		for (const typeName of this.unlockedTypes) {
-			roll -= ENEMY_TYPES[typeName].spawnWeight;
+			const baseWeight = ENEMY_TYPES[typeName].spawnWeight;
+			if (!useWeighting) {
+				roll -= baseWeight;
+				if (roll <= 0) {
+					return typeName;
+				}
+				continue;
+			}
+
+			const typeIndex = UNLOCK_ORDER.indexOf(typeName);
+			const difficultyFactor = Math.max(0, typeIndex) / Math.max(1, MAX_TYPES - 1);
+			const bonus = Math.min(maxBonus, minutes * perMinute * difficultyFactor);
+			roll -= baseWeight * (1 + bonus);
 			if (roll <= 0) {
 				return typeName;
 			}

@@ -116,7 +116,7 @@ export const DRONE_TYPES = [
 		color: '#3498DB',
 		opacity: 0.3,            // Slightly glowy/transparent plasma
 		damageMult: 1.2,         // High damage
-		cooldownMult: 1.60,       // Slow fire rate
+		cooldownMult: 2.5,       // Slow fire rate
 		rangeMult: 1.2,           // Short range
 		orbitRadiusMult: 1,
 		orbitSpeedMult: 1,

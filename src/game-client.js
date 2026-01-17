@@ -6,8 +6,8 @@ import * as SoundManager from "./sound-manager.js";
 // Helper to calculate XP needed for a level
 function getXpForLevel(level) {
 	const base = consts.XP_BASE_PER_LEVEL || 50;
-	const increment = consts.XP_INCREMENT_PER_LEVEL || 25;
-	return base + (level - 1) * increment;
+	const growth = consts.XP_GROWTH_RATE || 1.15;
+	return Math.round(base * Math.pow(growth, level - 1));
 }
 
 let running = false;

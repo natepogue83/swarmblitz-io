@@ -15,7 +15,7 @@ export const ENEMY_TYPES = {
 	basic: {
 		unlockTime: 0,       // Available from start
 		radius: 10,
-		maxHp: 50,
+		maxHp: 20,
 		speed: 55,
 		contactDamage: 8,
 		xpDropValue: 1,
@@ -40,7 +40,7 @@ export const ENEMY_TYPES = {
 	tank: {
 		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
 		radius: 18,
-		maxHp: 100,
+		maxHp: 120,
 		speed: 30,           // Very slow
 		contactDamage: 20,
 		xpDropValue: 4,
@@ -51,7 +51,7 @@ export const ENEMY_TYPES = {
 	swarm: {
 		unlockTime: 60,      // Unlocks at 60 seconds (35+25)
 		radius: 6,
-		maxHp: 8,
+		maxHp: 10,
 		speed: 85,           // Fast
 		contactDamage: 6,
 		xpDropValue: 1,
@@ -133,7 +133,7 @@ export const ENEMY_XP_DROP = {
 
 export const ENEMY_SPAWN_RATE = {
 	// Global multiplier for enemy spawns. 1 = default, >1 = more spawns.
-	multiplier: .7
+	multiplier: 1
 };
 
 // ============================================================================
@@ -149,13 +149,26 @@ export const ENEMY_SCALING = {
 	hp: {
 		enabled: true,
 		startTime: 0,
-		perMinute: .5,
-		maxMult: 10.0
+		perMinute: .4,
+		maxMult: 100.0
 	},
 	damage: {
 		enabled: true,
 		startTime: 0,
 		perMinute: 0.15,
-		maxMult: 5.0
+		maxMult: 10.0
 	}
+};
+
+// ============================================================================
+// TIME-BASED ENEMY TYPE WEIGHTING
+// ============================================================================
+
+export const ENEMY_TYPE_WEIGHTING = {
+	// Boost spawn weights for harder types over time (unlocked types only).
+	// bonus = min(maxBonus, minutes * perMinute * difficultyFactor)
+	// finalWeight = baseWeight * (1 + bonus)
+	enabled: true,
+	perMinute: 0.25,
+	maxBonus: 1.5
 };

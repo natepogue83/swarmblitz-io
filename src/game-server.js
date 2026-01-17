@@ -173,8 +173,8 @@ function colorToHex(color) {
 // Calculate XP needed to reach the next level from current level
 function getXpForLevel(level) {
 	const base = consts.XP_BASE_PER_LEVEL || 50;
-	const increment = consts.XP_INCREMENT_PER_LEVEL || 15;
-	return base + (level - 1) * increment;
+	const growth = consts.XP_GROWTH_RATE || 1.15;
+	return Math.round(base * Math.pow(growth, level - 1));
 }
 
 // Calculate drone count based on level (1 drone at level 1, +1 at levels 4, 8, 12, etc.)
@@ -723,9 +723,9 @@ function Game(id) {
 				player.xp = (player.xp || 0) + amount;
 				
 				// Check for level ups
-				const xpPerLevel = consts.XP_PER_LEVEL || 100;
-				while (player.xp >= xpPerLevel) {
-					player.xp -= xpPerLevel;
+				let xpNeeded = getXpForLevel(player.level || 1);
+				while (player.xp >= xpNeeded) {
+					player.xp -= xpNeeded;
 					player.level = (player.level || 1) + 1;
 					player.updateSizeScale();
 					
@@ -734,6 +734,7 @@ function Game(id) {
 					rebuildDronesArray(player, player.level);
 					
 					console.log(`[DEV] ${player.name} leveled up to ${player.level}!`);
+					xpNeeded = getXpForLevel(player.level);
 				}
 				// Force client update
 				player._forceXpUpdate = true;
