@@ -491,6 +491,10 @@ function Game(id) {
 	const spawnWarningLeadSeconds = consts.ENEMY_SPAWN_WARNING_LEAD_SECONDS ?? 2.0;
 	const spawnGraceSeconds = consts.ENEMY_SPAWN_GRACE_SECONDS ?? 1.0;
 	const pendingEnemySpawns = [];
+	const separationRadius = consts.ENEMY_SEPARATION_RADIUS ?? 22;
+	const separationForce = consts.ENEMY_SEPARATION_FORCE ?? 120;
+	const separationMaxForce = consts.ENEMY_SEPARATION_MAX_FORCE ?? 80;
+	const separationDamping = consts.ENEMY_SEPARATION_DAMPING ?? 0.12;
 
 	function markEnemyHit(enemy) {
 		if (!enemy || enemy.isBoss) return;
@@ -749,6 +753,67 @@ function Game(id) {
 				outline: typeData.outline || null
 			});
 		}
+	}
+
+	// Soft separation to reduce stacking without full collision/physics.
+	function computeSeparationVectors(allEnemies, radius, force, maxForce, damping, deltaSeconds) {
+		if (!allEnemies || allEnemies.length === 0) return new Map();
+		const result = new Map();
+		const cellSize = Math.max(1, radius);
+		const grid = new Map();
+		
+		for (const enemy of allEnemies) {
+			if (enemy.dead) continue;
+			const cx = Math.floor(enemy.x / cellSize);
+			const cy = Math.floor(enemy.y / cellSize);
+			const key = `${cx},${cy}`;
+			if (!grid.has(key)) grid.set(key, []);
+			grid.get(key).push(enemy);
+		}
+		
+		for (const enemy of allEnemies) {
+			if (enemy.dead) continue;
+			const cx = Math.floor(enemy.x / cellSize);
+			const cy = Math.floor(enemy.y / cellSize);
+			let vx = 0;
+			let vy = 0;
+			
+			for (let gx = -1; gx <= 1; gx++) {
+				for (let gy = -1; gy <= 1; gy++) {
+					const key = `${cx + gx},${cy + gy}`;
+					const bucket = grid.get(key);
+					if (!bucket) continue;
+					
+					for (const other of bucket) {
+						if (other === enemy || other.dead) continue;
+						const dx = enemy.x - other.x;
+						const dy = enemy.y - other.y;
+						const dist = Math.hypot(dx, dy);
+						if (dist > 0 && dist < radius) {
+							const strength = (radius - dist) / radius;
+							const push = strength * force;
+							vx += (dx / dist) * push;
+							vy += (dy / dist) * push;
+						}
+					}
+				}
+			}
+			
+			if (vx !== 0 || vy !== 0) {
+				const damp = Math.max(0, 1 - damping * deltaSeconds);
+				vx *= damp;
+				vy *= damp;
+				const mag = Math.hypot(vx, vy);
+				if (mag > maxForce) {
+					const scale = maxForce / mag;
+					vx *= scale;
+					vy *= scale;
+				}
+				result.set(enemy.id, { vx, vy });
+			}
+		}
+		
+		return result;
 	}
 
 	function applyEnemyDamageToPlayer(player, enemy, baseDamage, deltas, deadList) {
@@ -2758,6 +2823,14 @@ function Game(id) {
 	processPendingEnemySpawns(economyDeltas);
 	
 	if (activePlayer && !activePlayer.dead) {
+		const separationVectors = computeSeparationVectors(
+			enemies,
+			separationRadius,
+			separationForce,
+			separationMaxForce,
+			separationDamping,
+			deltaSeconds
+		);
 			const playerRadius = activePlayer.getScaledRadius ? activePlayer.getScaledRadius() : PLAYER_RADIUS;
 			const hitCooldown = 0.35;
 			for (const enemy of enemies) {
@@ -2989,12 +3062,17 @@ function Game(id) {
 					effectiveSpeed = (startSpeed + (capSpeed - startSpeed) * t) * slowMult;
 				}
 				
-				// Only apply movement if not stunned
+				// Only apply movement if not stunned/spawn-grace
 				if (!isImmobilized) {
-					enemy.vx = moveX * effectiveSpeed;
-					enemy.vy = moveY * effectiveSpeed;
-					enemy.x += enemy.vx * deltaSeconds;
-					enemy.y += enemy.vy * deltaSeconds;
+					const baseVx = moveX * effectiveSpeed;
+					const baseVy = moveY * effectiveSpeed;
+					const sep = separationVectors.get(enemy.id);
+					const finalVx = baseVx + (sep ? sep.vx : 0);
+					const finalVy = baseVy + (sep ? sep.vy : 0);
+					enemy.vx = finalVx;
+					enemy.vy = finalVy;
+					enemy.x += finalVx * deltaSeconds;
+					enemy.y += finalVy * deltaSeconds;
 					
 					enemy.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.x));
 					enemy.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.y));
@@ -3661,6 +3739,15 @@ function Game(id) {
 						drone.fireRateRampProgress = Math.min(1, (drone.fireRateRampProgress || 0) + (deltaSeconds / rampTime) * 2);
 						drone.timeSinceLastShot = 0; // Reset idle timer on shot
 					}
+					
+					// Multishot: for shockwave only, increase attack speed (40% per stack, decays)
+					if (currentDroneType.isShockwave && extraProjectiles > 0) {
+						let speedBonus = 0;
+						for (let i = 0; i < extraProjectiles; i++) {
+							speedBonus += 0.4 * Math.pow(multishotDamageDecay, i);
+						}
+						baseCooldown = baseCooldown / (1 + speedBonus);
+					}
 					drone.cooldownRemaining = baseCooldown;
 					
 					// Execute: Enemies below threshold HP are instantly killed
@@ -3704,6 +3791,7 @@ function Game(id) {
 					// Check if this drone uses hitscan or projectile
 					const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
 					const isHitscan = droneType.isHitscan;
+					const multishotSpread = UPGRADE_KNOBS.MULTISHOT.spreadOffset ?? 18;
 					
 					// PASSIVE: Commando - Grant speed boost to owner when shooting
 					if (droneType.grantsSpeedBoost) {
@@ -3783,22 +3871,32 @@ function Game(id) {
 						// First drone (index 0) fires from player's aim position, others fire from drone
 						const isFirstDrone = droneIndex === 0;
 						const hitscanOrigin = isFirstDrone ? getPlayerAimPosition(p) : null;
+						const baseOrigin = hitscanOrigin || { x: drone.x, y: drone.y };
+						const ownerSizeScale = p.sizeScale || 1.0;
+						const originRadius = isFirstDrone
+							? (p.getScaledRadius ? p.getScaledRadius() : PLAYER_RADIUS)
+							: (consts.DRONE_RADIUS ?? 12) * ownerSizeScale;
+						const maxOffset = Math.max(0, originRadius * 0.8);
 						
 						applyHitscanDamage(p, drone, target, damage, isCrit, economyDeltas, hitscanOrigin, true);
 						
-						// Multi-shot: fire at additional nearby enemies (only for hitscan)
+						// Multi-shot: fire extra shots in same direction with slight lateral offset
 						if (extraProjectiles > 0) {
-							const nearbyEnemies = enemies.filter(e => 
-								e !== target && !e.dead && e.hp > 0 &&
-								Math.hypot(e.x - ownerX, e.y - ownerY) < scaledRange
-							);
-							nearbyEnemies.sort((a, b) => 
-								Math.hypot(a.x - ownerX, a.y - ownerY) - Math.hypot(b.x - ownerX, b.y - ownerY)
-							);
-							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
-								const multiTarget = nearbyEnemies[i];
+							const dx = target.x - baseOrigin.x;
+							const dy = target.y - baseOrigin.y;
+							const dist = Math.hypot(dx, dy) || 1;
+							const perpX = -dy / dist;
+							const perpY = dx / dist;
+							for (let i = 0; i < extraProjectiles; i++) {
+								const side = (i % 2 === 0) ? -1 : 1;
+								const step = Math.floor(i / 2) + 1;
+								const offset = side * Math.min(step * multishotSpread, maxOffset);
+								const offsetOrigin = {
+									x: baseOrigin.x + perpX * offset,
+									y: baseOrigin.y + perpY * offset
+								};
 								const extraDamage = damage * Math.pow(multishotDamageDecay, i + 1);
-								applyHitscanDamage(p, drone, multiTarget, extraDamage, isCrit, economyDeltas, hitscanOrigin, true);
+								applyHitscanDamage(p, drone, target, extraDamage, isCrit, economyDeltas, offsetOrigin, true);
 							}
 						}
 						
@@ -3810,6 +3908,11 @@ function Game(id) {
 						const originPos = isFirstDrone ? getPlayerAimPosition(p) : null;
 						// First drone uses player's color instead of drone color
 						const playerColor = isFirstDrone ? colorToHex(p.baseColor) : null;
+						const ownerSizeScale = p.sizeScale || 1.0;
+						const originRadius = isFirstDrone
+							? (p.getScaledRadius ? p.getScaledRadius() : PLAYER_RADIUS)
+							: (consts.DRONE_RADIUS ?? 12) * ownerSizeScale;
+						const maxOffset = Math.max(0, originRadius * 0.8);
 						
 						const proj = createProjectile(drone, target, damage, isCrit, p, {
 							lifeOnHitPercent: lifeOnHitPercent
@@ -3820,37 +3923,30 @@ function Game(id) {
 						
 						// Multi-shot for projectiles: spawn additional projectiles
 						if (extraProjectiles > 0) {
-							const multishotDelayMs = UPGRADE_KNOBS.MULTISHOT.projectileDelayMs || 0;
-							const nearbyEnemies = enemies.filter(e => 
-								e !== target && !e.dead && e.hp > 0 &&
-								Math.hypot(e.x - ownerX, e.y - ownerY) < scaledRange
-							);
-							nearbyEnemies.sort((a, b) => 
-								Math.hypot(a.x - ownerX, a.y - ownerY) - Math.hypot(b.x - ownerX, b.y - ownerY)
-							);
-							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
-								const multiTarget = nearbyEnemies[i];
+							const baseOrigin = originPos || { x: drone.x, y: drone.y };
+							const dx = target.x - baseOrigin.x;
+							const dy = target.y - baseOrigin.y;
+							const dist = Math.hypot(dx, dy) || 1;
+							const perpX = -dy / dist;
+							const perpY = dx / dist;
+							for (let i = 0; i < extraProjectiles; i++) {
+								const side = (i % 2 === 0) ? -1 : 1;
+								const step = Math.floor(i / 2) + 1;
+								const offset = side * Math.min(step * multishotSpread, maxOffset);
+								const offsetOrigin = {
+									x: baseOrigin.x + perpX * offset,
+									y: baseOrigin.y + perpY * offset
+								};
+								const offsetTarget = {
+									x: target.x + perpX * offset,
+									y: target.y + perpY * offset,
+									radius: target.radius || 10
+								};
 								const extraDamage = damage * Math.pow(multishotDamageDecay, i + 1);
-								const delaySec = multishotDelayMs > 0 ? (multishotDelayMs * (i + 1)) / 1000 : 0;
-								
-								if (delaySec > 0) {
-									pendingProjectileSpawns.push({
-										fireAt: runTime + delaySec,
-										drone,
-										targetId: multiTarget.id,
-										damage: extraDamage,
-										isCrit,
-										owner: p,
-										stats: { lifeOnHitPercent: lifeOnHitPercent },
-										originOverride: originPos,
-										colorOverride: playerColor
-									});
-								} else {
-									const extraProj = createProjectile(drone, multiTarget, extraDamage, isCrit, p, {
-										lifeOnHitPercent: lifeOnHitPercent
-									}, originPos, playerColor); // Extra projectiles also come from same origin with player color
-									emitProjectileSpawn(extraProj, economyDeltas);
-								}
+								const extraProj = createProjectile(drone, offsetTarget, extraDamage, isCrit, p, {
+									lifeOnHitPercent: lifeOnHitPercent
+								}, offsetOrigin, playerColor);
+								emitProjectileSpawn(extraProj, economyDeltas);
 							}
 						}
 					}

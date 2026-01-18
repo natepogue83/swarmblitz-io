@@ -112,7 +112,7 @@ export const DRONE_TYPES = [
 		isHitscan: false,
 		projectileSpeed: 500,     // Fast projectile
 		projectileLifetime: 0,
-		pierceCount: 5,           // Pierce through 3 enemies
+		pierceCount: 10,          // Pierce through 3 enemies
 		projectileSize: 15,
 		procCoefficient: .9,
 		// PASSIVE: Pierce damage scaling
@@ -338,8 +338,8 @@ export const DRONE_TYPES = [
 		cooldownMult: 2.5,        // Slow attack speed
 		rangeMult: 1.25,           // Normal targeting range (fires when enemy in range)
 		accuracy: 1.0,            // AoE doesn't miss
-		orbitRadiusMult: 0.6,     // Orbits closer to player
-		orbitSpeedMult: 0.7,
+		orbitRadiusMult: 0.8,     // Orbits closer to player
+		orbitSpeedMult: 0.8,
 		attackType: 'shockwave',
 		isHitscan: false,
 		projectileSpeed: 0,       // No projectile - instant AoE

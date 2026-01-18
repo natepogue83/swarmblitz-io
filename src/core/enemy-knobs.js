@@ -94,7 +94,7 @@ export const BOSS_TYPES = {
 	titan: {
 		// Giant slow boss with massive HP
 		radius: 40,
-		maxHp: 725,
+		maxHp: 450,
 		speed: 50,
 		contactDamage: 45,
 		xpDropValue: 25,
@@ -105,7 +105,7 @@ export const BOSS_TYPES = {
 	berserker: {
 		// Medium boss that charges repeatedly
 		radius: 28,
-		maxHp: 500,
+		maxHp: 300,
 		speed: 75,
 		contactDamage: 25,
 		chargeSpeed: 250,
@@ -119,7 +119,7 @@ export const BOSS_TYPES = {
 	summoner: {
 		// Boss that spawns minions
 		radius: 32,
-		maxHp: 400,
+		maxHp: 250,
 		speed: 65,
 		contactDamage: 15,
 		summonCooldown: 3,    // Seconds between summons

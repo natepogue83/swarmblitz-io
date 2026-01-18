@@ -5723,7 +5723,7 @@ function renderEnemy(ctx, enemy) {
 				ctx.fill();
 			}
 			
-			ctx.strokeStyle = "rgba(220, 255, 235, 0.8)";
+			ctx.strokeStyle = "rgba(120, 255, 160, 0.85)";
 			ctx.lineWidth = 3;
 			const crossSize = enemy.radius * 0.6;
 			ctx.beginPath();

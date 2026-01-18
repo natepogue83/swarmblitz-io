@@ -88,7 +88,8 @@ export const QUICK_RECOVERY = {
 export const MULTISHOT = {
 	projectilesPerStack: 1,     // +1 projectile per stack
 	projectileDelayMs: 80,      // Stagger extra shots for visual clarity
-	damageDecay: 0.75           // Each extra projectile deals 75% of previous
+	damageDecay: 0.75,          // Each extra projectile deals 75% of previous
+	spreadOffset: 18            // Lateral offset in pixels for extra shots
 };
 
 export const CRITICAL_STRIKE = {

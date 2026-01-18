@@ -118,6 +118,11 @@ export const consts = {
 	"ENEMY_SPAWN_BOOST_MULT": 0.4,    // Spawn interval multiplier during boost (lower = faster)
 	"ENEMY_LIFETIME_SECONDS": 10,   // Despawn non-boss enemies after inactivity
 	"ENEMY_DESPAWN_DISTANCE": 500,// Only despawn when this far from player
+	// Soft separation to reduce enemy stacking (no physics)
+	"ENEMY_SEPARATION_RADIUS": 22,     // Pixels to start repelling
+	"ENEMY_SEPARATION_FORCE": 120,     // Repulsion strength (px/s^2-ish)
+	"ENEMY_SEPARATION_MAX_FORCE": 80,  // Cap for repulsion velocity (px/s)
+	"ENEMY_SEPARATION_DAMPING": 0.12,  // Damping on repulsion vector per second
 	
 	// ===== HEAL PACKS (Support drone passive) =====
 	"HEAL_PACK_LIFETIME": 20,         // Seconds before heal pack disappears
