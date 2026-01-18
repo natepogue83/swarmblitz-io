@@ -38,7 +38,12 @@ export const ATTACK_TYPES = {
 	railgun: { name: 'Railgun', duration: 0.5, width: 8, isHitscan: false },
 	plasma: { name: 'Plasma', duration: 0.4, width: 12, isHitscan: false },
 	pulse: { name: 'Pulse', duration: 0.3, width: 6, isHitscan: false },
-	flame: { name: 'Flame', duration: 0.18, width: 10, isHitscan: false }
+	flame: { name: 'Flame', duration: 0.18, width: 10, isHitscan: false },
+	// New attack types for additional drones
+	acid: { name: 'Acid', duration: 0.25, width: 14, isHitscan: false },
+	boomerang: { name: 'Boomerang', duration: 0.2, width: 10, isHitscan: false },
+	electric: { name: 'Electric', duration: 0.08, width: 3, isHitscan: true },
+	shockwave: { name: 'Shockwave', duration: 0.4, width: 20, isHitscan: false }
 };
 
 export const DRONE_TYPES = [
@@ -58,7 +63,7 @@ export const DRONE_TYPES = [
 		isHitscan: false,
 		projectileSpeed: 450,     // pixels per second
 		projectileLifetime: 0,    // seconds (0 = use range-based lifetime)
-		pierceCount: 0,
+		pierceCount: 1,
 		projectileSize: 6,
 		procCoefficient: 1.2,
 		// PASSIVE: Ramps damage on same target
@@ -74,7 +79,7 @@ export const DRONE_TYPES = [
 		color: '#4ECDC4',
 		opacity: 0.8,             // Slightly transparent lasers
 		damageMult: 0.4,         // Much lower damage per hit
-		cooldownMult: 0.38,       // Very fast fire rate (~8 shots/sec)
+		cooldownMult: 0.35,       // Very fast fire rate (~8 shots/sec)
 		rangeMult: 0.80,
 		accuracy: 1.0,
 		orbitRadiusMult: .8,
@@ -85,7 +90,7 @@ export const DRONE_TYPES = [
 		projectileLifetime: 0,
 		pierceCount: 0,
 		projectileSize: .25,
-		procCoefficient: 0.25,
+		procCoefficient: 0.20,
 		// PASSIVE: Chain hits nearby enemies
 		chainHitsNearby: true,
 		chainHitPercent: 0.3,      // 15% of original damage
@@ -218,6 +223,134 @@ export const DRONE_TYPES = [
 		bleedDamagePerStack: 2,     // 1 damage per second per stack
 		bleedDuration: 5.0,         // Each stack lasts 2 seconds (refreshed on hit)
 		bleedMaxStacks: 50          // Max 10 stacks (10 DPS)
+	},
+	// ===== NEW DRONE TYPES =====
+	{
+		id: 'acid',
+		name: 'Acid',
+		description: 'Shoots acid globs that leave poisonous pools on impact.',
+		color: '#7FFF00',         // Bright green
+		opacity: 0.7,
+		damageMult: 0.5,          // Moderate direct damage
+		cooldownMult: 1.5,        // Slower fire rate
+		rangeMult: 0.9,
+		accuracy: 0.7,
+		orbitRadiusMult: 0.8,
+		orbitSpeedMult: 0.8,
+		attackType: 'acid',
+		isHitscan: false,
+		projectileSpeed: 280,
+		projectileLifetime: 0,
+		pierceCount: 0,
+		projectileSize: 16,
+		procCoefficient: 0.6,
+		// PASSIVE: Creates acid pools on impact
+		createsAcidPool: true,
+		acidPoolRadius: 60,         // Medium radius pool
+		acidPoolDuration: 4.0,      // 4 second duration
+		acidPoolDamagePerTick: 8,   // Damage per tick while in pool
+		acidPoolTickRate: 0.5,      // Ticks every 0.5 seconds
+		// PASSIVE: Applies poison DOT
+		appliesPoison: true,
+		poisonDamagePerStack: 3,    // Damage per stack per tick
+		poisonDuration: 3.0,        // Duration of poison
+		poisonMaxStacks: 5          // Max poison stacks
+	},
+	{
+		id: 'boomerang',
+		name: 'Boomerang',
+		description: 'Throws boomerangs with very high pierce that return to the player.',
+		color: '#DEB887',         // Burlywood (wooden color)
+		opacity: 1.0,
+		damageMult: 0.7,          // Moderate damage
+		cooldownMult: 1.8,        // Slower fire rate
+		rangeMult: 1.3,           // Good range
+		accuracy: 0.85,
+		orbitRadiusMult: 0.8,
+		orbitSpeedMult: 0.8,
+		attackType: 'boomerang',
+		isHitscan: false,
+		projectileSpeed: 350,     // Moderate speed
+		projectileLifetime: 3.0,  // Longer lifetime for return trip
+		pierceCount: 15,          // Very high pierce
+		projectileSize: 12,
+		procCoefficient: 0.5,
+		// PASSIVE: Returns to player after reaching max range
+		isBoomerang: true,
+		boomerangReturnSpeed: 400,  // Speed when returning
+		boomerangMaxDistance: 250   // Distance before returning
+	},
+	{
+		id: 'commando',
+		name: 'Commando',
+		description: 'Rapid-fire bullets. Shooting boosts player speed by 15%.',
+		color: '#4A4A4A',         // Dark gray (military)
+		opacity: 1.0,
+		damageMult: 0.55,         // Moderate damage
+		cooldownMult: 0.4,        // Fast fire rate
+		rangeMult: 1.0,
+		accuracy: 0.8,
+		orbitRadiusMult: 0.8,
+		orbitSpeedMult: 0.8,
+		attackType: 'bullet',
+		isHitscan: false,
+		projectileSpeed: 500,     // Fast bullets
+		projectileLifetime: 0,
+		pierceCount: 1,           // Light pierce
+		projectileSize: 5,
+		procCoefficient: 0.7,
+		// PASSIVE: Speed boost while shooting
+		grantsSpeedBoost: true,
+		speedBoostPercent: 0.15,    // 15% speed increase
+		speedBoostDuration: 1.0     // Lasts 1 second after shot (refreshes)
+	},
+	{
+		id: 'electric',
+		name: 'Electric',
+		description: 'Zaps enemies with purple lightning. Chains to one nearby enemy for 75% damage.',
+		color: '#9932CC',         // Dark orchid purple
+		opacity: 0.9,
+		damageMult: 0.8,          // Good base damage
+		cooldownMult: 0.8,        // Moderate fire rate
+		rangeMult: 1.0,
+		accuracy: 1.0,            // Perfect accuracy for lightning
+		orbitRadiusMult: 0.8,
+		orbitSpeedMult: 0.8,
+		attackType: 'electric',
+		isHitscan: true,          // Instant zap
+		projectileSpeed: 0,
+		projectileLifetime: 0,
+		pierceCount: 0,
+		projectileSize: 3,
+		procCoefficient: 0.8,
+		// PASSIVE: Chain to nearby enemy
+		chainsToEnemy: true,
+		chainDamagePercent: 0.75,   // 75% damage to chained enemy
+		chainRange: 120             // Range to find chain target
+	},
+	{
+		id: 'shockwave',
+		name: 'Shockwave',
+		description: 'Stomps the ground to damage and stun nearby enemies.',
+		color: '#8B4513',         // Saddle brown (earth)
+		opacity: 0.8,
+		damageMult: 1.2,          // High damage
+		cooldownMult: 2.5,        // Slow attack speed
+		rangeMult: 1.0,           // Normal targeting range (fires when enemy in range)
+		accuracy: 1.0,            // AoE doesn't miss
+		orbitRadiusMult: 0.6,     // Orbits closer to player
+		orbitSpeedMult: 0.7,
+		attackType: 'shockwave',
+		isHitscan: false,
+		projectileSpeed: 0,       // No projectile - instant AoE
+		projectileLifetime: 0,
+		pierceCount: 99,          // Hits all enemies in radius
+		projectileSize: 8,
+		procCoefficient: 0.4,
+		// PASSIVE: AoE stomp with stun
+		isShockwave: true,
+		shockwaveRadius: 100,       // Medium radius AoE
+		shockwaveStunDuration: 1.0  // 1 second stun
 	}
 ];
 
@@ -404,6 +537,51 @@ export function applyDroneType(drone, typeId, baseStats) {
 		drone.bleedDamagePerStack = type.bleedDamagePerStack ?? 2;
 		drone.bleedDuration = type.bleedDuration ?? 2.0;
 		drone.bleedMaxStacks = type.bleedMaxStacks ?? 50;
+	}
+	
+	// PASSIVE: Acid - Creates acid pools on impact
+	if (type.createsAcidPool) {
+		drone.createsAcidPool = true;
+		drone.acidPoolRadius = type.acidPoolRadius ?? 60;
+		drone.acidPoolDuration = type.acidPoolDuration ?? 4.0;
+		drone.acidPoolDamagePerTick = type.acidPoolDamagePerTick ?? 8;
+		drone.acidPoolTickRate = type.acidPoolTickRate ?? 0.5;
+	}
+	
+	// PASSIVE: Acid - Applies poison DOT
+	if (type.appliesPoison) {
+		drone.appliesPoison = true;
+		drone.poisonDamagePerStack = type.poisonDamagePerStack ?? 3;
+		drone.poisonDuration = type.poisonDuration ?? 3.0;
+		drone.poisonMaxStacks = type.poisonMaxStacks ?? 5;
+	}
+	
+	// PASSIVE: Boomerang - Returns to player
+	if (type.isBoomerang) {
+		drone.isBoomerang = true;
+		drone.boomerangReturnSpeed = type.boomerangReturnSpeed ?? 400;
+		drone.boomerangMaxDistance = type.boomerangMaxDistance ?? 250;
+	}
+	
+	// PASSIVE: Commando - Speed boost while shooting
+	if (type.grantsSpeedBoost) {
+		drone.grantsSpeedBoost = true;
+		drone.speedBoostPercent = type.speedBoostPercent ?? 0.15;
+		drone.speedBoostDuration = type.speedBoostDuration ?? 1.0;
+	}
+	
+	// PASSIVE: Electric - Chain to nearby enemy
+	if (type.chainsToEnemy) {
+		drone.chainsToEnemy = true;
+		drone.chainDamagePercent = type.chainDamagePercent ?? 0.75;
+		drone.chainRange = type.chainRange ?? 120;
+	}
+	
+	// PASSIVE: Shockwave - AoE stomp with stun
+	if (type.isShockwave) {
+		drone.isShockwave = true;
+		drone.shockwaveRadius = type.shockwaveRadius ?? 100;
+		drone.shockwaveStunDuration = type.shockwaveStunDuration ?? 1.0;
 	}
 	
 	// Apply multipliers to base stats

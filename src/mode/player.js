@@ -577,6 +577,11 @@ function createDevConsole() {
 						<option value="skirmisher" style="color:#F39C12">Skirmisher - Fast bullets</option>
 						<option value="support" style="color:#FF7A1A">Flame - Burning stream</option>
 						<option value="swarm" style="color:#E74C3C">Swarm - Tiny rapid lasers</option>
+						<option value="acid" style="color:#7FFF00">Acid - Poison pools</option>
+						<option value="boomerang" style="color:#DEB887">Boomerang - Returning blades</option>
+						<option value="commando" style="color:#4A4A4A">Commando - Speed boost</option>
+						<option value="electric" style="color:#9932CC">Electric - Chain lightning</option>
+						<option value="shockwave" style="color:#8B4513">Shockwave - AoE stun</option>
 					</select>
 					<button id="dev-add-drone">Add Drone</button>
 				</div>
@@ -2809,6 +2814,9 @@ function paint(ctx) {
 	// ===== LAYER 2.5: HEAL PACKS (Support drone passive) =====
 	renderHealPacks(ctx);
 	
+	// ===== LAYER 2.6: ACID POOLS (Acid drone passive) =====
+	renderAcidPools(ctx);
+	
 	// ===== LAYER 3: PLAYER TRAILS =====
 	for (const p of allPlayers) {
 		const dissolve = getDyingPlayerEffect(p);
@@ -3803,6 +3811,74 @@ function renderHealPacks(ctx) {
 	}
 }
 
+// Render acid pools from Acid drone
+function renderAcidPools(ctx) {
+	const acidPools = client.getAcidPools();
+	
+	for (const pool of acidPools) {
+		const x = pool.x;
+		const y = pool.y;
+		const radius = pool.radius || 60;
+		
+		// Calculate fade based on time remaining
+		const elapsed = (Date.now() - pool.spawnTime) / 1000;
+		const duration = pool.duration || 4.0;
+		const remaining = Math.max(0, duration - elapsed);
+		const fadeAlpha = remaining < 1.0 ? remaining : 1.0;
+		
+		// Blinking effect when about to expire
+		let blinkAlpha = 1.0;
+		if (remaining < 1.0) {
+			const blinkPhase = Math.sin(Date.now() / 80) * 0.3 + 0.7;
+			blinkAlpha = blinkPhase;
+		}
+		
+		const baseAlpha = 0.4 * fadeAlpha * blinkAlpha;
+		
+		ctx.save();
+		
+		// Bubbling animation
+		const bubbleTime = Date.now() / 1000;
+		
+		// Main pool gradient (toxic green)
+		const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+		gradient.addColorStop(0, `rgba(127, 255, 0, ${baseAlpha * 0.8})`);      // Bright green center
+		gradient.addColorStop(0.5, `rgba(80, 200, 0, ${baseAlpha * 0.6})`);     // Medium green
+		gradient.addColorStop(0.8, `rgba(50, 150, 0, ${baseAlpha * 0.4})`);     // Darker green
+		gradient.addColorStop(1, `rgba(30, 100, 0, 0)`);                         // Fade to transparent
+		
+		ctx.fillStyle = gradient;
+		ctx.beginPath();
+		ctx.arc(x, y, radius, 0, Math.PI * 2);
+		ctx.fill();
+		
+		// Bubbles effect
+		const numBubbles = 6;
+		for (let i = 0; i < numBubbles; i++) {
+			const bubbleAngle = (i / numBubbles) * Math.PI * 2 + bubbleTime * 0.5;
+			const bubbleRadiusMult = 0.3 + 0.5 * ((Math.sin(bubbleTime * 2 + i) + 1) / 2);
+			const bubbleDist = radius * bubbleRadiusMult;
+			const bubbleX = x + Math.cos(bubbleAngle) * bubbleDist * 0.7;
+			const bubbleY = y + Math.sin(bubbleAngle) * bubbleDist * 0.7;
+			const bubbleSize = 4 + Math.sin(bubbleTime * 3 + i * 1.5) * 2;
+			
+			ctx.fillStyle = `rgba(180, 255, 100, ${baseAlpha * 0.5})`;
+			ctx.beginPath();
+			ctx.arc(bubbleX, bubbleY, bubbleSize, 0, Math.PI * 2);
+			ctx.fill();
+		}
+		
+		// Inner glow ring
+		ctx.strokeStyle = `rgba(127, 255, 0, ${baseAlpha * 0.6})`;
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		ctx.arc(x, y, radius * 0.7, 0, Math.PI * 2);
+		ctx.stroke();
+		
+		ctx.restore();
+	}
+}
+
 function renderPlayerHpBar(ctx, player, isLocalPlayer = false) {
 	// Scale with player size
 	const sizeScale = player.sizeScale || 1.0;
@@ -4023,6 +4099,9 @@ class HitscanEffect {
 				break;
 			case 'pulse':
 				this.renderPulse(ctx);
+				break;
+			case 'electric':
+				this.renderElectric(ctx);
 				break;
 			case 'bullet':
 			default:
@@ -4375,6 +4454,76 @@ class HitscanEffect {
 		
 		if (wavePos >= 0.9) {
 			this.renderImpactSimple(ctx, 15);
+		}
+	}
+	
+	// ELECTRIC - Purple lightning bolt effect
+	renderElectric(ctx) {
+		const progress = 1 - this.life;
+		const dx = this.toX - this.fromX;
+		const dy = this.toY - this.fromY;
+		const dist = Math.hypot(dx, dy);
+		
+		// Generate zigzag lightning segments
+		const segmentCount = Math.max(4, Math.floor(dist / 20));
+		const segments = [];
+		for (let i = 0; i <= segmentCount; i++) {
+			const t = i / segmentCount;
+			const baseX = this.fromX + dx * t;
+			const baseY = this.fromY + dy * t;
+			
+			// Add random offset (except at endpoints)
+			let offsetX = 0, offsetY = 0;
+			if (i > 0 && i < segmentCount) {
+				const perpX = -dy / dist;
+				const perpY = dx / dist;
+				const offset = (Math.random() - 0.5) * 20 * Math.sin(t * Math.PI);
+				offsetX = perpX * offset;
+				offsetY = perpY * offset;
+			}
+			
+			segments.push({ x: baseX + offsetX, y: baseY + offsetY });
+		}
+		
+		// Outer glow
+		ctx.strokeStyle = this.rgba(0.4 * this.life);
+		ctx.lineWidth = 8 * this.life;
+		ctx.lineCap = 'round';
+		ctx.lineJoin = 'round';
+		ctx.beginPath();
+		ctx.moveTo(segments[0].x, segments[0].y);
+		for (let i = 1; i < segments.length; i++) {
+			ctx.lineTo(segments[i].x, segments[i].y);
+		}
+		ctx.stroke();
+		
+		// Main bolt
+		ctx.strokeStyle = this.rgba(0.8 * this.life);
+		ctx.lineWidth = 3 * this.life;
+		ctx.beginPath();
+		ctx.moveTo(segments[0].x, segments[0].y);
+		for (let i = 1; i < segments.length; i++) {
+			ctx.lineTo(segments[i].x, segments[i].y);
+		}
+		ctx.stroke();
+		
+		// Bright core
+		ctx.strokeStyle = `rgba(255, 255, 255, ${0.7 * this.life})`;
+		ctx.lineWidth = 1.5 * this.life;
+		ctx.beginPath();
+		ctx.moveTo(segments[0].x, segments[0].y);
+		for (let i = 1; i < segments.length; i++) {
+			ctx.lineTo(segments[i].x, segments[i].y);
+		}
+		ctx.stroke();
+		
+		// Impact spark at target
+		if (progress > 0.3) {
+			const sparkAlpha = (1 - progress) * 0.8;
+			ctx.fillStyle = `rgba(200, 150, 255, ${sparkAlpha})`;
+			ctx.beginPath();
+			ctx.arc(this.toX, this.toY, 8 * (1 - progress), 0, Math.PI * 2);
+			ctx.fill();
 		}
 	}
 	
@@ -4992,6 +5141,12 @@ function renderProjectiles(ctx) {
 			case 'flame':
 				renderFlameProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight, proj.spawnTime);
 				break;
+			case 'acid':
+				renderAcidProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight, proj.spawnTime);
+				break;
+			case 'boomerang':
+				renderBoomerangProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight, proj.spawnTime);
+				break;
 			case 'bullet':
 			default:
 				renderBulletProjectile(ctx, proj.x, proj.y, size, angle, rgba, rgbaLight);
@@ -5096,6 +5251,108 @@ function renderFlameProjectile(ctx, x, y, size, angle, rgba, rgbaLight, spawnTim
 	ctx.ellipse(-length * 0.1, 0, length * 0.2, width * 0.18, 0, 0, Math.PI * 2);
 	ctx.fill();
 	
+	ctx.restore();
+}
+
+// Render an acid projectile - dripping green glob
+function renderAcidProjectile(ctx, x, y, size, angle, rgba, rgbaLight, spawnTime) {
+	const wobble = 0.9 + 0.1 * Math.sin(Date.now() / 80);
+	
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(angle);
+	
+	// Outer glow
+	ctx.shadowBlur = 14;
+	ctx.shadowColor = 'rgba(127, 255, 0, 0.5)';
+	
+	// Main acid glob body
+	const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, size * 1.2);
+	gradient.addColorStop(0, 'rgba(180, 255, 100, 0.9)');
+	gradient.addColorStop(0.4, 'rgba(127, 255, 0, 0.7)');
+	gradient.addColorStop(1, 'rgba(80, 200, 0, 0.5)');
+	ctx.fillStyle = gradient;
+	
+	// Draw slightly irregular blob
+	ctx.beginPath();
+	for (let i = 0; i <= 12; i++) {
+		const a = (i / 12) * Math.PI * 2;
+		const r = size * (0.9 + 0.15 * Math.sin(a * 3 + Date.now() / 100)) * wobble;
+		const px = Math.cos(a) * r;
+		const py = Math.sin(a) * r;
+		if (i === 0) ctx.moveTo(px, py);
+		else ctx.lineTo(px, py);
+	}
+	ctx.closePath();
+	ctx.fill();
+	
+	// Inner bright core
+	ctx.fillStyle = 'rgba(200, 255, 150, 0.8)';
+	ctx.beginPath();
+	ctx.arc(0, 0, size * 0.4 * wobble, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Drip trail particles
+	for (let i = 1; i <= 3; i++) {
+		const dripDist = size * 0.8 * i;
+		const dripSize = size * (0.25 - i * 0.05);
+		const dripAlpha = 0.6 - i * 0.15;
+		ctx.fillStyle = `rgba(127, 255, 0, ${dripAlpha})`;
+		ctx.beginPath();
+		ctx.arc(-dripDist, Math.sin(Date.now() / 80 + i) * 3, dripSize, 0, Math.PI * 2);
+		ctx.fill();
+	}
+	
+	ctx.shadowBlur = 0;
+	ctx.restore();
+}
+
+// Render a boomerang projectile - spinning curved blade
+function renderBoomerangProjectile(ctx, x, y, size, angle, rgba, rgbaLight, spawnTime) {
+	const spinSpeed = 12; // Radians per second
+	const elapsed = (Date.now() - (spawnTime || Date.now())) / 1000;
+	const spin = elapsed * spinSpeed;
+	
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(spin);
+	
+	// Outer glow
+	ctx.shadowBlur = 10;
+	ctx.shadowColor = rgba(0.5);
+	
+	const armLength = size * 1.5;
+	const armWidth = size * 0.4;
+	
+	// Draw boomerang shape (curved V)
+	ctx.fillStyle = rgba(0.9);
+	ctx.beginPath();
+	
+	// Right arm
+	ctx.moveTo(0, -armWidth * 0.5);
+	ctx.quadraticCurveTo(armLength * 0.7, -armWidth * 0.3, armLength, armLength * 0.3);
+	ctx.lineTo(armLength - armWidth * 0.3, armLength * 0.5);
+	ctx.quadraticCurveTo(armLength * 0.5, armWidth * 0.2, 0, armWidth * 0.5);
+	
+	// Left arm
+	ctx.quadraticCurveTo(-armLength * 0.5, armWidth * 0.2, -armLength + armWidth * 0.3, armLength * 0.5);
+	ctx.lineTo(-armLength, armLength * 0.3);
+	ctx.quadraticCurveTo(-armLength * 0.7, -armWidth * 0.3, 0, -armWidth * 0.5);
+	ctx.closePath();
+	ctx.fill();
+	
+	// Highlight edges
+	ctx.strokeStyle = rgbaLight(0.8);
+	ctx.lineWidth = 1.5;
+	ctx.stroke();
+	
+	// Center highlight
+	ctx.fillStyle = rgbaLight(0.7);
+	ctx.beginPath();
+	ctx.arc(0, 0, armWidth * 0.5, 0, Math.PI * 2);
+	ctx.fill();
+	
+	ctx.shadowBlur = 0;
 	ctx.restore();
 }
 
@@ -5363,18 +5620,30 @@ function renderEnemy(ctx, enemy) {
 		} else if (type === 'sniper') {
 			// Support healer: constant aura fill + outline, plus sign
 			const auraRadius = enemy.healRadius || enemy.radius * 6;
-			ctx.fillStyle = "rgba(120, 200, 255, 0.12)";
+			ctx.fillStyle = "rgba(120, 255, 160, 0.06)";
 			ctx.beginPath();
 			ctx.arc(enemy.x, enemy.y, auraRadius, 0, Math.PI * 2);
 			ctx.fill();
 			
-			ctx.strokeStyle = "rgba(30, 120, 220, 0.55)";
+			ctx.strokeStyle = "rgba(20, 90, 50, 0.45)";
 			ctx.lineWidth = 2;
 			ctx.beginPath();
 			ctx.arc(enemy.x, enemy.y, auraRadius, 0, Math.PI * 2);
 			ctx.stroke();
 			
-			ctx.strokeStyle = "rgba(240, 250, 255, 0.8)";
+			// Shimmering sparkles along the aura ring
+			const sparkleCount = 6;
+			for (let i = 0; i < sparkleCount; i++) {
+				const angle = (enemyTime / 700) + i * (Math.PI * 2 / sparkleCount);
+				const sparkleX = enemy.x + Math.cos(angle) * auraRadius;
+				const sparkleY = enemy.y + Math.sin(angle) * auraRadius;
+				ctx.fillStyle = "rgba(200, 255, 220, 0.35)";
+				ctx.beginPath();
+				ctx.arc(sparkleX, sparkleY, 2, 0, Math.PI * 2);
+				ctx.fill();
+			}
+			
+			ctx.strokeStyle = "rgba(220, 255, 235, 0.8)";
 			ctx.lineWidth = 3;
 			const crossSize = enemy.radius * 0.6;
 			ctx.beginPath();
@@ -5632,6 +5901,21 @@ function renderDrone(ctx, drone, ownerPlayer, isUserDrone) {
 				break;
 			case 'swarm':
 				renderSwarmDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
+				break;
+			case 'acid':
+				renderAcidDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
+				break;
+			case 'boomerang':
+				renderBoomerangDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
+				break;
+			case 'commando':
+				renderCommandoDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
+				break;
+			case 'electric':
+				renderElectricDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
+				break;
+			case 'shockwave':
+				renderShockwaveDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
 				break;
 			default:
 				renderAssaultDrone(ctx, x, y, radius, droneTypeColor, time, drone.targetId !== null);
@@ -6017,6 +6301,372 @@ function renderSwarmDrone(ctx, x, y, radius, color, time, isTargeting) {
 		ctx.arc(x - r * 0.2, y - r * 0.4, r * 0.1, 0, Math.PI * 2);
 		ctx.arc(x + r * 0.2, y - r * 0.4, r * 0.1, 0, Math.PI * 2);
 		ctx.fill();
+	}
+}
+
+// ACID - Toxic green biohazard design with dripping effect
+function renderAcidDrone(ctx, x, y, radius, color, time, isTargeting) {
+	const r = radius;
+	const drip = Math.sin(time / 200) * 2;
+	const bubble1 = Math.sin(time / 150) * 0.15;
+	const bubble2 = Math.sin(time / 180 + 1) * 0.15;
+	
+	// Dripping slime trail
+	ctx.fillStyle = 'rgba(127, 255, 0, 0.3)';
+	for (let i = 0; i < 3; i++) {
+		const dripY = r * 0.8 + i * 4 + drip * (i + 1) * 0.5;
+		const dripSize = 3 - i * 0.8;
+		ctx.beginPath();
+		ctx.arc(x + (i - 1) * 3, y + dripY, dripSize, 0, Math.PI * 2);
+		ctx.fill();
+	}
+	
+	// Main body - irregular blob shape
+	const gradient = ctx.createRadialGradient(x, y, 0, x, y, r);
+	gradient.addColorStop(0, 'rgba(180, 255, 100, 0.95)');
+	gradient.addColorStop(0.5, hexToRgba(color, 0.9));
+	gradient.addColorStop(1, 'rgba(80, 180, 0, 0.85)');
+	ctx.fillStyle = gradient;
+	
+	ctx.beginPath();
+	for (let i = 0; i <= 10; i++) {
+		const angle = (i / 10) * Math.PI * 2;
+		const wobble = 1 + 0.1 * Math.sin(angle * 3 + time / 100);
+		const px = x + Math.cos(angle) * r * wobble;
+		const py = y + Math.sin(angle) * r * wobble;
+		if (i === 0) ctx.moveTo(px, py);
+		else ctx.lineTo(px, py);
+	}
+	ctx.closePath();
+	ctx.fill();
+	
+	// Bubbles on surface
+	ctx.fillStyle = 'rgba(200, 255, 150, 0.6)';
+	ctx.beginPath();
+	ctx.arc(x - r * 0.3, y - r * 0.2, r * (0.2 + bubble1), 0, Math.PI * 2);
+	ctx.fill();
+	ctx.beginPath();
+	ctx.arc(x + r * 0.25, y + r * 0.1, r * (0.15 + bubble2), 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Biohazard symbol when targeting
+	if (isTargeting) {
+		ctx.strokeStyle = 'rgba(0, 80, 0, 0.7)';
+		ctx.lineWidth = 2;
+		// Three arcs for biohazard
+		for (let i = 0; i < 3; i++) {
+			const angle = (i / 3) * Math.PI * 2 - Math.PI / 2;
+			ctx.beginPath();
+			ctx.arc(x + Math.cos(angle) * r * 0.25, y + Math.sin(angle) * r * 0.25, 
+					r * 0.35, angle - 0.8, angle + 0.8);
+			ctx.stroke();
+		}
+		// Center circle
+		ctx.beginPath();
+		ctx.arc(x, y, r * 0.15, 0, Math.PI * 2);
+		ctx.stroke();
+	}
+}
+
+// BOOMERANG - Wooden tribal design with curved shape
+function renderBoomerangDrone(ctx, x, y, radius, color, time, isTargeting) {
+	const r = radius;
+	const spin = time / 400; // Slow rotation
+	
+	ctx.save();
+	ctx.translate(x, y);
+	ctx.rotate(spin);
+	
+	// Main boomerang shape
+	const gradient = ctx.createLinearGradient(-r, 0, r, 0);
+	gradient.addColorStop(0, '#8B4513'); // Saddle brown
+	gradient.addColorStop(0.3, hexToRgba(color, 1));
+	gradient.addColorStop(0.7, hexToRgba(color, 1));
+	gradient.addColorStop(1, '#A0522D'); // Sienna
+	ctx.fillStyle = gradient;
+	
+	// Draw curved boomerang
+	ctx.beginPath();
+	ctx.moveTo(-r * 0.9, -r * 0.15);
+	ctx.quadraticCurveTo(-r * 0.5, -r * 0.6, 0, -r * 0.3);
+	ctx.quadraticCurveTo(r * 0.5, -r * 0.6, r * 0.9, -r * 0.15);
+	ctx.lineTo(r * 0.75, r * 0.1);
+	ctx.quadraticCurveTo(r * 0.4, -r * 0.3, 0, -r * 0.05);
+	ctx.quadraticCurveTo(-r * 0.4, -r * 0.3, -r * 0.75, r * 0.1);
+	ctx.closePath();
+	ctx.fill();
+	
+	// Wood grain lines
+	ctx.strokeStyle = 'rgba(101, 67, 33, 0.5)';
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	ctx.moveTo(-r * 0.6, -r * 0.2);
+	ctx.quadraticCurveTo(0, -r * 0.4, r * 0.6, -r * 0.2);
+	ctx.stroke();
+	ctx.beginPath();
+	ctx.moveTo(-r * 0.5, 0);
+	ctx.quadraticCurveTo(0, -r * 0.2, r * 0.5, 0);
+	ctx.stroke();
+	
+	// Edge highlight
+	ctx.strokeStyle = 'rgba(255, 220, 180, 0.5)';
+	ctx.lineWidth = 1.5;
+	ctx.beginPath();
+	ctx.moveTo(-r * 0.85, -r * 0.1);
+	ctx.quadraticCurveTo(-r * 0.5, -r * 0.55, 0, -r * 0.25);
+	ctx.quadraticCurveTo(r * 0.5, -r * 0.55, r * 0.85, -r * 0.1);
+	ctx.stroke();
+	
+	ctx.restore();
+	
+	// Motion blur trails when targeting
+	if (isTargeting) {
+		ctx.globalAlpha = 0.3;
+		for (let i = 1; i <= 3; i++) {
+			ctx.save();
+			ctx.translate(x, y);
+			ctx.rotate(spin - i * 0.3);
+			ctx.fillStyle = hexToRgba(color, 0.2);
+			ctx.beginPath();
+			ctx.moveTo(-r * 0.8, -r * 0.1);
+			ctx.quadraticCurveTo(0, -r * 0.5, r * 0.8, -r * 0.1);
+			ctx.lineTo(r * 0.6, r * 0.05);
+			ctx.quadraticCurveTo(0, -r * 0.2, -r * 0.6, r * 0.05);
+			ctx.closePath();
+			ctx.fill();
+			ctx.restore();
+		}
+		ctx.globalAlpha = 1;
+	}
+}
+
+// COMMANDO - Military tactical design with star insignia
+function renderCommandoDrone(ctx, x, y, radius, color, time, isTargeting) {
+	const r = radius;
+	
+	// Main body - octagonal military shape
+	ctx.fillStyle = hexToRgba(color, 0.95);
+	ctx.beginPath();
+	for (let i = 0; i < 8; i++) {
+		const angle = (i / 8) * Math.PI * 2 - Math.PI / 8;
+		const px = x + Math.cos(angle) * r;
+		const py = y + Math.sin(angle) * r;
+		if (i === 0) ctx.moveTo(px, py);
+		else ctx.lineTo(px, py);
+	}
+	ctx.closePath();
+	ctx.fill();
+	
+	// Dark border
+	ctx.strokeStyle = '#2a2a2a';
+	ctx.lineWidth = 2;
+	ctx.stroke();
+	
+	// Inner lighter panel
+	ctx.fillStyle = 'rgba(100, 100, 100, 0.4)';
+	ctx.beginPath();
+	for (let i = 0; i < 8; i++) {
+		const angle = (i / 8) * Math.PI * 2 - Math.PI / 8;
+		const px = x + Math.cos(angle) * r * 0.7;
+		const py = y + Math.sin(angle) * r * 0.7;
+		if (i === 0) ctx.moveTo(px, py);
+		else ctx.lineTo(px, py);
+	}
+	ctx.closePath();
+	ctx.fill();
+	
+	// Military star
+	ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+	ctx.beginPath();
+	for (let i = 0; i < 5; i++) {
+		const angle = (i / 5) * Math.PI * 2 - Math.PI / 2;
+		const outerR = r * 0.4;
+		const innerR = r * 0.18;
+		const outerX = x + Math.cos(angle) * outerR;
+		const outerY = y + Math.sin(angle) * outerR;
+		const innerAngle = angle + Math.PI / 5;
+		const innerX = x + Math.cos(innerAngle) * innerR;
+		const innerY = y + Math.sin(innerAngle) * innerR;
+		if (i === 0) ctx.moveTo(outerX, outerY);
+		else ctx.lineTo(outerX, outerY);
+		ctx.lineTo(innerX, innerY);
+	}
+	ctx.closePath();
+	ctx.fill();
+	
+	// Speed boost indicator when targeting (muzzle flash effect)
+	if (isTargeting) {
+		const flash = 0.5 + 0.5 * Math.sin(time / 50);
+		ctx.fillStyle = `rgba(255, 200, 100, ${flash * 0.6})`;
+		ctx.beginPath();
+		ctx.arc(x, y - r * 1.2, r * 0.3 * flash, 0, Math.PI * 2);
+		ctx.fill();
+		// Small muzzle flash lines
+		ctx.strokeStyle = `rgba(255, 220, 150, ${flash * 0.8})`;
+		ctx.lineWidth = 2;
+		for (let i = 0; i < 4; i++) {
+			const angle = (i / 4) * Math.PI * 2;
+			ctx.beginPath();
+			ctx.moveTo(x, y - r * 1.2);
+			ctx.lineTo(x + Math.cos(angle) * r * 0.4, y - r * 1.2 + Math.sin(angle) * r * 0.4);
+			ctx.stroke();
+		}
+	}
+}
+
+// ELECTRIC - Tesla coil design with lightning sparks
+function renderElectricDrone(ctx, x, y, radius, color, time, isTargeting) {
+	const r = radius;
+	const spark1 = Math.sin(time / 60) * r * 0.15;
+	const spark2 = Math.cos(time / 45) * r * 0.12;
+	
+	// Outer electric aura
+	ctx.shadowBlur = 15;
+	ctx.shadowColor = color;
+	
+	// Main coil body - cylindrical with rings
+	const gradient = ctx.createRadialGradient(x, y, 0, x, y, r);
+	gradient.addColorStop(0, 'rgba(200, 150, 255, 0.95)');
+	gradient.addColorStop(0.5, hexToRgba(color, 0.9));
+	gradient.addColorStop(1, 'rgba(80, 30, 120, 0.85)');
+	ctx.fillStyle = gradient;
+	
+	ctx.beginPath();
+	ctx.arc(x, y, r, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Coil rings
+	ctx.strokeStyle = 'rgba(255, 200, 255, 0.6)';
+	ctx.lineWidth = 2;
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.7, 0, Math.PI * 2);
+	ctx.stroke();
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
+	ctx.stroke();
+	
+	// Lightning sparks around edge
+	ctx.strokeStyle = 'rgba(220, 180, 255, 0.9)';
+	ctx.lineWidth = 1.5;
+	for (let i = 0; i < 6; i++) {
+		const angle = (i / 6) * Math.PI * 2 + time / 300;
+		const sparkLen = r * 0.4 + (i % 2 === 0 ? spark1 : spark2);
+		const startX = x + Math.cos(angle) * r * 0.8;
+		const startY = y + Math.sin(angle) * r * 0.8;
+		const endX = x + Math.cos(angle) * (r + sparkLen);
+		const endY = y + Math.sin(angle) * (r + sparkLen);
+		
+		ctx.beginPath();
+		ctx.moveTo(startX, startY);
+		// Zigzag to endpoint
+		const midX = (startX + endX) / 2 + (Math.random() - 0.5) * 5;
+		const midY = (startY + endY) / 2 + (Math.random() - 0.5) * 5;
+		ctx.lineTo(midX, midY);
+		ctx.lineTo(endX, endY);
+		ctx.stroke();
+	}
+	
+	// Central energy core
+	const corePulse = 0.7 + 0.3 * Math.sin(time / 80);
+	ctx.fillStyle = `rgba(255, 255, 255, ${corePulse})`;
+	ctx.beginPath();
+	ctx.arc(x, y, r * 0.2, 0, Math.PI * 2);
+	ctx.fill();
+	
+	ctx.shadowBlur = 0;
+	
+	// Arc lightning when targeting
+	if (isTargeting) {
+		ctx.strokeStyle = 'rgba(180, 130, 255, 0.8)';
+		ctx.lineWidth = 2;
+		const arcAngle = time / 100;
+		ctx.beginPath();
+		ctx.moveTo(x + Math.cos(arcAngle) * r, y + Math.sin(arcAngle) * r);
+		ctx.quadraticCurveTo(
+			x + Math.cos(arcAngle + 0.5) * r * 1.5,
+			y + Math.sin(arcAngle + 0.5) * r * 1.5,
+			x + Math.cos(arcAngle + 1) * r,
+			y + Math.sin(arcAngle + 1) * r
+		);
+		ctx.stroke();
+	}
+}
+
+// SHOCKWAVE - Heavy stone golem design with weight
+function renderShockwaveDrone(ctx, x, y, radius, color, time, isTargeting) {
+	const r = radius;
+	const stomp = isTargeting ? Math.abs(Math.sin(time / 100)) * 3 : 0;
+	
+	// Ground shadow (bigger when targeting - about to stomp)
+	const shadowSize = isTargeting ? 1.3 : 1.0;
+	ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+	ctx.beginPath();
+	ctx.ellipse(x, y + r * 0.8 + stomp, r * 0.8 * shadowSize, r * 0.3 * shadowSize, 0, 0, Math.PI * 2);
+	ctx.fill();
+	
+	// Main body - chunky rock shape
+	const gradient = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, 0, x, y, r * 1.2);
+	gradient.addColorStop(0, '#a0826d'); // Lighter brown
+	gradient.addColorStop(0.5, hexToRgba(color, 0.95));
+	gradient.addColorStop(1, '#5c3d2e'); // Dark brown
+	ctx.fillStyle = gradient;
+	
+	// Rocky irregular shape
+	ctx.beginPath();
+	const points = [
+		{ x: 0, y: -r * 1.1 },
+		{ x: r * 0.7, y: -r * 0.6 },
+		{ x: r * 1.0, y: r * 0.1 },
+		{ x: r * 0.6, y: r * 0.8 },
+		{ x: -r * 0.1, y: r * 0.9 },
+		{ x: -r * 0.7, y: r * 0.6 },
+		{ x: -r * 1.0, y: -r * 0.1 },
+		{ x: -r * 0.5, y: -r * 0.8 }
+	];
+	ctx.moveTo(x + points[0].x, y + points[0].y - stomp);
+	for (let i = 1; i < points.length; i++) {
+		ctx.lineTo(x + points[i].x, y + points[i].y - stomp);
+	}
+	ctx.closePath();
+	ctx.fill();
+	
+	// Rock texture cracks
+	ctx.strokeStyle = 'rgba(60, 40, 30, 0.6)';
+	ctx.lineWidth = 1.5;
+	ctx.beginPath();
+	ctx.moveTo(x - r * 0.3, y - r * 0.5 - stomp);
+	ctx.lineTo(x + r * 0.1, y + r * 0.3 - stomp);
+	ctx.stroke();
+	ctx.beginPath();
+	ctx.moveTo(x + r * 0.4, y - r * 0.3 - stomp);
+	ctx.lineTo(x + r * 0.2, y + r * 0.5 - stomp);
+	ctx.stroke();
+	
+	// Highlight edge
+	ctx.strokeStyle = 'rgba(180, 150, 120, 0.5)';
+	ctx.lineWidth = 2;
+	ctx.beginPath();
+	ctx.moveTo(x - r * 0.5, y - r * 0.8 - stomp);
+	ctx.lineTo(x, y - r * 1.1 - stomp);
+	ctx.lineTo(x + r * 0.7, y - r * 0.6 - stomp);
+	ctx.stroke();
+	
+	// Glowing fist/weight indicator when targeting
+	if (isTargeting) {
+		const pulse = 0.5 + 0.5 * Math.sin(time / 100);
+		ctx.fillStyle = `rgba(255, 150, 50, ${pulse * 0.6})`;
+		ctx.beginPath();
+		ctx.arc(x, y + r * 0.3 - stomp, r * 0.35, 0, Math.PI * 2);
+		ctx.fill();
+		
+		// Impact warning ring on ground
+		ctx.strokeStyle = `rgba(139, 69, 19, ${pulse * 0.5})`;
+		ctx.lineWidth = 2;
+		ctx.setLineDash([5, 5]);
+		ctx.beginPath();
+		ctx.arc(x, y + r * 0.8, r * 1.5 * pulse, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.setLineDash([]);
 	}
 }
 
@@ -6546,10 +7196,10 @@ export function hitscan(fromX, fromY, toX, toY, ownerId, damage, attackType, typ
 		return;
 	}
 	
-	// For actual hitscan weapons (laser, pulse), show the full beam animation
+	// For actual hitscan weapons (laser, pulse, electric), show the full beam animation
 	// For projectile weapons (bullet, railgun, plasma), only show impact effect
 	// (the traveling projectile is rendered separately via renderProjectiles())
-	const isActualHitscan = attackType === 'laser' || attackType === 'pulse';
+	const isActualHitscan = attackType === 'laser' || attackType === 'pulse' || attackType === 'electric';
 	
 	if (isActualHitscan) {
 		// Full beam animation for hitscan weapons
@@ -6831,6 +7481,103 @@ export function arcBarrageBurst(x, y, radius, playerNum, damage, hitCount, hits 
 			if (!hit) continue;
 			spawnDamageNumber(hit.x, hit.y, hit.damage ?? damage, false, '#00FFFF');
 		}
+	}
+}
+
+// Shockwave effect (Shockwave drone stomp)
+const shockwaveEffects = [];
+
+export function shockwaveEffect(x, y, radius, ownerId, damage) {
+	// Track damage for DPS calculation
+	if (user && ownerId === user.num && damage > 0) {
+		const now = performance.now();
+		damageHistory.push({ time: now, damage: damage });
+	}
+	
+	shockwaveEffects.push({
+		x,
+		y,
+		radius,
+		ownerId,
+		damage,
+		spawnTime: Date.now(),
+		duration: 600 // ms
+	});
+	
+	// Spawn damage number at center
+	if (damage > 0) {
+		spawnDamageNumber(x, y, damage, false, '#8B4513');
+	}
+}
+
+// Render shockwave effects (ground stomp rings)
+function renderShockwaveEffects(ctx) {
+	const now = Date.now();
+	for (let i = shockwaveEffects.length - 1; i >= 0; i--) {
+		const effect = shockwaveEffects[i];
+		const elapsed = now - effect.spawnTime;
+		if (elapsed > effect.duration) {
+			shockwaveEffects.splice(i, 1);
+			continue;
+		}
+		
+		const progress = elapsed / effect.duration;
+		const easeProgress = 1 - Math.pow(1 - progress, 2); // Ease out
+		const ringRadius = effect.radius * easeProgress;
+		const alpha = (1 - progress) * 0.8;
+		
+		ctx.save();
+		
+		// Outer expanding ring
+		ctx.strokeStyle = `rgba(139, 69, 19, ${alpha})`;
+		ctx.lineWidth = 4 * (1 - progress);
+		ctx.beginPath();
+		ctx.arc(effect.x, effect.y, ringRadius, 0, Math.PI * 2);
+		ctx.stroke();
+		
+		// Inner ring
+		ctx.strokeStyle = `rgba(210, 180, 140, ${alpha * 0.7})`;
+		ctx.lineWidth = 2 * (1 - progress);
+		ctx.beginPath();
+		ctx.arc(effect.x, effect.y, ringRadius * 0.7, 0, Math.PI * 2);
+		ctx.stroke();
+		
+		// Ground crack effect (radial lines)
+		const numCracks = 8;
+		ctx.strokeStyle = `rgba(100, 50, 20, ${alpha * 0.6})`;
+		ctx.lineWidth = 2;
+		for (let j = 0; j < numCracks; j++) {
+			const crackAngle = (j / numCracks) * Math.PI * 2;
+			const innerRadius = effect.radius * 0.1;
+			const outerRadius = ringRadius * 0.9;
+			ctx.beginPath();
+			ctx.moveTo(
+				effect.x + Math.cos(crackAngle) * innerRadius,
+				effect.y + Math.sin(crackAngle) * innerRadius
+			);
+			ctx.lineTo(
+				effect.x + Math.cos(crackAngle) * outerRadius,
+				effect.y + Math.sin(crackAngle) * outerRadius
+			);
+			ctx.stroke();
+		}
+		
+		// Center impact flash
+		if (progress < 0.3) {
+			const flashAlpha = (0.3 - progress) / 0.3;
+			const gradient = ctx.createRadialGradient(
+				effect.x, effect.y, 0,
+				effect.x, effect.y, effect.radius * 0.3
+			);
+			gradient.addColorStop(0, `rgba(255, 220, 180, ${flashAlpha * 0.8})`);
+			gradient.addColorStop(1, `rgba(139, 69, 19, 0)`);
+			ctx.fillStyle = gradient;
+			ctx.beginPath();
+			ctx.arc(effect.x, effect.y, effect.radius * 0.3, 0, Math.PI * 2);
+			ctx.fill();
+		}
+		
+		ctx.restore();
 	}
 }
 
@@ -7138,5 +7885,6 @@ export function renderNewUpgradeEffects(ctx) {
 	renderMissiles(ctx);
 	renderStickyDetonations(ctx);
 	renderArcBarrageEffects(ctx);
+	renderShockwaveEffects(ctx);
 }
 

@@ -77,7 +77,7 @@ export const consts = {
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)
 	"PLAYER_MAX_HP": 50,
-	"HP_PER_LEVEL": 10,                  // Max HP gained per level up
+	"HP_PER_LEVEL": 5,                  // Max HP gained per level up
 	"PLAYER_HP_REGEN_IN_TERRITORY": 15,  // HP per second when in own territory (fast regen)
 	"TERRITORY_DAMAGE_REDUCTION": 0.30,   // Damage reduction when in own territory (0.5 = 50% less damage)
 	"TERRITORY_SHRINK_IN_TERRITORY_PER_SEC": 0.005, // Territory shrink rate when inside (1% per sec)
@@ -119,6 +119,16 @@ export const consts = {
 	// ===== ENEMY STATUS EFFECTS =====
 	"SLOW_DURATION_DEFAULT": 1.5,     // Default slow duration in seconds
 	"BLEED_TICK_RATE": 0.25,          // Bleed ticks every 0.25 seconds (4 times per second)
+	"BURN_TICK_RATE": 0.35,           // Burn ticks every 0.35 seconds
+	"POISON_TICK_RATE": 0.5,          // Poison ticks every 0.5 seconds (2 times per second)
+	"STUN_DURATION_DEFAULT": 1.0,     // Default stun duration in seconds
+	
+	// ===== ACID POOL SETTINGS =====
+	"ACID_POOL_RADIUS": 60,           // Default acid pool radius
+	"ACID_POOL_DURATION": 4.0,        // Seconds before pool disappears
+	"ACID_POOL_DAMAGE_PER_TICK": 8,   // Damage per tick while in pool
+	"ACID_POOL_TICK_RATE": 0.5,       // Ticks every 0.5 seconds
+	"MAX_ACID_POOLS": 50,             // Maximum acid pools at once (performance limit)
 	
 	// ===== AREA OF INTEREST (AOI) OPTIMIZATION =====
 	// Reduces bandwidth from O(N²) to O(N×K) where K = avg nearby players

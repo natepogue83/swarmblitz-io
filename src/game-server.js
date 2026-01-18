@@ -104,7 +104,11 @@ function createEconomyDeltas() {
 		missileUpdates: [],
 		missileRemovals: [],
 		stickyChargeDetonations: [],
-		arcBarrageBursts: []
+		arcBarrageBursts: [],
+		shockwaveEvents: [],
+		acidPoolSpawns: [],
+		acidPoolUpdates: [],
+		acidPoolRemovals: []
 	};
 }
 
@@ -131,6 +135,10 @@ function mergeEconomyDeltas(target, source) {
 	target.missileRemovals.push(...source.missileRemovals);
 	target.stickyChargeDetonations.push(...source.stickyChargeDetonations);
 	target.arcBarrageBursts.push(...source.arcBarrageBursts);
+	target.shockwaveEvents.push(...source.shockwaveEvents);
+	target.acidPoolSpawns.push(...source.acidPoolSpawns);
+	target.acidPoolUpdates.push(...source.acidPoolUpdates);
+	target.acidPoolRemovals.push(...source.acidPoolRemovals);
 }
 
 function rollProcChance(baseChance, procCoefficient) {
@@ -219,7 +227,7 @@ function getEnemyScalingMultiplier(runTimeSeconds, scaling) {
 	return finalMult;
 }
 
-function getPlayerMoveSpeed(player) {
+function getPlayerMoveSpeed(player, runTime) {
 	if (!player) return consts.SPEED || 4;
 	const baseSpeed = player.speed || consts.SPEED || 4;
 	const stats = player.derivedStats || {};
@@ -230,6 +238,10 @@ function getPlayerMoveSpeed(player) {
 	}
 	if ((player.momentumStacks || 0) > 0) {
 		upgradeSpeedMult += (player.momentumStacks * UPGRADE_KNOBS.MOMENTUM.speedPerSecond);
+	}
+	// Commando drone speed boost
+	if (player.commandoSpeedBoostExpires && runTime !== undefined && runTime < player.commandoSpeedBoostExpires) {
+		upgradeSpeedMult += (player.commandoSpeedBoost || 0.15);
 	}
 	
 	const trailSpeedMult = player.currentSpeedBuff || 1.0;
@@ -438,6 +450,10 @@ function Game(id) {
 	const healPacks = [];
 	let nextHealPackId = 1;
 	
+	// ===== ACID POOL SYSTEM (Acid drone passive) =====
+	const acidPools = [];
+	let nextAcidPoolId = 1;
+	
 	// ===== ASSAULT RAMP DAMAGE TRACKING =====
 	// Map: ownerId -> Map<enemyId -> { stacks, lastHitTime }>
 	const assaultRampStacks = new Map();
@@ -516,6 +532,32 @@ function Game(id) {
 		}
 	}
 
+	function applyPoisonStacks(target, ownerId, poisonConfig) {
+		if (!target || !poisonConfig) return;
+		if (!target.poisonStacks) target.poisonStacks = 0;
+		if (!target.poisonExpires) target.poisonExpires = 0;
+
+		const damagePerStack = poisonConfig.damagePerStack ?? poisonConfig.poisonDamagePerStack ?? 3;
+		const durationSeconds = poisonConfig.durationSeconds ?? poisonConfig.poisonDuration ?? 3.0;
+		const maxStacks = poisonConfig.maxPoisonStacks ?? poisonConfig.poisonMaxStacks ?? 5;
+		const stackIncrement = poisonConfig.stackIncrement ?? 1;
+		const maxAllowedStacks = Math.max(target.poisonMaxStacks || 0, maxStacks);
+
+		target.poisonStacks = Math.min(target.poisonStacks + stackIncrement, maxAllowedStacks);
+		target.poisonExpires = Math.max(target.poisonExpires || 0, runTime + durationSeconds);
+		target.poisonDamagePerStack = Math.max(target.poisonDamagePerStack || 0, damagePerStack);
+		target.poisonMaxStacks = maxAllowedStacks;
+		if (ownerId !== undefined && ownerId !== null) {
+			target.poisonOwnerId = ownerId;
+		}
+	}
+
+	function applyStun(target, duration) {
+		if (!target) return;
+		const stunDuration = duration ?? consts.STUN_DURATION_DEFAULT ?? 1.0;
+		target.stunExpires = Math.max(target.stunExpires || 0, runTime + stunDuration);
+	}
+
 	function applyEnemyScaling(enemy) {
 		if (!enemy) return;
 		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
@@ -572,6 +614,13 @@ function Game(id) {
 
 	function spawnEnemyOfType(typeName, x, y) {
 		const typeData = (ENEMY_TYPES[typeName] || ENEMY_TYPES.basic);
+		if (typeName === 'sniper') {
+			const maxCount = typeData.maxCount ?? 5;
+			const currentCount = enemies.filter(e => !e.isBoss && e.type === 'sniper').length;
+			if (currentCount >= maxCount) {
+				return null;
+			}
+		}
 		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
 		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
 		const maxHp = Math.max(1, typeData.maxHp * hpScale);
@@ -1335,6 +1384,11 @@ function Game(id) {
 			if (pendingDeltas.healPackRemovals && pendingDeltas.healPackRemovals.length > 0) data.healPackRemovals = pendingDeltas.healPackRemovals;
 			if (pendingDeltas.healPackPickups && pendingDeltas.healPackPickups.length > 0) data.healPackPickups = pendingDeltas.healPackPickups;
 			
+			// Acid pool data (Acid drone passive)
+			if (pendingDeltas.acidPoolSpawns && pendingDeltas.acidPoolSpawns.length > 0) data.acidPoolSpawns = pendingDeltas.acidPoolSpawns;
+			if (pendingDeltas.acidPoolUpdates && pendingDeltas.acidPoolUpdates.length > 0) data.acidPoolUpdates = pendingDeltas.acidPoolUpdates;
+			if (pendingDeltas.acidPoolRemovals && pendingDeltas.acidPoolRemovals.length > 0) data.acidPoolRemovals = pendingDeltas.acidPoolRemovals;
+			
 			// Upgrade visual/sound events
 			if (pendingDeltas.phaseShiftEvents.length > 0) data.phaseShiftEvents = pendingDeltas.phaseShiftEvents;
 			if (pendingDeltas.adrenalineEvents.length > 0) data.adrenalineEvents = pendingDeltas.adrenalineEvents;
@@ -1346,6 +1400,7 @@ function Game(id) {
 			if (pendingDeltas.missileRemovals.length > 0) data.missileRemovals = pendingDeltas.missileRemovals;
 			if (pendingDeltas.stickyChargeDetonations.length > 0) data.stickyChargeDetonations = pendingDeltas.stickyChargeDetonations;
 			if (pendingDeltas.arcBarrageBursts.length > 0) data.arcBarrageBursts = pendingDeltas.arcBarrageBursts;
+			if (pendingDeltas.shockwaveEvents.length > 0) data.shockwaveEvents = pendingDeltas.shockwaveEvents;
 
 			if (p._territoryDirty) {
 				data.territoryUpdates = [{
@@ -1683,7 +1738,23 @@ function Game(id) {
 				rampsTargetDamage: droneType.rampsTargetDamage || false,
 				rampDamagePerStack: droneType.rampDamagePerStack || 0.15,
 				rampMaxStacks: droneType.rampMaxStacks || 5,
-				rampDecayTime: droneType.rampDecayTime || 1.5
+				rampDecayTime: droneType.rampDecayTime || 1.5,
+				// PASSIVE: Acid - Creates acid pools on impact
+				createsAcidPool: droneType.createsAcidPool || false,
+				acidPoolRadius: droneType.acidPoolRadius || 60,
+				acidPoolDuration: droneType.acidPoolDuration || 4.0,
+				acidPoolDamagePerTick: droneType.acidPoolDamagePerTick || 8,
+				acidPoolTickRate: droneType.acidPoolTickRate || 0.5,
+				// PASSIVE: Acid - Applies poison DOT
+				appliesPoison: droneType.appliesPoison || false,
+				poisonDamagePerStack: droneType.poisonDamagePerStack || 3,
+				poisonDuration: droneType.poisonDuration || 3.0,
+				poisonMaxStacks: droneType.poisonMaxStacks || 5,
+				// PASSIVE: Boomerang - Returns to player
+				isBoomerang: droneType.isBoomerang || false,
+				boomerangReturnSpeed: droneType.boomerangReturnSpeed || 400,
+				boomerangMaxDistance: droneType.boomerangMaxDistance || 250,
+				isReturning: false // Track boomerang return state
 			};
 			
 			projectiles.push(projectile);
@@ -1848,7 +1919,85 @@ function Game(id) {
 					}
 				}
 				
-				if (proj.distanceTraveled > proj.maxRange) {
+				// PASSIVE: Boomerang - Return to player after max distance
+				if (proj.isBoomerang) {
+					const owner = players.find(p => p.num === proj.ownerId);
+					if (owner && !owner.dead) {
+						// Check if should start returning
+						if (!proj.isReturning && proj.distanceTraveled >= proj.boomerangMaxDistance) {
+							proj.isReturning = true;
+							// Clear pierced enemies so it can hit them again on return
+							proj.piercedEnemies.clear();
+						}
+						
+						// If returning, home toward owner
+						if (proj.isReturning) {
+							const dx = owner.x - proj.x;
+							const dy = owner.y - proj.y;
+							const distToOwner = Math.hypot(dx, dy);
+							
+							// Remove if close to owner
+							if (distToOwner < 30) {
+								toRemove.push(proj);
+								continue;
+							}
+							
+							// Update velocity to home toward owner
+							const returnSpeed = proj.boomerangReturnSpeed || 400;
+							proj.vx = (dx / distToOwner) * returnSpeed;
+							proj.vy = (dy / distToOwner) * returnSpeed;
+						}
+					} else {
+						// Owner gone, remove boomerang
+						toRemove.push(proj);
+						continue;
+					}
+				}
+				
+				// PASSIVE: Acid - Convert to pool after 0.5 seconds of flight
+				if (proj.createsAcidPool && !proj.convertedToPool) {
+					const acidFlightTime = 0.5; // seconds before converting to pool
+					if ((runTime - proj.spawnTime) >= acidFlightTime) {
+						proj.convertedToPool = true;
+						
+						// Create the acid pool at projectile position
+						const maxPools = consts.MAX_ACID_POOLS || 50;
+						if (acidPools.length < maxPools) {
+							const pool = {
+								id: nextAcidPoolId++,
+								x: proj.x,
+								y: proj.y,
+								radius: proj.acidPoolRadius,
+								damagePerTick: proj.acidPoolDamagePerTick,
+								tickRate: proj.acidPoolTickRate,
+								duration: proj.acidPoolDuration,
+								ownerId: proj.ownerId,
+								spawnTime: runTime,
+								lastTickTime: runTime,
+								appliesPoison: proj.appliesPoison,
+								poisonDamagePerStack: proj.poisonDamagePerStack,
+								poisonDuration: proj.poisonDuration,
+								poisonMaxStacks: proj.poisonMaxStacks
+							};
+							acidPools.push(pool);
+							economyDeltas.acidPoolSpawns.push({
+								id: pool.id,
+								x: pool.x,
+								y: pool.y,
+								radius: pool.radius,
+								duration: pool.duration,
+								ownerId: pool.ownerId
+							});
+						}
+						
+						// Remove the projectile
+						toRemove.push(proj);
+						continue;
+					}
+				}
+				
+				// Check max range (skip for returning boomerangs)
+				if (!proj.isReturning && proj.distanceTraveled > proj.maxRange) {
 					toRemove.push(proj);
 					continue;
 				}
@@ -2009,6 +2158,48 @@ function Game(id) {
 								burnDuration: proj.burnDuration,
 								burnDamagePerStack: proj.burnDamagePerStack
 							});
+						}
+
+						// PASSIVE: Acid - Apply poison stacks
+						if (proj.appliesPoison) {
+							applyPoisonStacks(enemy, owner?.num, {
+								poisonMaxStacks: proj.poisonMaxStacks,
+								poisonDuration: proj.poisonDuration,
+								poisonDamagePerStack: proj.poisonDamagePerStack
+							});
+						}
+
+						// PASSIVE: Acid - Create acid pool on impact (only on first hit)
+						if (proj.createsAcidPool && proj.piercedEnemies.size === 1) {
+							const maxPools = consts.MAX_ACID_POOLS || 50;
+							if (acidPools.length < maxPools) {
+								const pool = {
+									id: nextAcidPoolId++,
+									x: enemy.x,
+									y: enemy.y,
+									radius: proj.acidPoolRadius,
+									damagePerTick: proj.acidPoolDamagePerTick,
+									tickRate: proj.acidPoolTickRate,
+									duration: proj.acidPoolDuration,
+									ownerId: proj.ownerId,
+									spawnTime: runTime,
+									lastTickTime: runTime,
+									// Also applies poison to enemies in pool
+									appliesPoison: proj.appliesPoison,
+									poisonDamagePerStack: proj.poisonDamagePerStack,
+									poisonDuration: proj.poisonDuration,
+									poisonMaxStacks: proj.poisonMaxStacks
+								};
+								acidPools.push(pool);
+								economyDeltas.acidPoolSpawns.push({
+									id: pool.id,
+									x: pool.x,
+									y: pool.y,
+									radius: pool.radius,
+									duration: pool.duration,
+									ownerId: pool.ownerId
+								});
+							}
 						}
 
 						// UPGRADE: Bleeding Rounds - proc chance to apply bleed stacks
@@ -2429,6 +2620,13 @@ function Game(id) {
 	for (const spawn of enemySpawns) {
 		const typeName = spawn.type || 'basic';
 		const typeData = ENEMY_TYPES[typeName] || ENEMY_TYPES.basic;
+		if (typeName === 'sniper') {
+			const maxCount = typeData.maxCount ?? 5;
+			const currentCount = enemyCountByType.get(typeName) || 0;
+			if (currentCount >= maxCount) {
+				continue;
+			}
+		}
 		const spawnCount = typeName === 'swarm' ? (typeData.swarmSpawnCount || 1) : 1;
 		const spawnSpread = typeName === 'swarm' ? (typeData.swarmSpawnSpread || 0) : 0;
 		
@@ -2483,6 +2681,7 @@ function Game(id) {
 				enemy.healAmount = typeData.healAmount;
 				enemy.healCooldown = typeData.healCooldown;
 				enemy.healPercent = typeData.healPercent;
+				enemy.minSeparation = typeData.minSeparation;
 				enemy.lastHealAt = 0;
 			} else if (typeName === 'tank') {
 				enemy.swarmBurstCount = typeData.swarmBurstCount;
@@ -2590,6 +2789,14 @@ function Game(id) {
 					}
 				}
 				
+				// Check if enemy is stunned (skip all movement if stunned)
+				if (enemy.stunExpires && runTime < enemy.stunExpires) {
+					enemy.vx = 0;
+					enemy.vy = 0;
+					// Still process DOT effects below, but skip movement and contact damage
+				}
+				const isStunned = enemy.stunExpires && runTime < enemy.stunExpires;
+				
 				// Apply slow debuff if active
 				let effectiveSpeed = enemy.speed;
 				let slowMult = 1.0;
@@ -2660,6 +2867,35 @@ function Game(id) {
 						if (mag > 0) {
 							moveX /= mag;
 							moveY /= mag;
+						}
+					}
+					
+					if (enemy.type === 'sniper') {
+						const minSep = enemy.minSeparation || 120;
+						let sepX = 0;
+						let sepY = 0;
+						let sepCount = 0;
+						for (const other of enemies) {
+							if (other === enemy || other.dead || other.type !== 'sniper') continue;
+							const ox = enemy.x - other.x;
+							const oy = enemy.y - other.y;
+							const d = Math.hypot(ox, oy);
+							if (d > 0 && d < minSep) {
+								const push = (minSep - d) / minSep;
+								sepX += (ox / d) * push;
+								sepY += (oy / d) * push;
+								sepCount++;
+							}
+						}
+						if (sepCount > 0) {
+							const mag = Math.hypot(sepX, sepY);
+							if (mag > 0) {
+								sepX /= mag;
+								sepY /= mag;
+								const blend = 0.5;
+								moveX = moveX * (1 - blend) + sepX * blend;
+								moveY = moveY * (1 - blend) + sepY * blend;
+							}
 						}
 					}
 					
@@ -2746,20 +2982,23 @@ function Game(id) {
 					if (enemy.spawnTime === undefined) enemy.spawnTime = runTime;
 					const rampSeconds = ENEMY_TYPES.swarm.chaseRampSeconds || 7;
 					const capMult = ENEMY_TYPES.swarm.chaseSpeedCapMult || 1.01;
-					const playerSpeed = getPlayerMoveSpeed(activePlayer);
+					const playerSpeed = getPlayerMoveSpeed(activePlayer, runTime);
 					const capSpeed = playerSpeed * capMult;
 					const startSpeed = Math.min(enemy.speed, capSpeed);
 					const t = rampSeconds > 0 ? Math.min(1, (runTime - enemy.spawnTime) / rampSeconds) : 1;
 					effectiveSpeed = (startSpeed + (capSpeed - startSpeed) * t) * slowMult;
 				}
 				
-				enemy.vx = moveX * effectiveSpeed;
-				enemy.vy = moveY * effectiveSpeed;
-				enemy.x += enemy.vx * deltaSeconds;
-				enemy.y += enemy.vy * deltaSeconds;
-				
-				enemy.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.x));
-				enemy.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.y));
+				// Only apply movement if not stunned
+				if (!isStunned) {
+					enemy.vx = moveX * effectiveSpeed;
+					enemy.vy = moveY * effectiveSpeed;
+					enemy.x += enemy.vx * deltaSeconds;
+					enemy.y += enemy.vy * deltaSeconds;
+					
+					enemy.x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.x));
+					enemy.y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, enemy.y));
+				}
 				
 				// PASSIVE: Swarm - Process bleed damage ticks
 				if (enemy.bleedStacks > 0 && enemy.bleedExpires && runTime < enemy.bleedExpires) {
@@ -2837,14 +3076,54 @@ function Game(id) {
 					enemy.burnStacks = 0;
 					enemy.burnExpires = 0;
 				}
+
+				// PASSIVE: Acid - Process poison damage ticks
+				if (enemy.poisonStacks > 0 && enemy.poisonExpires && runTime < enemy.poisonExpires) {
+					if (!enemy.lastPoisonTick) enemy.lastPoisonTick = runTime;
+
+					const poisonTickRate = consts.POISON_TICK_RATE || 0.5;
+					if (runTime - enemy.lastPoisonTick >= poisonTickRate) {
+						enemy.lastPoisonTick = runTime;
+						const poisonDamage = enemy.poisonStacks * (enemy.poisonDamagePerStack || 3);
+						enemy.hp -= poisonDamage;
+						if (enemy.hp < 0) enemy.hp = 0;
+						markEnemyHit(enemy);
+
+						economyDeltas.hitscanEvents.push({
+							fromX: enemy.x,
+							fromY: enemy.y,
+							toX: enemy.x,
+							toY: enemy.y,
+							ownerId: enemy.poisonOwnerId || -1,
+							targetEnemyId: enemy.id,
+							damage: poisonDamage,
+							remainingHp: enemy.hp,
+							isCrit: false,
+							attackType: 'poison',
+							typeColor: '#7FFF00', // Bright green for poison
+							isPoisonTick: true
+						});
+
+						if (enemy.hp <= 0) {
+							const poisonOwner = players.find(p => p.num === enemy.poisonOwnerId);
+							handleEnemyDeath(enemy, poisonOwner);
+						}
+					}
+				} else if (enemy.poisonStacks > 0 && runTime >= enemy.poisonExpires) {
+					enemy.poisonStacks = 0;
+					enemy.poisonExpires = 0;
+				}
 				
-				const hitDx = activePlayer.x - enemy.x;
-				const hitDy = activePlayer.y - enemy.y;
-				const hitDist = Math.hypot(hitDx, hitDy);
-				const hitRadius = playerRadius + enemy.radius;
-				
-				if (hitDist < hitRadius && (runTime - enemy.lastHitAt) >= hitCooldown) {
-					applyEnemyDamageToPlayer(activePlayer, enemy, enemy.contactDamage, economyDeltas, dead);
+				// Contact damage check (skip if stunned)
+				if (!isStunned) {
+					const hitDx = activePlayer.x - enemy.x;
+					const hitDy = activePlayer.y - enemy.y;
+					const hitDist = Math.hypot(hitDx, hitDy);
+					const hitRadius = playerRadius + enemy.radius;
+					
+					if (hitDist < hitRadius && (runTime - enemy.lastHitAt) >= hitCooldown) {
+						applyEnemyDamageToPlayer(activePlayer, enemy, enemy.contactDamage, economyDeltas, dead);
+					}
 				}
 			}
 		}
@@ -2913,6 +3192,88 @@ function Game(id) {
 				timeRemaining: healPackLifetime - (runTime - hp.spawnTime),
 				isBlinking: (healPackLifetime - (runTime - hp.spawnTime)) <= blinkTime
 			}));
+		}
+		
+		// ===== ACID POOL UPDATE (Acid drone passive) =====
+		// Process acid pool damage to enemies and expiration
+		const acidPoolsToRemove = [];
+		
+		for (const pool of acidPools) {
+			// Check expiration
+			if (runTime - pool.spawnTime >= pool.duration) {
+				acidPoolsToRemove.push(pool);
+				continue;
+			}
+			
+			// Check for tick damage
+			const tickRate = pool.tickRate || 0.5;
+			if (runTime - pool.lastTickTime >= tickRate) {
+				pool.lastTickTime = runTime;
+				
+				// Damage all enemies in the pool
+				for (const enemy of enemies) {
+					if (enemy.dead || enemy.hp <= 0) continue;
+					
+					const dist = Math.hypot(enemy.x - pool.x, enemy.y - pool.y);
+					if (dist < pool.radius) {
+						// Deal pool damage
+						const poolDamage = pool.damagePerTick;
+						enemy.hp -= poolDamage;
+						if (enemy.hp < 0) enemy.hp = 0;
+						markEnemyHit(enemy);
+						
+						// Apply poison if pool has it
+						if (pool.appliesPoison) {
+							applyPoisonStacks(enemy, pool.ownerId, {
+								poisonMaxStacks: pool.poisonMaxStacks,
+								poisonDuration: pool.poisonDuration,
+								poisonDamagePerStack: pool.poisonDamagePerStack
+							});
+						}
+						
+						// Visual feedback for acid pool damage
+						economyDeltas.hitscanEvents.push({
+							fromX: pool.x,
+							fromY: pool.y,
+							toX: enemy.x,
+							toY: enemy.y,
+							ownerId: pool.ownerId,
+							targetEnemyId: enemy.id,
+							damage: poolDamage,
+							remainingHp: enemy.hp,
+							isCrit: false,
+							attackType: 'acid',
+							typeColor: '#7FFF00', // Bright green
+							isAcidPoolTick: true
+						});
+						
+						if (enemy.hp <= 0) {
+							const poolOwner = players.find(p => p.num === pool.ownerId);
+							handleEnemyDeath(enemy, poolOwner);
+						}
+					}
+				}
+			}
+		}
+		
+		// Remove expired acid pools
+		for (const pool of acidPoolsToRemove) {
+			const idx = acidPools.indexOf(pool);
+			if (idx !== -1) {
+				acidPools.splice(idx, 1);
+				economyDeltas.acidPoolRemovals.push(pool.id);
+			}
+		}
+		
+		// Send acid pool updates (for client to render fade effects)
+		for (const pool of acidPools) {
+			economyDeltas.acidPoolUpdates.push({
+				id: pool.id,
+				x: pool.x,
+				y: pool.y,
+				radius: pool.radius,
+				timeRemaining: pool.duration - (runTime - pool.spawnTime)
+			});
 		}
 		
 		const PLAYER_RADIUS = consts.CELL_WIDTH / 2;
@@ -3342,6 +3703,72 @@ function Game(id) {
 					const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
 					const isHitscan = droneType.isHitscan;
 					
+					// PASSIVE: Commando - Grant speed boost to owner when shooting
+					if (droneType.grantsSpeedBoost) {
+						const speedBoostPercent = droneType.speedBoostPercent || 0.15;
+						const speedBoostDuration = droneType.speedBoostDuration || 1.0;
+						p.commandoSpeedBoost = speedBoostPercent;
+						p.commandoSpeedBoostExpires = runTime + speedBoostDuration;
+					}
+					
+					// PASSIVE: Shockwave - AoE stomp attack with stun
+					if (droneType.isShockwave) {
+						const shockwaveRadius = droneType.shockwaveRadius || 100;
+						const stunDuration = droneType.shockwaveStunDuration || 1.0;
+						const baseProcCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? 0.4;
+						
+						// Hit all enemies in radius around the drone
+						for (const enemy of enemies) {
+							if (enemy.dead || enemy.hp <= 0) continue;
+							const dist = Math.hypot(enemy.x - drone.x, enemy.y - drone.y);
+							if (dist < shockwaveRadius) {
+								// Apply damage
+								enemy.hp -= damage;
+								if (enemy.hp < 0) enemy.hp = 0;
+								markEnemyHit(enemy);
+								
+								// Apply stun
+								applyStun(enemy, stunDuration);
+								
+								// Visual feedback
+								economyDeltas.hitscanEvents.push({
+									fromX: drone.x,
+									fromY: drone.y,
+									toX: enemy.x,
+									toY: enemy.y,
+									ownerId: p.num,
+									targetEnemyId: enemy.id,
+									damage: damage,
+									remainingHp: enemy.hp,
+									isCrit: isCrit,
+									attackType: 'shockwave',
+									typeColor: droneType.color || '#8B4513',
+									isShockwave: true
+								});
+								
+								if (enemy.hp <= 0) {
+									handleEnemyDeath(enemy, p);
+								}
+								
+								// Proc missile pod
+								const procOrigin = { x: drone.x, y: drone.y };
+								const aoeProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.shockwave ?? 0.3);
+								tryMissilePodProc(p, enemy, damage, procOrigin, aoeProcCoeff, economyDeltas);
+							}
+						}
+						
+						// Emit shockwave effect event for client rendering
+						economyDeltas.shockwaveEvents.push({
+							x: drone.x,
+							y: drone.y,
+							radius: shockwaveRadius,
+							ownerId: p.num,
+							damage: damage
+						});
+						
+						continue; // Skip normal hitscan/projectile logic
+					}
+					
 					if (isHitscan) {
 						// HITSCAN: Instant hit (lasers, pulse beams)
 						// First drone (index 0) fires from player's aim position, others fire from drone
@@ -3674,6 +4101,55 @@ function Game(id) {
 						const chainProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.rapidChainHit ?? 0.25);
 						tryMissilePodProc(player, nearbyEnemy, chainDamage, procOrigin, chainProcCoeff, deltas);
 					}
+				}
+			}
+			
+			// PASSIVE: Electric - Chain to one nearby enemy for 75% damage
+			if (droneType.chainsToEnemy && !target.dead) {
+				const chainPercent = droneType.chainDamagePercent || 0.75;
+				const chainRadius = droneType.chainRange || 120;
+				const chainDamage = finalDamage * chainPercent;
+				
+				// Find the closest enemy within range
+				let closestEnemy = null;
+				let closestDist = chainRadius;
+				
+				for (const nearbyEnemy of enemies) {
+					if (nearbyEnemy === target || nearbyEnemy.dead || nearbyEnemy.hp <= 0) continue;
+					const dist = Math.hypot(nearbyEnemy.x - target.x, nearbyEnemy.y - target.y);
+					if (dist < closestDist) {
+						closestDist = dist;
+						closestEnemy = nearbyEnemy;
+					}
+				}
+				
+				if (closestEnemy) {
+					closestEnemy.hp -= chainDamage;
+					if (closestEnemy.hp < 0) closestEnemy.hp = 0;
+					markEnemyHit(closestEnemy);
+					
+					// Visual feedback - purple electric chain
+					deltas.hitscanEvents.push({
+						fromX: target.x,
+						fromY: target.y,
+						toX: closestEnemy.x,
+						toY: closestEnemy.y,
+						ownerId: player.num,
+						targetEnemyId: closestEnemy.id,
+						damage: chainDamage,
+						remainingHp: closestEnemy.hp,
+						isCrit: false,
+						attackType: 'electric',
+						typeColor: '#9932CC', // Purple electric
+						isChain: true
+					});
+					
+					if (closestEnemy.hp <= 0) {
+						handleEnemyDeath(closestEnemy, player);
+					}
+					
+					const chainProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.electricChain ?? 0.35);
+					tryMissilePodProc(player, closestEnemy, chainDamage, procOrigin, chainProcCoeff, deltas);
 				}
 			}
 			

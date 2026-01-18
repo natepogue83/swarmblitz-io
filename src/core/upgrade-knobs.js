@@ -46,7 +46,10 @@ export const PROC_COEFFICIENTS = {
 	arcBarrage: 0.25,
 	heatseekerDrones: 0.35,
 	stickyCharge: 0.05,
-	stickyChargeSplash: 0.05
+	stickyChargeSplash: 0.05,
+	electricChain: 0.35,      // Electric drone chain to nearby enemy
+	shockwave: 0.3,           // Shockwave AoE hits
+	acidPool: 0.15            // Acid pool tick damage
 };
 
 // ============================================================================

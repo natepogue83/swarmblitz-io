@@ -18,6 +18,7 @@ let coinsById = new Map();
 let dronesById = new Map(); // Stores all drones keyed by id
 let projectilesById = new Map(); // Stores all active projectiles keyed by id
 let healPacksById = new Map(); // Stores all active heal packs keyed by id (Support drone passive)
+let acidPoolsById = new Map(); // Stores all active acid pools keyed by id (Acid drone passive)
 let enemies = [];
 let enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 let kills;
@@ -375,6 +376,10 @@ function getProjectiles() {
 
 function getHealPacks() {
 	return Array.from(healPacksById.values());
+}
+
+function getAcidPools() {
+	return Array.from(acidPoolsById.values());
 }
 
 function getEnemyStats() {
@@ -763,6 +768,49 @@ function processFrame(data) {
 		});
 	}
 	
+	// ===== ACID POOL HANDLING (Acid drone passive) =====
+	// Handle acid pool spawns
+	if (data.acidPoolSpawns) {
+		data.acidPoolSpawns.forEach(pool => {
+			acidPoolsById.set(pool.id, {
+				id: pool.id,
+				x: pool.x,
+				y: pool.y,
+				radius: pool.radius,
+				duration: pool.duration,
+				ownerId: pool.ownerId,
+				spawnTime: Date.now()
+			});
+		});
+	}
+	
+	// Handle acid pool updates
+	if (data.acidPoolUpdates) {
+		data.acidPoolUpdates.forEach(pool => {
+			const existing = acidPoolsById.get(pool.id);
+			if (existing) {
+				existing.x = pool.x;
+				existing.y = pool.y;
+				existing.radius = pool.radius;
+				existing.timeRemaining = pool.timeRemaining;
+			}
+		});
+	}
+	
+	// Handle acid pool removals
+	if (data.acidPoolRemovals) {
+		data.acidPoolRemovals.forEach(poolId => {
+			acidPoolsById.delete(poolId);
+		});
+	}
+	
+	// Handle shockwave effects
+	if (data.shockwaveEvents) {
+		data.shockwaveEvents.forEach(evt => {
+			invokeRenderer("shockwaveEffect", [evt.x, evt.y, evt.radius, evt.ownerId, evt.damage]);
+		});
+	}
+	
 	// Handle territory updates (when server sends changed territories)
 	if (data.territoryUpdates) {
 		data.territoryUpdates.forEach(update => {
@@ -1020,6 +1068,7 @@ export {
 	getDrones,
 	getProjectiles,
 	getHealPacks,
+	getAcidPools,
 	getEnemies,
 	getEnemyStats,
 	disconnect, 

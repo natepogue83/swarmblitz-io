@@ -24,7 +24,7 @@ export const ENEMY_TYPES = {
 		outline: "rgba(90, 20, 20, 0.9)"
 	},
 	charger: {
-		unlockTime: 15,      // Unlocks at 15 seconds
+		unlockTime: 20,      // Unlocks at 15 seconds
 		radius: 12,
 		maxHp: 30,
 		speed: 55,           // Base speed (slower), but charges fast
@@ -38,7 +38,7 @@ export const ENEMY_TYPES = {
 		outline: "rgba(140, 70, 0, 0.9)"
 	},
 	tank: {
-		unlockTime: 35,      // Unlocks at 35 seconds (15+20)
+		unlockTime: 45,      // Unlocks at 35 seconds (15+20)
 		radius: 18,
 		maxHp: 80,
 		speed: 45,           // Very slow
@@ -76,11 +76,13 @@ export const ENEMY_TYPES = {
 		healAmount: 5,
 		healPercent: 0.10,
 		healCooldown: 0.75,
+		maxCount: 10,
+		minSeparation: 750,
 		preferredDistance: 200,  // Distance it tries to maintain from player
 		xpDropValue: 10,
 		spawnWeight: 15,
 		color: "rgba(220, 245, 255, 0.95)",
-		outline: "rgba(80, 170, 255, 0.95)"
+		outline: "rgba(30, 140, 80, 0.95)"
 	}
 };
 
