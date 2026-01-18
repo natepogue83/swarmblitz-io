@@ -43,6 +43,7 @@ let lastZoom = 1;
 let mouseSet = false;
 let viewOffset = { x: 0, y: 0 };
 const clientTickRate = config.netTickRate || config.serverTickRate || config.fps || 60;
+const PROJECTILE_MAX_LIFETIME_MS = consts.PROJECTILE_MAX_LIFETIME_MS ?? 15000;
 
 // Helper to send a message (handles both local and WebSocket mode)
 function sendMessage(type, payload) {
@@ -370,6 +371,21 @@ function getEnemies() {
 }
 
 function getProjectiles() {
+	// Safety net: ensure nothing can render forever if we miss removals or state resets.
+	const now = Date.now();
+	if (PROJECTILE_MAX_LIFETIME_MS > 0) {
+		for (const [id, proj] of projectilesById) {
+			const spawnTime = proj?.spawnTime ?? now;
+			const ageMs = now - spawnTime;
+			if (ageMs > PROJECTILE_MAX_LIFETIME_MS) {
+				projectilesById.delete(id);
+				continue;
+			}
+			if (!Number.isFinite(proj?.x) || !Number.isFinite(proj?.y)) {
+				projectilesById.delete(id);
+			}
+		}
+	}
 	return Array.from(projectilesById.values());
 }
 
@@ -855,6 +871,8 @@ function reset() {
 	allPlayers = [];
 	coinsById.clear();
 	dronesById.clear();
+	projectilesById.clear();
+	healPacksById.clear();
 	enemies = [];
 	enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 	kills = 0;
