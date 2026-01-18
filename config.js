@@ -79,8 +79,8 @@ export const consts = {
 	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
 	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (1%)
-	"PLAYER_SIZE_SCALE_MAX": 1.6,     // Maximum size multiplier
-	"ZOOM_SCALE_RATE": 0.2,           // How much zoom scales with size (0 = no zoom, 1 = full zoom)
+	"PLAYER_SIZE_SCALE_MAX": 1.25,     // Maximum size multiplier
+	"ZOOM_SCALE_RATE": 0,           // How much zoom scales with size (0 = no zoom, 1 = full zoom)
 	
 	// ===== COMBAT SYSTEM =====
 	// Player HP (for drone combat)

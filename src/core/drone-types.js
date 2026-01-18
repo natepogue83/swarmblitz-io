@@ -325,7 +325,7 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.8,
 		// PASSIVE: Chain to nearby enemy
 		chainsToEnemy: true,
-		chainDamagePercent: 1,   // 75% damage to chained enemy
+		chainDamagePercent: .8,   // 75% damage to chained enemy
 		chainRange: 180             // Range to find chain target
 	},
 	{
@@ -334,8 +334,8 @@ export const DRONE_TYPES = [
 		description: 'Stomps the ground to damage and stun nearby enemies.',
 		color: '#8B4513',         // Saddle brown (earth)
 		opacity: 0.8,
-		damageMult: .6,          // High damage
-		cooldownMult: 2.5,        // Slow attack speed
+		damageMult: .45,          // High damage
+		cooldownMult: 3,        // Slow attack speed
 		rangeMult: 1.25,           // Normal targeting range (fires when enemy in range)
 		accuracy: 1.0,            // AoE doesn't miss
 		orbitRadiusMult: 0.8,     // Orbits closer to player
@@ -344,13 +344,13 @@ export const DRONE_TYPES = [
 		isHitscan: false,
 		projectileSpeed: 0,       // No projectile - instant AoE
 		projectileLifetime: 0,
-		pierceCount: 99,          // Hits all enemies in radius
+		pierceCount: 999,          // Hits all enemies in radius
 		projectileSize: 8,
-		procCoefficient: 0.4,
+		procCoefficient: 0.3,
 		// PASSIVE: AoE stomp with stun
 		isShockwave: true,
-		shockwaveRadius: 175,       // Medium radius AoE
-		shockwaveStunDuration: .5  // 1 second stun
+		shockwaveRadius: 200,       // Medium radius AoE
+		shockwaveStunDuration: .3  // 1 second stun
 	}
 ];
 

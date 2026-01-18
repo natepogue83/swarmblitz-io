@@ -174,12 +174,17 @@ export const ENEMY_SCALING = {
 		startTime: 30,
 		perMinute: 0.61,
 		exponent: 1.55,
-		maxMult: 9001.0
+		maxMult: 9001.0,
+		lateGameRamp: {
+			enabled: true,
+			startMinute: 5,
+			exponentRampPerMinute: 0.08
+		}
 	},
 	damage: {
 		enabled: true,
 		startTime: 30,
-		perMinute: 0.25,
+		perMinute: 0.4,
 		exponent: 1.6,
 		maxMult: 99999
 	},
@@ -209,6 +214,6 @@ export const ENEMY_TYPE_WEIGHTING = {
 	// bonus = min(maxBonus, minutes * perMinute * difficultyFactor)
 	// finalWeight = baseWeight * (1 + bonus)
 	enabled: true,
-	perMinute: 0.25,
+	perMinute: 0.20,
 	maxBonus: 1.5
 };

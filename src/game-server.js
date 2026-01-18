@@ -207,8 +207,8 @@ function getEnemyScalingMultiplier(runTimeSeconds, scaling) {
 	
 	let exponent = scaling.exponent ?? 1.5;
 	
-	// Apply late-game ramp if configured
-	const ramp = ENEMY_SCALING.lateGameRamp;
+	// Apply late-game ramp if configured (per-scaling override supported)
+	const ramp = scaling.lateGameRamp ?? ENEMY_SCALING.lateGameRamp;
 	if (ramp && ramp.enabled && minutes > ramp.startMinute) {
 		const extra = (minutes - ramp.startMinute) * (ramp.exponentRampPerMinute || 0);
 		exponent += extra;

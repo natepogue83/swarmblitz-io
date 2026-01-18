@@ -312,8 +312,8 @@ export const SIGNAL_BOOSTERS = {
 };
 
 export const GET_AWAY = {
-	damagePerEnemy: 0.02,           // +2% damage per enemy within drone range
-	maxStacks: Infinity
+	damagePerEnemy: 0.01,           // +2% damage per enemy within drone range
+	maxStacks: 1
 };
 
 // ============================================================================
