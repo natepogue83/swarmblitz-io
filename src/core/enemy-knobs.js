@@ -28,12 +28,12 @@ export const ENEMY_TYPES = {
 		radius: 12,
 		maxHp: 30,
 		speed: 55,           // Base speed (slower), but charges fast
-		contactDamage: 25,
-		chargeSpeed: 400,    // Speed when charging
+		contactDamage: 15,
+		chargeSpeed: 225,  // Speed when charging
 		chargeCooldown: 2.5,   // Seconds between charges
-		chargeDistance: 135, // Distance to trigger charge
+		chargeDistance: 110,// Distance to trigger charge
 		xpDropValue: 3.5,
-		spawnWeight: 30,
+		spawnWeight: 25,
 		color: "rgba(255, 140, 0, 0.9)",
 		outline: "rgba(140, 70, 0, 0.9)"
 	},
@@ -68,17 +68,17 @@ export const ENEMY_TYPES = {
 	},
 	sniper: {
 		unlockTime: 90,      // Unlocks at 90 seconds (60+30)
-		radius: 9,
-		maxHp: 25,
-		speed: 75,           // Moves to maintain distance
+		radius: 15,
+		maxHp: 20,
+		speed: 60,          // Moves to maintain distance
 		contactDamage: 5,
-		healRadius: 200,
+		healRadius: 100,
 		healAmount: 5,
 		healPercent: 0.10,
-		healCooldown: 0.75,
-		maxCount: 10,
-		minSeparation: 750,
-		preferredDistance: 200,  // Distance it tries to maintain from player
+		healCooldown: 2,
+		maxCount: 3,
+		minSeparation: 1000,
+		preferredDistance: 150,// Distance it tries to maintain from player
 		xpDropValue: 10,
 		spawnWeight: 15,
 		color: "rgba(220, 245, 255, 0.95)",
@@ -95,7 +95,7 @@ export const BOSS_TYPES = {
 		// Giant slow boss with massive HP
 		radius: 40,
 		maxHp: 725,
-		speed: 80,
+		speed: 50,
 		contactDamage: 45,
 		xpDropValue: 25,
 		spawnWeight: 40,
@@ -106,7 +106,7 @@ export const BOSS_TYPES = {
 		// Medium boss that charges repeatedly
 		radius: 28,
 		maxHp: 500,
-		speed: 110,
+		speed: 75,
 		contactDamage: 25,
 		chargeSpeed: 250,
 		chargeCooldown: 2,
@@ -120,7 +120,7 @@ export const BOSS_TYPES = {
 		// Boss that spawns minions
 		radius: 32,
 		maxHp: 400,
-		speed: 125,
+		speed: 65,
 		contactDamage: 15,
 		summonCooldown: 3,    // Seconds between summons
 		summonCount: 2,       // Base enemies per summon (scales with minutes)+1 per minute

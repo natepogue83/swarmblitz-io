@@ -3915,26 +3915,28 @@ function renderEnemySpawnWarnings(ctx) {
 		const blink = blinkMin + (blinkMax - blinkMin) * blinkPhase;
 		const urgency = Math.min(1, 1 - (timeRemaining / 2)); // stronger near spawn
 		const alpha = baseOpacity * (0.6 + 0.4 * urgency) * blink;
+		const baseColor = warning.color || 'rgba(255, 60, 60, 0.9)';
+		const outlineColor = warning.outline || baseColor;
 		
 		ctx.save();
 		ctx.globalAlpha = alpha;
 		ctx.translate(x, y);
 		
 		// Outer glow ring
-		ctx.strokeStyle = 'rgba(255, 60, 60, 0.9)';
+		ctx.strokeStyle = outlineColor;
 		ctx.lineWidth = 3;
 		ctx.beginPath();
 		ctx.arc(0, 0, radius, 0, Math.PI * 2);
 		ctx.stroke();
 		
 		// Inner emblem circle
-		ctx.fillStyle = 'rgba(180, 20, 20, 0.6)';
+		ctx.fillStyle = baseColor;
 		ctx.beginPath();
 		ctx.arc(0, 0, radius * 0.55, 0, Math.PI * 2);
 		ctx.fill();
 		
 		// Tri-spike emblem
-		ctx.fillStyle = 'rgba(255, 80, 80, 0.9)';
+		ctx.fillStyle = outlineColor;
 		for (let i = 0; i < 3; i++) {
 			const angle = (i / 3) * Math.PI * 2 - Math.PI / 2;
 			const spikeOuter = radius * 0.95;

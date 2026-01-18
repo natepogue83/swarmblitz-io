@@ -744,7 +744,9 @@ function Game(id) {
 				x: pending.x,
 				y: pending.y,
 				radius: typeData.radius || 12,
-				timeRemaining
+				timeRemaining,
+				color: typeData.color || null,
+				outline: typeData.outline || null
 			});
 		}
 	}
@@ -2923,7 +2925,10 @@ function Game(id) {
 								const healDist = Math.hypot(target.x - enemy.x, target.y - enemy.y);
 								if (healDist > healRadius) continue;
 								const beforeHp = target.hp;
-								const healTotal = healAmount + target.maxHp * healPercent;
+								let healTotal = healAmount + target.maxHp * healPercent;
+								if (target.isBoss) {
+									healTotal *= 0.1;
+								}
 								target.hp = Math.min(target.maxHp, target.hp + healTotal);
 								if (target.hp > beforeHp) {
 									markEnemyHit(target);
