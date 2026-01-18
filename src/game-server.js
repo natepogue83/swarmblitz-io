@@ -567,6 +567,33 @@ function Game(id) {
 		target.stunExpires = Math.max(target.stunExpires || 0, runTime + stunDuration);
 	}
 
+	// Lifesteal helper: caps total heal per second to avoid runaway healing.
+	function applyLifeOnHit(player, healPerHit, maxPerSecond, x, y, deltas) {
+		if (!player || healPerHit <= 0 || maxPerSecond <= 0) return;
+		const lastTick = player.lifeOnHitLastTick ?? runTime;
+		const elapsed = Math.max(0, runTime - lastTick);
+		player.lifeOnHitLastTick = runTime;
+		player.lifeOnHitBudget = Math.min(
+			maxPerSecond,
+			(player.lifeOnHitBudget ?? maxPerSecond) + (elapsed * maxPerSecond)
+		);
+		if (player.lifeOnHitBudget <= 0) return;
+		
+		const healAmount = Math.min(healPerHit, player.lifeOnHitBudget);
+		player.lifeOnHitBudget -= healAmount;
+		player.hp = Math.min(player.maxHp, player.hp + healAmount);
+		
+		// Visual feedback for life steal
+		deltas.boostPickups = deltas.boostPickups || [];
+		deltas.boostPickups.push({
+			type: "lifesteal",
+			amount: Math.round(healAmount * 10) / 10,
+			x,
+			y,
+			playerNum: player.num
+		});
+	}
+
 	function applyEnemyScaling(enemy) {
 		if (!enemy) return;
 		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
@@ -1854,7 +1881,8 @@ function Game(id) {
 				slowDuration: droneType.slowDuration || (consts.SLOW_DURATION_DEFAULT ?? 1.5),
 				spawnTime: runTime,
 				lifetimeSeconds: projectileLifetime > 0 ? projectileLifetime * projectileLifetimeMult : null,
-				lifeOnHitPercent: stats.lifeOnHitPercent || 0,
+				lifeOnHitPerHit: stats.lifeOnHitPerHit || 0,
+				lifeOnHitMaxPerSecond: stats.lifeOnHitMaxPerSecond || 0,
 				procCoefficient: procCoefficient,
 				// Track total damage dealt for heal pack passive
 				totalDamageDealt: 0,
@@ -2267,20 +2295,10 @@ function Game(id) {
 						// Track total damage for Support heal pack
 						proj.totalDamageDealt = (proj.totalDamageDealt || 0) + finalDamage;
 						
-						// Life steal
-						if (owner && proj.lifeOnHitPercent > 0 && (owner.lifeOnHitCooldown || 0) <= 0) {
-							const healAmount = owner.maxHp * proj.lifeOnHitPercent;
-							owner.hp = Math.min(owner.maxHp, owner.hp + healAmount);
-							owner.lifeOnHitCooldown = 0.1;
-							// Visual feedback for life steal
-							economyDeltas.boostPickups = economyDeltas.boostPickups || [];
-							economyDeltas.boostPickups.push({
-								type: "lifesteal",
-								amount: Math.round(healAmount * 10) / 10,
-								x: enemy.x,
-								y: enemy.y,
-								playerNum: owner.num
-							});
+						// Life steal (flat per hit with per-second cap)
+						if (owner && proj.lifeOnHitPerHit > 0) {
+							const maxPerSecond = proj.lifeOnHitMaxPerSecond || 0;
+							applyLifeOnHit(owner, proj.lifeOnHitPerHit, maxPerSecond, enemy.x, enemy.y, economyDeltas);
 						}
 						
 						// PASSIVE: Apply slow
@@ -3483,7 +3501,8 @@ function Game(id) {
 			let damageMult = stats.damageMult || 1.0;
 			const critChance = stats.critChance || 0;
 			const critMult = stats.critMult || 2.0;
-			const lifeOnHitPercent = stats.lifeStealPercent || 0;
+			const lifeOnHitPerHit = stats.lifeStealPerHit || 0;
+			const lifeOnHitMaxPerSecond = stats.lifeStealMaxPerSecond || 0;
 			const extraProjectiles = stats.extraProjectiles || 0;
 			const multishotDamageDecay = UPGRADE_KNOBS.MULTISHOT.damageDecay ?? 0.75;
 			
@@ -3915,7 +3934,8 @@ function Game(id) {
 						const maxOffset = Math.max(0, originRadius * 0.8);
 						
 						const proj = createProjectile(drone, target, damage, isCrit, p, {
-							lifeOnHitPercent: lifeOnHitPercent
+							lifeOnHitPerHit: lifeOnHitPerHit,
+							lifeOnHitMaxPerSecond: lifeOnHitMaxPerSecond
 						}, originPos, playerColor);
 						
 						// Send projectile spawn event for client
@@ -3944,7 +3964,8 @@ function Game(id) {
 								};
 								const extraDamage = damage * Math.pow(multishotDamageDecay, i + 1);
 								const extraProj = createProjectile(drone, offsetTarget, extraDamage, isCrit, p, {
-									lifeOnHitPercent: lifeOnHitPercent
+									lifeOnHitPerHit: lifeOnHitPerHit,
+									lifeOnHitMaxPerSecond: lifeOnHitMaxPerSecond
 								}, offsetOrigin, playerColor);
 								emitProjectileSpawn(extraProj, economyDeltas);
 							}
@@ -3971,7 +3992,8 @@ function Game(id) {
 		// skipBaseDamageMult: if true, don't multiply by stats.damageMult (already applied by caller)
 		function applyHitscanDamage(player, drone, target, damage, isCrit, deltas, originOverride, skipBaseDamageMult = false) {
 			const stats = player.derivedStats || {};
-			const lifeOnHitPct = stats.lifeStealPercent || 0;
+			const lifeOnHitPerHit = stats.lifeStealPerHit || 0;
+			const lifeOnHitMaxPerSecond = stats.lifeStealMaxPerSecond || 0;
 			const droneType = DRONE_TYPES_BY_ID[drone.typeId] || DRONE_TYPES_BY_ID['assault'];
 			const baseProcCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? (PROC_COEFFICIENTS.default ?? 1.0);
 			const procOrigin = originOverride ? originOverride : { x: drone.x, y: drone.y };
@@ -4090,20 +4112,9 @@ function Game(id) {
 			if (target.hp < 0) target.hp = 0;
 			markEnemyHit(target);
 			
-			// Life on hit (with internal cooldown)
-			if (lifeOnHitPct > 0 && (player.lifeOnHitCooldown || 0) <= 0) {
-				const healAmount = player.maxHp * lifeOnHitPct;
-				player.hp = Math.min(player.maxHp, player.hp + healAmount);
-				player.lifeOnHitCooldown = 0.1; // 0.1s cooldown
-				// Visual feedback for life steal
-				deltas.boostPickups = deltas.boostPickups || [];
-				deltas.boostPickups.push({
-					type: "lifesteal",
-					amount: Math.round(healAmount * 10) / 10,
-					x: target.x,
-					y: target.y,
-					playerNum: player.num
-				});
+			// Life on hit (flat per hit with per-second cap)
+			if (lifeOnHitPerHit > 0) {
+				applyLifeOnHit(player, lifeOnHitPerHit, lifeOnHitMaxPerSecond, target.x, target.y, deltas);
 			}
 			
 			// PASSIVE: Swarm - Apply bleed stacks

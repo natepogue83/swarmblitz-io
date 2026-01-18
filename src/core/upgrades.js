@@ -121,7 +121,8 @@ export function initPlayerUpgrades(player) {
 		
 		// Combat
 		extraProjectiles: 0,
-		lifeStealPercent: 0,
+		lifeStealPerHit: 0,
+		lifeStealMaxPerSecond: 0,
 		attackSpeedMult: 1.0,
 		rangeMult: 1.0,
 		projectileLifetimeMult: 1.0,
@@ -204,7 +205,8 @@ export function recalculateDerivedStats(player) {
 	stats.moveSpeedMult = 1.0;
 	
 	stats.extraProjectiles = 0;
-	stats.lifeStealPercent = 0;
+	stats.lifeStealPerHit = 0;
+	stats.lifeStealMaxPerSecond = 0;
 	stats.attackSpeedMult = 1.0;
 	stats.rangeMult = 1.0;
 	stats.projectileLifetimeMult = 1.0;
@@ -411,12 +413,14 @@ export const UPGRADE_CATALOG = [
 		rarity: RARITY.BASIC,
 		maxStacks: Infinity,
 		description: (stacks) => {
-			const perStack = KNOBS.LIFE_STEAL.lifeStealPerStack * 100;
-			const bonus = Math.round(diminishing(perStack, stacks) * 10) / 10;
-			return `+${perStack}% HP on hit\nTotal: ${bonus}% (diminishing)`;
+			const perStack = KNOBS.LIFE_STEAL.healPerHit;
+			const total = perStack * stacks;
+			const cap = KNOBS.LIFE_STEAL.maxPerSecond;
+			return `+${perStack} HP on hit\nTotal: +${total} (max ${cap}/s)`;
 		},
 		apply: (player, stacks) => {
-			player.derivedStats.lifeStealPercent += diminishing(KNOBS.LIFE_STEAL.lifeStealPerStack, stacks);
+			player.derivedStats.lifeStealPerHit += (KNOBS.LIFE_STEAL.healPerHit * stacks);
+			player.derivedStats.lifeStealMaxPerSecond = KNOBS.LIFE_STEAL.maxPerSecond;
 		}
 	},
 	{

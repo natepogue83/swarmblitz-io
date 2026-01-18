@@ -99,8 +99,10 @@ export const CRITICAL_STRIKE = {
 };
 
 export const LIFE_STEAL = {
-	lifeStealPerStack: 0.0075,	  // +.75% HP on hit per stack (with diminishing returns)
-	usesDiminishing: true
+	healPerHit: 1,                // +1 HP per hit per stack
+	maxPerSecond: 10,             // Cap total lifesteal per second
+	usesDiminishing: false,
+	maxStacks: 5
 };
 
 export const SCAVENGER = {

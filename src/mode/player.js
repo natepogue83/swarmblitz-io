@@ -1194,7 +1194,8 @@ function paintPlayerStats(ctx) {
 	const critChance = derivedStats.critChance ?? 0;
 	const critMult = derivedStats.critMult ?? 2.0;
 	const moveSpeedMult = derivedStats.moveSpeedMult ?? 1.0;
-	const lifeStealPercent = derivedStats.lifeStealPercent ?? 0;
+	const lifeStealPerHit = derivedStats.lifeStealPerHit ?? 0;
+	const lifeStealMaxPerSecond = derivedStats.lifeStealMaxPerSecond ?? 0;
 	const extraProjectiles = derivedStats.extraProjectiles ?? 0;
 	const rangeMult = derivedStats.rangeMult ?? 1.0;
 	
@@ -1227,8 +1228,11 @@ function paintPlayerStats(ctx) {
 		{ label: "Speed", value: Math.round(moveSpeedMult * 100), suffix: "%", color: "#88DDFF" },
 		{ label: "Crit", value: Math.round(critChance * 100), suffix: "%", color: "#9B59B6" },
 		{ label: "Crit Dmg", value: Math.round(critMult * 100), suffix: "%", color: "#E056FD" },
-		{ label: "Lifesteal", value: (lifeStealPercent * 100).toFixed(1), suffix: "%", color: "#2ECC71" }
+		{ label: "Lifesteal", value: lifeStealPerHit.toFixed(1), suffix: " hp/hit", color: "#2ECC71" }
 	];
+	if (lifeStealPerHit > 0 && lifeStealMaxPerSecond > 0) {
+		stats.push({ label: "Lifesteal Cap", value: lifeStealMaxPerSecond.toFixed(0), suffix: "/s", color: "#2ECC71" });
+	}
 	
 	// Add multishot if player has any extra projectiles
 	if (extraProjectiles > 0) {
@@ -2196,6 +2200,16 @@ function drawUpgradeCard(ctx, choice, x, y, width, height, isHovered, keyNum, pl
 			descY += 18;
 		}
 	}
+	
+	// Owned / cap indicator (bottom-right)
+	const upgradeDef = UPGRADES_BY_ID[choice.id];
+	const maxStacks = upgradeDef?.maxStacks;
+	const capLabel = Number.isFinite(maxStacks) ? `${maxStacks}` : "∞";
+	ctx.font = "12px Changa";
+	ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+	ctx.textAlign = "right";
+	ctx.textBaseline = "alphabetic";
+	ctx.fillText(`${currentStacks}/${capLabel} Owned`, x + width - 10, y + height - 10);
 	
 	// Hover highlight glow (subtle, matching game style)
 	if (isHovered) {
