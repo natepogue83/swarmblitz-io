@@ -5,8 +5,8 @@ export { ENEMY_TYPES, BOSS_TYPES };
 
 const BOSS_NAMES = ['titan', 'berserker', 'summoner'];
 
-// Order of enemy type unlocks
-const UNLOCK_ORDER = ['basic', 'charger', 'tank', 'swarm', 'sniper'];
+// Order of enemy type unlocks (exclude swarm: minion-only)
+const UNLOCK_ORDER = ['basic', 'charger', 'tank', 'sniper'];
 const MAX_TYPES = 5;
 
 export default class EnemySpawner {

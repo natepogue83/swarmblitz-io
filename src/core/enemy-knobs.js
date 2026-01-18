@@ -29,9 +29,9 @@ export const ENEMY_TYPES = {
 		maxHp: 30,
 		speed: 55,           // Base speed (slower), but charges fast
 		contactDamage: 25,
-		chargeSpeed: 450,    // Speed when charging
-		chargeCooldown: 2,   // Seconds between charges
-		chargeDistance: 180, // Distance to trigger charge
+		chargeSpeed: 400,    // Speed when charging
+		chargeCooldown: 2.5,   // Seconds between charges
+		chargeDistance: 135, // Distance to trigger charge
 		xpDropValue: 3.5,
 		spawnWeight: 30,
 		color: "rgba(255, 140, 0, 0.9)",
@@ -94,7 +94,7 @@ export const BOSS_TYPES = {
 	titan: {
 		// Giant slow boss with massive HP
 		radius: 40,
-		maxHp: 800,
+		maxHp: 725,
 		speed: 80,
 		contactDamage: 45,
 		xpDropValue: 25,
@@ -105,7 +105,7 @@ export const BOSS_TYPES = {
 	berserker: {
 		// Medium boss that charges repeatedly
 		radius: 28,
-		maxHp: 600,
+		maxHp: 500,
 		speed: 110,
 		contactDamage: 25,
 		chargeSpeed: 250,
@@ -119,11 +119,11 @@ export const BOSS_TYPES = {
 	summoner: {
 		// Boss that spawns minions
 		radius: 32,
-		maxHp: 500,
+		maxHp: 400,
 		speed: 125,
 		contactDamage: 15,
-		summonCooldown: 2,    // Seconds between summons
-		summonCount: 10,       // Enemies spawned per summon
+		summonCooldown: 3,    // Seconds between summons
+		summonCount: 2,       // Base enemies per summon (scales with minutes)+1 per minute
 		preferredDistance: 300, // Tries to stay away
 		xpDropValue: 25,
 		spawnWeight: 25,
@@ -171,14 +171,14 @@ export const ENEMY_SCALING = {
 	// Damage is slightly slower but still aggressive (^1.6).
 	hp: {
 		enabled: true,
-		startTime: 0,
-		perMinute: 0.60,
+		startTime: 30,
+		perMinute: 0.61,
 		exponent: 1.55,
 		maxMult: 9001.0
 	},
 	damage: {
 		enabled: true,
-		startTime: 0,
+		startTime: 30,
 		perMinute: 0.25,
 		exponent: 1.6,
 		maxMult: 99999

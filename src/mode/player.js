@@ -332,6 +332,10 @@ function setupSettingsPanel() {
 	const toggleBtn = document.querySelector('.toggle');
 	const closeBtn = document.getElementById('settings-close');
 	const menuBtn = document.getElementById('settings-menu-btn');
+	const setTitle = (el, text) => {
+		if (!el || !text) return;
+		el.title = text;
+	};
 	
 	// Toggle settings panel - use click event with proper handling
 	if (toggleBtn) {
@@ -353,6 +357,7 @@ function setupSettingsPanel() {
 	
 	// Main menu button - reload page to go back to main menu
 	if (menuBtn) {
+		setTitle(menuBtn, 'Return to the main menu (restarts the run).');
 		menuBtn.addEventListener('click', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -373,6 +378,7 @@ function setupSettingsPanel() {
 	
 	// Master volume
 	if (masterSlider) {
+		setTitle(masterSlider, 'Adjusts all game audio.');
 		masterSlider.addEventListener('input', (e) => {
 			const val = parseInt(e.target.value);
 			masterVal.textContent = val + '%';
@@ -382,6 +388,7 @@ function setupSettingsPanel() {
 	
 	// Music volume
 	if (musicSlider) {
+		setTitle(musicSlider, 'Adjusts menu and background music.');
 		musicSlider.addEventListener('input', (e) => {
 			const val = parseInt(e.target.value);
 			musicVal.textContent = val + '%';
@@ -393,6 +400,7 @@ function setupSettingsPanel() {
 	
 	// SFX volume
 	if (sfxSlider) {
+		setTitle(sfxSlider, 'Adjusts combat and UI sound effects.');
 		sfxSlider.addEventListener('input', (e) => {
 			const val = parseInt(e.target.value);
 			sfxVal.textContent = val + '%';
@@ -405,6 +413,7 @@ function setupSettingsPanel() {
 	// Damage numbers toggle
 	const damageNumbersCheckbox = document.getElementById('opt-damage-numbers');
 	if (damageNumbersCheckbox) {
+		setTitle(damageNumbersCheckbox, 'Show floating damage numbers over enemies.');
 		damageNumbersCheckbox.addEventListener('change', (e) => {
 			showDamageNumbers = e.target.checked;
 		});
@@ -413,6 +422,7 @@ function setupSettingsPanel() {
 	// Enemy health bars toggle
 	const enemyHealthBarsCheckbox = document.getElementById('opt-enemy-healthbars');
 	if (enemyHealthBarsCheckbox) {
+		setTitle(enemyHealthBarsCheckbox, 'Show health bars above enemies.');
 		enemyHealthBarsCheckbox.addEventListener('change', (e) => {
 			showEnemyHealthBars = e.target.checked;
 		});
@@ -424,6 +434,7 @@ function setupSettingsPanel() {
 	const expandableSection = howToPlayToggle ? howToPlayToggle.closest('.expandable') : null;
 	
 	if (howToPlayToggle && howToPlayContent) {
+		setTitle(howToPlayToggle, 'Quick rules and tips.');
 		howToPlayToggle.addEventListener('mousedown', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -1203,7 +1214,8 @@ function paintPlayerStats(ctx) {
 	
 	// Apply Get Away display bonus when active (client-side view)
 	if (derivedStats.hasGetAway && user.getAwayEnemyCount > 0) {
-		damageMult += user.getAwayEnemyCount * UPGRADE_KNOBS.GET_AWAY.damagePerEnemy;
+		const getAwayStacks = Math.max(1, derivedStats.getAwayStacks || 1);
+		damageMult += user.getAwayEnemyCount * UPGRADE_KNOBS.GET_AWAY.damagePerEnemy * getAwayStacks;
 	}
 	
 	// Stats to display with labels and formatted values
@@ -2817,6 +2829,9 @@ function paint(ctx) {
 	// ===== LAYER 2.6: ACID POOLS (Acid drone passive) =====
 	renderAcidPools(ctx);
 	
+	// ===== LAYER 2.7: ENEMY SPAWN WARNINGS =====
+	renderEnemySpawnWarnings(ctx);
+	
 	// ===== LAYER 3: PLAYER TRAILS =====
 	for (const p of allPlayers) {
 		const dissolve = getDyingPlayerEffect(p);
@@ -3874,6 +3889,69 @@ function renderAcidPools(ctx) {
 		ctx.beginPath();
 		ctx.arc(x, y, radius * 0.7, 0, Math.PI * 2);
 		ctx.stroke();
+		
+		ctx.restore();
+	}
+}
+
+// Render incoming enemy spawn warnings
+function renderEnemySpawnWarnings(ctx) {
+	const warnings = client.getEnemySpawnWarnings();
+	if (!warnings || warnings.length === 0) return;
+	
+	const now = Date.now();
+	const baseOpacity = consts.ENEMY_SPAWN_WARNING_OPACITY ?? 0.45;
+	const blinkMin = consts.ENEMY_SPAWN_WARNING_BLINK_MIN ?? 0.25;
+	const blinkMax = consts.ENEMY_SPAWN_WARNING_BLINK_MAX ?? 0.75;
+	const radiusMult = consts.ENEMY_SPAWN_WARNING_RADIUS_MULT ?? 1.4;
+	for (const warning of warnings) {
+		const timeRemaining = warning.timeRemaining ?? 0;
+		if (timeRemaining <= 0) continue;
+		
+		const x = warning.x;
+		const y = warning.y;
+		const radius = Math.max(10, (warning.radius || 14) * radiusMult);
+		const blinkPhase = 0.5 + 0.5 * Math.sin(now / 120 + (x + y) * 0.01);
+		const blink = blinkMin + (blinkMax - blinkMin) * blinkPhase;
+		const urgency = Math.min(1, 1 - (timeRemaining / 2)); // stronger near spawn
+		const alpha = baseOpacity * (0.6 + 0.4 * urgency) * blink;
+		
+		ctx.save();
+		ctx.globalAlpha = alpha;
+		ctx.translate(x, y);
+		
+		// Outer glow ring
+		ctx.strokeStyle = 'rgba(255, 60, 60, 0.9)';
+		ctx.lineWidth = 3;
+		ctx.beginPath();
+		ctx.arc(0, 0, radius, 0, Math.PI * 2);
+		ctx.stroke();
+		
+		// Inner emblem circle
+		ctx.fillStyle = 'rgba(180, 20, 20, 0.6)';
+		ctx.beginPath();
+		ctx.arc(0, 0, radius * 0.55, 0, Math.PI * 2);
+		ctx.fill();
+		
+		// Tri-spike emblem
+		ctx.fillStyle = 'rgba(255, 80, 80, 0.9)';
+		for (let i = 0; i < 3; i++) {
+			const angle = (i / 3) * Math.PI * 2 - Math.PI / 2;
+			const spikeOuter = radius * 0.95;
+			const spikeInner = radius * 0.4;
+			ctx.beginPath();
+			ctx.moveTo(Math.cos(angle) * spikeInner, Math.sin(angle) * spikeInner);
+			ctx.lineTo(Math.cos(angle + 0.35) * spikeOuter, Math.sin(angle + 0.35) * spikeOuter);
+			ctx.lineTo(Math.cos(angle - 0.35) * spikeOuter, Math.sin(angle - 0.35) * spikeOuter);
+			ctx.closePath();
+			ctx.fill();
+		}
+		
+		// Pulsing center dot
+		ctx.fillStyle = `rgba(255, 200, 200, ${0.6 + 0.4 * blink})`;
+		ctx.beginPath();
+		ctx.arc(0, 0, radius * 0.18, 0, Math.PI * 2);
+		ctx.fill();
 		
 		ctx.restore();
 	}
@@ -7503,11 +7581,6 @@ export function shockwaveEffect(x, y, radius, ownerId, damage) {
 		spawnTime: Date.now(),
 		duration: 600 // ms
 	});
-	
-	// Spawn damage number at center
-	if (damage > 0) {
-		spawnDamageNumber(x, y, damage, false, '#8B4513');
-	}
 }
 
 // Render shockwave effects (ground stomp rings)

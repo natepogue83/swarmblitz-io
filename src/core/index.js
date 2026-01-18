@@ -27,7 +27,7 @@ export function initPlayer(player) {
 /**
  * Updates player stamina based on whether they are in their own territory.
  * Also regenerates HP when in territory (unless Vampire upgrade).
- * Implements stamina upgrades: Endurance, Quick Recovery, Second Wind, Marathon
+ * Implements stamina system and related upgrades (including Second Wind)
  * @param {Player} player 
  * @param {number} deltaSeconds 
  */
@@ -48,6 +48,8 @@ export function updateStamina(player, deltaSeconds) {
 	
 	// Initialize cooldown timers if not set
 	if (player.secondWindCooldown === undefined) player.secondWindCooldown = 0;
+	if (player.secondWindHealRemaining === undefined) player.secondWindHealRemaining = 0;
+	if (player.secondWindHealRate === undefined) player.secondWindHealRate = 0;
 	
 	// Initialize exhausted time tracker
 	if (player.exhaustedTime === undefined) player.exhaustedTime = 0;
@@ -98,19 +100,11 @@ export function updateStamina(player, deltaSeconds) {
 		if (player.stamina > 0) {
 			player.stamina -= (consts.STAMINA_DRAIN_OUTSIDE_PER_SEC || 10) * drainMult * deltaSeconds;
 			
-			// Check for Second Wind trigger
-			if (player.stamina <= 0) {
-				// Second Wind: Recover stamina when it hits 0 (with cooldown)
-				if (stats.hasSecondWind && player.secondWindCooldown <= 0) {
-					player.stamina = player.maxStamina * UPGRADE_KNOBS.SECOND_WIND.staminaRecoverPercent;
-					player.secondWindCooldown = UPGRADE_KNOBS.SECOND_WIND.cooldownSeconds;
-					player.isExhausted = false;
-					player.exhaustedTime = 0; // Reset exponential drain timer
-				} else {
-					player.stamina = 0;
-					player.isExhausted = true;
-				}
-			}
+		// Check for exhaustion when stamina hits 0
+		if (player.stamina <= 0) {
+			player.stamina = 0;
+			player.isExhausted = true;
+		}
 		} else {
 			// Stamina empty: drain HP with EXPONENTIAL increase over time
 			player.stamina = 0;
@@ -130,6 +124,30 @@ export function updateStamina(player, deltaSeconds) {
 				player.hp = 0;
 				player.dead = true;
 			}
+		}
+	}
+
+	// Second Wind: heal over time when HP drops below threshold (with cooldown)
+	if (stats.hasSecondWind && player.secondWindCooldown <= 0 && player.maxHp > 0) {
+		const hpThreshold = UPGRADE_KNOBS.SECOND_WIND.hpThreshold ?? 0.3;
+		const currentHpRatio = (player.hp || 0) / player.maxHp;
+		const isHealing = player.secondWindHealRemaining > 0;
+		if (!isHealing && currentHpRatio <= hpThreshold && player.hp > 0) {
+			const healPercent = UPGRADE_KNOBS.SECOND_WIND.healPercent ?? 0.25;
+			const duration = UPGRADE_KNOBS.SECOND_WIND.healDurationSeconds ?? 5;
+			const totalHeal = player.maxHp * healPercent;
+			player.secondWindHealRemaining = totalHeal;
+			player.secondWindHealRate = duration > 0 ? totalHeal / duration : totalHeal;
+			player.secondWindCooldown = UPGRADE_KNOBS.SECOND_WIND.cooldownSeconds ?? 30;
+		}
+	}
+
+	if (player.secondWindHealRemaining > 0 && player.hp > 0) {
+		const healAmount = Math.min(player.secondWindHealRemaining, player.secondWindHealRate * deltaSeconds);
+		player.hp = Math.min(player.maxHp, player.hp + healAmount);
+		player.secondWindHealRemaining -= healAmount;
+		if (player.secondWindHealRemaining <= 0) {
+			player.secondWindHealRemaining = 0;
 		}
 	}
 }

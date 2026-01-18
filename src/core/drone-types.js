@@ -232,7 +232,7 @@ export const DRONE_TYPES = [
 		color: '#7FFF00',         // Bright green
 		opacity: 0.7,
 		damageMult: 0.5,          // Moderate direct damage
-		cooldownMult: 1.5,        // Slower fire rate
+		cooldownMult: 2.75,      // Slower fire rate
 		rangeMult: 0.9,
 		accuracy: 0.7,
 		orbitRadiusMult: 0.8,
@@ -246,15 +246,15 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.6,
 		// PASSIVE: Creates acid pools on impact
 		createsAcidPool: true,
-		acidPoolRadius: 60,         // Medium radius pool
-		acidPoolDuration: 4.0,      // 4 second duration
-		acidPoolDamagePerTick: 8,   // Damage per tick while in pool
+		acidPoolRadius: 75,         // Medium radius pool
+		acidPoolDuration: 2.0,      // 4 second duration
+		acidPoolDamagePerTick: 12,   // Damage per tick while in pool
 		acidPoolTickRate: 0.5,      // Ticks every 0.5 seconds
 		// PASSIVE: Applies poison DOT
 		appliesPoison: true,
-		poisonDamagePerStack: 3,    // Damage per stack per tick
-		poisonDuration: 3.0,        // Duration of poison
-		poisonMaxStacks: 5          // Max poison stacks
+		poisonDamagePerStack: 5,    // Damage per stack per tick
+		poisonDuration: 2.5,        // Duration of poison
+		poisonMaxStacks: 15          // Max poison stacks
 	},
 	{
 		id: 'boomerang',
@@ -262,23 +262,23 @@ export const DRONE_TYPES = [
 		description: 'Throws boomerangs with very high pierce that return to the player.',
 		color: '#DEB887',         // Burlywood (wooden color)
 		opacity: 1.0,
-		damageMult: 0.7,          // Moderate damage
+		damageMult: 0.5,          // Moderate damage
 		cooldownMult: 1.8,        // Slower fire rate
-		rangeMult: 1.3,           // Good range
-		accuracy: 0.85,
+		rangeMult: 1.1,           // Good range
+		accuracy: 0.75,
 		orbitRadiusMult: 0.8,
 		orbitSpeedMult: 0.8,
 		attackType: 'boomerang',
 		isHitscan: false,
 		projectileSpeed: 350,     // Moderate speed
-		projectileLifetime: 3.0,  // Longer lifetime for return trip
+		projectileLifetime: 2.0,  // Longer lifetime for return trip
 		pierceCount: 15,          // Very high pierce
-		projectileSize: 12,
-		procCoefficient: 0.5,
+		projectileSize: 10,
+		procCoefficient: 0.6,
 		// PASSIVE: Returns to player after reaching max range
 		isBoomerang: true,
 		boomerangReturnSpeed: 400,  // Speed when returning
-		boomerangMaxDistance: 250   // Distance before returning
+		boomerangMaxDistance: 235   // Distance before returning
 	},
 	{
 		id: 'commando',
@@ -286,22 +286,22 @@ export const DRONE_TYPES = [
 		description: 'Rapid-fire bullets. Shooting boosts player speed by 15%.',
 		color: '#4A4A4A',         // Dark gray (military)
 		opacity: 1.0,
-		damageMult: 0.55,         // Moderate damage
-		cooldownMult: 0.4,        // Fast fire rate
+		damageMult: 0.75,         // Moderate damage
+		cooldownMult: 0.25,        // Fast fire rate
 		rangeMult: 1.0,
-		accuracy: 0.8,
+		accuracy: 0.5,
 		orbitRadiusMult: 0.8,
 		orbitSpeedMult: 0.8,
 		attackType: 'bullet',
 		isHitscan: false,
 		projectileSpeed: 500,     // Fast bullets
 		projectileLifetime: 0,
-		pierceCount: 1,           // Light pierce
+		pierceCount: 2,           // Light pierce
 		projectileSize: 5,
 		procCoefficient: 0.7,
 		// PASSIVE: Speed boost while shooting
 		grantsSpeedBoost: true,
-		speedBoostPercent: 0.15,    // 15% speed increase
+		speedBoostPercent: 0.25,    // 15% speed increase
 		speedBoostDuration: 1.0     // Lasts 1 second after shot (refreshes)
 	},
 	{
@@ -310,8 +310,8 @@ export const DRONE_TYPES = [
 		description: 'Zaps enemies with purple lightning. Chains to one nearby enemy for 75% damage.',
 		color: '#9932CC',         // Dark orchid purple
 		opacity: 0.9,
-		damageMult: 0.8,          // Good base damage
-		cooldownMult: 0.8,        // Moderate fire rate
+		damageMult: 1.25,          // Good base damage
+		cooldownMult: 1,        // Moderate fire rate
 		rangeMult: 1.0,
 		accuracy: 1.0,            // Perfect accuracy for lightning
 		orbitRadiusMult: 0.8,
@@ -325,8 +325,8 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.8,
 		// PASSIVE: Chain to nearby enemy
 		chainsToEnemy: true,
-		chainDamagePercent: 0.75,   // 75% damage to chained enemy
-		chainRange: 120             // Range to find chain target
+		chainDamagePercent: 1,   // 75% damage to chained enemy
+		chainRange: 180             // Range to find chain target
 	},
 	{
 		id: 'shockwave',
@@ -334,9 +334,9 @@ export const DRONE_TYPES = [
 		description: 'Stomps the ground to damage and stun nearby enemies.',
 		color: '#8B4513',         // Saddle brown (earth)
 		opacity: 0.8,
-		damageMult: 1.2,          // High damage
+		damageMult: .6,          // High damage
 		cooldownMult: 2.5,        // Slow attack speed
-		rangeMult: 1.0,           // Normal targeting range (fires when enemy in range)
+		rangeMult: 1.25,           // Normal targeting range (fires when enemy in range)
 		accuracy: 1.0,            // AoE doesn't miss
 		orbitRadiusMult: 0.6,     // Orbits closer to player
 		orbitSpeedMult: 0.7,
@@ -349,8 +349,8 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.4,
 		// PASSIVE: AoE stomp with stun
 		isShockwave: true,
-		shockwaveRadius: 100,       // Medium radius AoE
-		shockwaveStunDuration: 1.0  // 1 second stun
+		shockwaveRadius: 175,       // Medium radius AoE
+		shockwaveStunDuration: .5  // 1 second stun
 	}
 ];
 

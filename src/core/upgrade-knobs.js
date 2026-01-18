@@ -12,7 +12,7 @@
 export const RARITY_WEIGHTS = {
 	basic: 60,          // 60% chance for basic upgrades
 	rare: 35,           // 32% chance for rare upgrades
-	legendary: 5        // 8% chance for legendary upgrades
+	legendary: 10       // 8% chance for legendary upgrades
 };
 
 export const RARITY_LIMITS = {
@@ -47,7 +47,7 @@ export const PROC_COEFFICIENTS = {
 	heatseekerDrones: 0.35,
 	stickyCharge: 0.05,
 	stickyChargeSplash: 0.05,
-	electricChain: 0.35,      // Electric drone chain to nearby enemy
+	electricChain: 0.45,      // Electric drone chain to nearby enemy
 	shockwave: 0.3,           // Shockwave AoE hits
 	acidPool: 0.15            // Acid pool tick damage
 };
@@ -67,41 +67,45 @@ export const DIMINISHING_COEFFICIENT = 0.1;
 // ============================================================================
 
 export const VITALITY = {
-	flatHpPerStack: 25          // +25 max HP per stack
+	flatHpPerStack: 30          // +25 max HP per stack
 };
 
 export const SWIFT_FEET = {
-	speedPerStack: 0.10,        // +10% move speed per stack (with diminishing returns)
+	speedPerStack: 0.08,        // +10% move speed per stack (with diminishing returns)
 	usesDiminishing: true
 };
 
 export const ENDURANCE = {
-	maxStaminaPerStack: 0.20    // +20% max stamina per stack
+	maxStaminaPerStack: 0.20,   // +20% max stamina per stack
+	usesDiminishing: true
 };
 
 export const QUICK_RECOVERY = {
-	staminaRegenPerStack: 1  // +1000% stamina regen per stack
+	staminaRegenPerStack: 1,  // +100% stamina regen per stack
+	maxStacks: 1
 };
 
 export const MULTISHOT = {
 	projectilesPerStack: 1,     // +1 projectile per stack
-	projectileDelayMs: 80       // Stagger extra shots for visual clarity
+	projectileDelayMs: 80,      // Stagger extra shots for visual clarity
+	damageDecay: 0.75           // Each extra projectile deals 75% of previous
 };
 
 export const CRITICAL_STRIKE = {
 	critChancePerStack: 0.08,   // +08% crit chance per stack
-	critDamageMultiplier: 2.0   // 2x damage on crit (base, not from this upgrade)
+	critDamageMultiplier: 2.0,  // 2x damage on crit (base, not from this upgrade)
+	maxStacks: 13
 };
 
 export const LIFE_STEAL = {
-	lifeStealPerStack: 0.01,   // +1% HP on hit per stack (with diminishing returns)
+	lifeStealPerStack: 0.0075,	  // +.75% HP on hit per stack (with diminishing returns)
 	usesDiminishing: true
 };
 
 export const SCAVENGER = {
 	pickupRadiusBonus: 1.0,     // +100% pickup radius
-	doubleDropChance: 0.20,     // 20% chance for double enemy drops
-	maxStacks: 1
+	doubleDropChance: 0.15,     // 15% chance for double enemy drops
+	maxStacks: 3
 };
 
 // NEW BASIC UPGRADES
@@ -119,20 +123,20 @@ export const CRIT_DAMAGE = {
 };
 
 export const CRIT_MULTIPLIER = {
-	critMultPerStack: 0.10      // +10% crit damage per stack (additive to base 2x)
+	critMultPerStack: 0.08      // +10% crit damage per stack (additive to base 2x)
 };
 
 export const FOCUSED_FIRE = {
-	damagePerHitOnSameTarget: 0.10,  // +10% damage per consecutive hit on same target
+	damagePerHitOnSameTarget: 0.15,  // +10% damage per consecutive hit on same target
 	maxStacks: 8,                     // Cap at +80% bonus
-	decayTime: 2.0,                    // Stacks decay after 2s without hitting target
+	decayTime: 1.0,                    // Stacks decay after 2s without hitting target
 	usesDiminishing: true
 };
 
 export const PRECISION_ROUNDS = {
-	minDistanceForBonus: 200,   // Minimum distance for bonus to apply
-	maxDistanceBonus: 400,      // Distance at which max bonus is reached
-	maxDamageBonus: 0.35        // +35% damage at max distance
+	minDistanceForBonus: 150,   // Minimum distance for bonus to apply
+	maxDistanceBonus: 350,      // Distance at which max bonus is reached
+	maxDamageBonus: 0.40        // +35% damage at max distance
 };
 
 // ============================================================================
@@ -140,38 +144,40 @@ export const PRECISION_ROUNDS = {
 // ============================================================================
 
 export const SECOND_WIND = {
-	staminaRecoverPercent: 0.50,    // Recover 50% stamina
-	cooldownSeconds: 30,             // 30 second cooldown
+	hpThreshold: 0.30,              // Triggers below 30% HP
+	healPercent: 0.25,              // Heal 25% max HP over duration
+	healDurationSeconds: 5,         // Heal duration
+	cooldownSeconds: 30,            // 30 second cooldown
 	maxStacks: 1
 };
 
 export const MARATHON = {
-	staminaDrainReduction: 0.20,    // 20% slower stamina drain outside territory
-	maxStacks: 1
+	staminaDrainReduction: 0.15,    // 20% slower stamina drain outside territory
+	maxStacks: 3
 };
 
 export const SOUL_COLLECTOR = {
 	killsPerHpBonus: 20,            // +1 max HP per 20 kills
 	maxBonusHp: 60,                 // Cap at +60 HP
-	maxStacks: 1
+	maxStacks: 3
 };
 
 export const BERSERKER = {
-	hpThreshold: 0.50,              // Activates below 50% HP
-	attackSpeedBonus: 0.50,         // +50% attack speed when active
-	damageBonus: 0.25,              // +25% damage when active
+	hpThreshold: 0.40,              // Activates below 50% HP
+	attackSpeedBonus: 0.40,         // +50% attack speed when active
+	damageBonus: 0.20,              // +25% damage when active
 	maxStacks: 1
 };
 
 export const HUNTER = {
-	enemyHpThreshold: 0.50,         // Activates vs enemies below 50% HP
-	damageBonus: 0.40,              // +40% damage when active
-	maxStacks: 1
+	enemyHpThreshold: 0.60,         // Activates vs enemies below 50% HP
+	damageBonus: 0.20,              // +20% damage when active
+	maxStacks: Infinity
 };
 
 export const TERRITORIAL = {
-	damageBonus: 0.35,              // +35% damage while in territory
-	maxStacks: 1
+	damageBonus: 0.15,              // +35% damage while in territory
+	maxStacks: Infinity
 };
 
 export const THORNS = {
@@ -179,30 +185,30 @@ export const THORNS = {
 };
 
 export const LAST_STAND = {
-	hpThreshold: 0.25,              // Activates below 25% HP
-	damageReduction: 0.40,          // Take 40% less damage when active
+	hpThreshold: 0.35,              // Activates below 25% HP
+	damageReduction: 0.30,          // Take 40% less damage when active
 	maxStacks: 1
 };
 
 export const ADRENALINE = {
-	speedBonus: 0.20,               // +20% move speed when triggered
-	durationSeconds: 3,             // 3 second duration
+	speedBonus: 0.30,               // +20% move speed when triggered
+	durationSeconds: 1.5,             // 3 second duration
 	maxStacks: 1
 };
 
 export const MOMENTUM = {
-	speedPerSecond: 0.15,           // +15% move speed per second outside territory
-	maxSpeedBonus: 0.45,            // Cap at +45% bonus
-	maxStacks: 1
+	speedPerSecond: 0.10,           // +15% move speed per second outside territory
+	maxSpeedBonus: 0.30,            // Cap at +45% bonus
+	maxStacks: 3
 };
 
 // NEW RARE UPGRADES
 export const STICKY_CHARGES = {
 	chargesPerHit: 1,               // Apply 1 charge per hit
-	maxChargesPerEnemy: 5,          // Max 5 charges on single enemy
+	maxChargesPerEnemy: 3,          // Max 5 charges on single enemy
 	detonationDelay: .5,           // Detonate after 5 seconds
-	damagePerCharge: 0.10,          // Each charge deals 10% of original hit damage
-	explosionRadius: 50,            // 50 pixel explosion radius
+	damagePerCharge: 0.20,          // Each charge deals 10% of original hit damage
+	explosionRadius: 75,            // 50 pixel explosion radius
 	maxStacks: 1
 };
 
@@ -211,7 +217,7 @@ export const BLEEDING_ROUNDS = {
 	damagePerStack: 0.5,            // Bleed damage per stack per tick
 	durationSeconds: 3.0,           // Each stack lasts 3 seconds
 	maxBleedStacks: 12,             // Max bleed stacks applied by this upgrade
-	maxStacks: Infinity
+	maxStacks: 8
 };
 
 export const MISSILE_POD = {
@@ -224,9 +230,9 @@ export const MISSILE_POD = {
 
 export const HEATSEEKER_DRONES = {
 	droneCount: 2,                  // 2 passive drones
-	attackRange: 250,               // Drones attack enemies within 250 pixels
+	attackRange: 200,               // Drones attack enemies within 250 pixels
 	attackCooldown: 0.5,            // Attack every 0.5 seconds
-	damagePercent: 0.15,            // Each attack deals 15% of player's base damage
+	damagePercent: 0.2,            // Each attack deals 15% of player's base damage
 };
 
 // ============================================================================
@@ -262,14 +268,14 @@ export const PHASE_SHIFT = {
 };
 
 export const VAMPIRE = {
-	healOnKillPercent: 0.005,        // Heal .5% max HP on kill
+	healOnKillPercent: 0.004,        // Heal .4% max HP on kill
 	disablesPassiveRegen: true,     // No passive HP regeneration
 	maxStacks: 1
 };
 
 export const CHAIN_LIGHTNING = {
 	bounceCount: 2,                 // Bounces to 2 nearby enemies
-	bounceDamagePercent: 0.20,      // 20% damage per bounce
+	bounceDamagePercent: 0.3,      // 20% damage per bounce
 	bounceRange: 175,               // 150 pixel bounce range
 };
 
@@ -277,14 +283,14 @@ export const CHAIN_LIGHTNING = {
 export const ARC_BARRAGE = {
 	burstInterval: 2,             // Burst every 2 seconds
 	burstRadius: 350,               // 350 pixel radius around player
-	burstDamagePercent: 3,       // 400% of player's base damage per burst
+	burstDamagePercent: 2,       // 400% of player's base damage per burst
 	maxEnemiesHit: 20,               // Max 20 enemies per burst
 };
 
 export const OVERCHARGE_CORE = {
 	damageBonus: 0.60,              // +60% damage
 	attackSpeedBonus: 0.40,         // +40% attack speed
-	hpDrainPerSecond: 0.02,         // Lose 2% max HP per second
+	hpDrainPerSecond: 0.03,         // Lose 2% max HP per second
 	minHpPercent: 0.10,             // Drain stops at 10% HP
 	maxStacks: 1
 };
@@ -299,14 +305,14 @@ export const EXTENDED_ANTENNAE = {
 };
 
 export const SIGNAL_BOOSTERS = {
-	rangePerStack: 0.05,            // +5% drone range per stack
-	projectileLifetimePerStack: 0.05, // +5% projectile lifetime per stack
+	rangePerStack: 0.15,            // +15% drone range per stack
+	projectileLifetimePerStack: 0.1, // +10% projectile lifetime per stack
 	maxStacks: Infinity
 };
 
 export const GET_AWAY = {
 	damagePerEnemy: 0.02,           // +2% damage per enemy within drone range
-	maxStacks: 1
+	maxStacks: Infinity
 };
 
 // ============================================================================

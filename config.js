@@ -65,9 +65,17 @@ export const consts = {
 	"TRAIL_SPEED_BUFF_RAMP_TIME": 2,  // Seconds to reach max speed buff
 	"TRAIL_SPEED_BUFF_EASE": 2,       // Easing exponent (1 = linear, 2 = quadratic ease-in, higher = slower start)
 	
+	// ===== ENEMY SPAWN WARNINGS =====
+	"ENEMY_SPAWN_WARNING_LEAD_SECONDS": 1.5, // Seconds to telegraph before spawn
+	"ENEMY_SPAWN_GRACE_SECONDS": .1,       // Seconds enemies are immobile after spawn
+	"ENEMY_SPAWN_WARNING_OPACITY": 0.75,     // Base opacity for warning emblem
+	"ENEMY_SPAWN_WARNING_BLINK_MIN": 0.45,   // Minimum blink multiplier
+	"ENEMY_SPAWN_WARNING_BLINK_MAX": 0.6,   // Maximum blink multiplier
+	"ENEMY_SPAWN_WARNING_RADIUS_MULT": 1.2,  // Size multiplier for warning emblem
+	
 	// ===== XP / LEVELING SYSTEM =====
-	"XP_BASE_PER_LEVEL": 35,         // Base XP needed to level up (level 1 → 2)
-	"XP_GROWTH_RATE": 1.13,          // Exponential growth rate per level
+	"XP_BASE_PER_LEVEL": 40,         // Base XP needed to level up (level 1 → 2)
+	"XP_GROWTH_RATE": 1.15,          // Exponential growth rate per level
 	// Formula: XP needed for level L = BASE * (GROWTH_RATE ^ (L - 1))
 	// Level 1→2: 25, Level 2→3: 29, Level 3→4: 33, etc.
 	"PLAYER_SIZE_SCALE_PER_LEVEL": 0.01,  // Size increase per level (1%)
@@ -95,7 +103,7 @@ export const consts = {
 	// Drones use hitscan - instant damage when they fire
 	"MAX_DRONES": 9,                 // Maximum drones per player (effectively level cap)
 	"DRONE_LEVEL_INTERVAL": 4,        // Gain 1 drone every N levels
-	"DRONE_ORBIT_RADIUS": 45,         // Distance from player center
+	"DRONE_ORBIT_RADIUS": 65,        // Distance from player center
 	"DRONE_ORBIT_SPEED": 2,         // Radians per second (orbit rotation speed)
 	"DRONE_RADIUS": 12,               // Visual/collision radius
 	"DRONE_DAMAGE": 25,               // Damage for first drone (hitscan)
@@ -108,7 +116,7 @@ export const consts = {
 	// ===== ENEMY SPAWN BOOST =====
 	"ENEMY_SPAWN_BOOST_DURATION": 15, // Seconds of boosted spawns after a boss spawns
 	"ENEMY_SPAWN_BOOST_MULT": 0.4,    // Spawn interval multiplier during boost (lower = faster)
-	"ENEMY_LIFETIME_SECONDS": 15,     // Despawn non-boss enemies after inactivity
+	"ENEMY_LIFETIME_SECONDS": 10,   // Despawn non-boss enemies after inactivity
 	"ENEMY_DESPAWN_DISTANCE": 1300,  // Only despawn when this far from player
 	
 	// ===== HEAL PACKS (Support drone passive) =====

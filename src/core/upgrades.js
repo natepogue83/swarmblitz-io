@@ -152,12 +152,14 @@ export function initPlayerUpgrades(player) {
 		hasFocusedFire: false,
 		hasPrecisionRounds: false,
 		hasStickyCharges: false,
+		stickyChargesStacks: 0,
 		hasBleedingRounds: false,
 		hasMissilePod: false,
 		hasHeatseekerDrones: false,
 		hasArcBarrage: false,
 		hasOverchargeCore: false,
-		hasGetAway: false
+		hasGetAway: false,
+		getAwayStacks: 0
 	};
 	
 	// Cooldown timers for triggered abilities
@@ -230,12 +232,14 @@ export function recalculateDerivedStats(player) {
 	stats.hasFocusedFire = false;
 	stats.hasPrecisionRounds = false;
 	stats.hasStickyCharges = false;
+	stats.stickyChargesStacks = 0;
 	stats.hasBleedingRounds = false;
 	stats.hasMissilePod = false;
 	stats.hasHeatseekerDrones = false;
 	stats.hasArcBarrage = false;
 	stats.hasOverchargeCore = false;
 	stats.hasGetAway = false;
+	stats.getAwayStacks = 0;
 
 	// Apply persistent boss orb bonuses (if any)
 	const bossBonus = player.bossBonus || {};
@@ -367,10 +371,11 @@ export const UPGRADE_CATALOG = [
 		maxStacks: Infinity,
 		description: (stacks) => {
 			const perStack = Math.round(KNOBS.ENDURANCE.maxStaminaPerStack * 100);
-			return `+${perStack}% max stamina\nTotal: +${stacks * perStack}%`;
+			const bonus = Math.round(diminishing(perStack, stacks));
+			return `+${perStack}% max stamina\nTotal: +${bonus}% (diminishing)`;
 		},
 		apply: (player, stacks) => {
-			player.derivedStats.maxStaminaMult += stacks * KNOBS.ENDURANCE.maxStaminaPerStack;
+			player.derivedStats.maxStaminaMult += diminishing(KNOBS.ENDURANCE.maxStaminaPerStack, stacks);
 		}
 	},
 	{
@@ -521,8 +526,10 @@ export const UPGRADE_CATALOG = [
 		rarity: RARITY.RARE,
 		maxStacks: KNOBS.SECOND_WIND.maxStacks,
 		description: () => {
-			const recover = Math.round(KNOBS.SECOND_WIND.staminaRecoverPercent * 100);
-			return `Stamina hits 0?\nRecover ${recover}% (${KNOBS.SECOND_WIND.cooldownSeconds}s cooldown)`;
+			const threshold = Math.round(KNOBS.SECOND_WIND.hpThreshold * 100);
+			const healPercent = Math.round(KNOBS.SECOND_WIND.healPercent * 100);
+			const duration = KNOBS.SECOND_WIND.healDurationSeconds;
+			return `Below ${threshold}% HP?\nHeal ${healPercent}% over ${duration}s (${KNOBS.SECOND_WIND.cooldownSeconds}s cooldown)`;
 		},
 		apply: (player, stacks) => {
 			if (stacks > 0) player.derivedStats.hasSecondWind = true;
@@ -658,10 +665,13 @@ export const UPGRADE_CATALOG = [
 		description: () => {
 			const dmgPer = Math.round(KNOBS.STICKY_CHARGES.damagePerCharge * 100);
 			const delay = KNOBS.STICKY_CHARGES.detonationDelay;
-			return `Hits apply charges that\nexplode for ${dmgPer}% dmg after ${delay}s`;
+			return `Hits apply charges that\nexplode for ${dmgPer}% dmg after ${delay}s\nDamage stacks with upgrades`;
 		},
 		apply: (player, stacks) => {
-			if (stacks > 0) player.derivedStats.hasStickyCharges = true;
+			if (stacks > 0) {
+				player.derivedStats.hasStickyCharges = true;
+				player.derivedStats.stickyChargesStacks = stacks;
+			}
 		}
 	},
 	{
@@ -885,12 +895,16 @@ export const UPGRADE_CATALOG = [
 		name: 'Get Away',
 		rarity: RARITY.LEGENDARY,
 		maxStacks: KNOBS.GET_AWAY.maxStacks,
-		description: () => {
+		description: (stacks) => {
 			const dmgPer = Math.round(KNOBS.GET_AWAY.damagePerEnemy * 100);
-			return `+${dmgPer}% damage per enemy\nwithin drone range`;
+			const totalPerEnemy = Math.round(dmgPer * Math.max(1, stacks));
+			return `+${dmgPer}% damage per enemy\nper stack (Total: ${totalPerEnemy}%)`;
 		},
 		apply: (player, stacks) => {
-			if (stacks > 0) player.derivedStats.hasGetAway = true;
+			if (stacks > 0) {
+				player.derivedStats.hasGetAway = true;
+				player.derivedStats.getAwayStacks = stacks;
+			}
 		}
 	}
 ];

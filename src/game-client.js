@@ -19,6 +19,7 @@ let dronesById = new Map(); // Stores all drones keyed by id
 let projectilesById = new Map(); // Stores all active projectiles keyed by id
 let healPacksById = new Map(); // Stores all active heal packs keyed by id (Support drone passive)
 let acidPoolsById = new Map(); // Stores all active acid pools keyed by id (Acid drone passive)
+let enemySpawnWarnings = []; // Telegraphs for incoming enemy spawns
 let enemies = [];
 let enemyStats = { runTime: 0, spawnInterval: 0, enemies: 0, kills: 0 };
 let kills;
@@ -398,6 +399,10 @@ function getAcidPools() {
 	return Array.from(acidPoolsById.values());
 }
 
+function getEnemySpawnWarnings() {
+	return enemySpawnWarnings;
+}
+
 function getEnemyStats() {
 	return { ...enemyStats };
 }
@@ -509,6 +514,11 @@ function processFrame(data) {
 	}
 	if (data.enemyStats) {
 		enemyStats = data.enemyStats;
+	}
+	if (data.enemySpawnWarnings !== undefined) {
+		enemySpawnWarnings = data.enemySpawnWarnings;
+	} else {
+		enemySpawnWarnings = [];
 	}
 	
 	// Handle XP/Level updates
@@ -1087,6 +1097,7 @@ export {
 	getProjectiles,
 	getHealPacks,
 	getAcidPools,
+	getEnemySpawnWarnings,
 	getEnemies,
 	getEnemyStats,
 	disconnect, 

@@ -106,6 +106,7 @@ function createEconomyDeltas() {
 		stickyChargeDetonations: [],
 		arcBarrageBursts: [],
 		shockwaveEvents: [],
+		enemySpawnWarnings: [],
 		acidPoolSpawns: [],
 		acidPoolUpdates: [],
 		acidPoolRemovals: []
@@ -136,6 +137,7 @@ function mergeEconomyDeltas(target, source) {
 	target.stickyChargeDetonations.push(...source.stickyChargeDetonations);
 	target.arcBarrageBursts.push(...source.arcBarrageBursts);
 	target.shockwaveEvents.push(...source.shockwaveEvents);
+	target.enemySpawnWarnings.push(...source.enemySpawnWarnings);
 	target.acidPoolSpawns.push(...source.acidPoolSpawns);
 	target.acidPoolUpdates.push(...source.acidPoolUpdates);
 	target.acidPoolRemovals.push(...source.acidPoolRemovals);
@@ -486,6 +488,9 @@ function Game(id) {
 	const enemyLifetimeSeconds = consts.ENEMY_LIFETIME_SECONDS ?? 15;
 	const enemyDespawnDistance = consts.ENEMY_DESPAWN_DISTANCE
 		?? ((consts.AOI_MIN_RADIUS ?? 400) + (consts.AOI_BUFFER ?? 900));
+	const spawnWarningLeadSeconds = consts.ENEMY_SPAWN_WARNING_LEAD_SECONDS ?? 2.0;
+	const spawnGraceSeconds = consts.ENEMY_SPAWN_GRACE_SECONDS ?? 1.0;
+	const pendingEnemySpawns = [];
 
 	function markEnemyHit(enemy) {
 		if (!enemy || enemy.isBoss) return;
@@ -580,43 +585,27 @@ function Game(id) {
 	}
 
 	function spawnSwarmEnemyAt(x, y) {
-		const maxPerType = ENEMY_SPAWN_LIMITS.maxPerType;
-		const currentCount = enemies.filter(e => !e.isBoss && e.type === 'swarm').length;
-		if (currentCount >= maxPerType) return false;
-		
-		const typeData = ENEMY_TYPES.swarm;
-		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
-		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
-		const maxHp = Math.max(1, typeData.maxHp * hpScale);
-		const contactDamage = typeData.contactDamage * damageScale;
-		const xpDropValue = typeData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
-		
-		const minion = new Enemy({
-			id: `enemy-${nextEnemyId++}`,
+		return queueEnemySpawn('swarm', x, y);
+	}
+
+	function queueEnemySpawn(typeName, x, y, isBoss = false) {
+		pendingEnemySpawns.push({
+			typeName,
 			x,
 			y,
-			type: 'swarm',
-			radius: typeData.radius,
-			maxHp: maxHp,
-			hp: maxHp,
-			speed: typeData.speed,
-			contactDamage: contactDamage,
-			xpDropValue: xpDropValue
+			isBoss,
+			spawnAt: runTime + spawnWarningLeadSeconds
 		});
-		minion.baseMaxHp = typeData.maxHp;
-		minion.baseContactDamage = typeData.contactDamage;
-		minion.baseSpeed = typeData.speed;
-		minion.spawnTime = runTime;
-		minion.lastDamagedAt = runTime;
-		enemies.push(minion);
 		return true;
 	}
 
 	function spawnEnemyOfType(typeName, x, y) {
+		const maxPerType = ENEMY_SPAWN_LIMITS.maxPerType;
+		const currentCount = enemies.filter(e => !e.isBoss && e.type === typeName).length;
+		if (currentCount >= maxPerType) return null;
 		const typeData = (ENEMY_TYPES[typeName] || ENEMY_TYPES.basic);
 		if (typeName === 'sniper') {
 			const maxCount = typeData.maxCount ?? 5;
-			const currentCount = enemies.filter(e => !e.isBoss && e.type === 'sniper').length;
 			if (currentCount >= maxCount) {
 				return null;
 			}
@@ -644,6 +633,7 @@ function Game(id) {
 		enemy.baseSpeed = typeData.speed;
 		enemy.spawnTime = runTime;
 		enemy.lastDamagedAt = runTime;
+		enemy.spawnGraceUntil = runTime + spawnGraceSeconds;
 		
 		if (typeName === 'charger') {
 			enemy.chargeSpeed = typeData.chargeSpeed;
@@ -669,6 +659,94 @@ function Game(id) {
 		
 		enemies.push(enemy);
 		return enemy;
+	}
+
+	function spawnBossOfType(bossType, x, y) {
+		const bossData = BOSS_TYPES[bossType] || BOSS_TYPES.titan;
+		const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
+		const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
+		const maxHp = Math.max(1, bossData.maxHp * hpScale);
+		const contactDamage = bossData.contactDamage * damageScale;
+		const xpDropValue = bossData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
+		
+		const boss = new Enemy({
+			id: `boss-${bossType}-${nextEnemyId++}`,
+			x,
+			y,
+			type: bossType,
+			radius: bossData.radius,
+			maxHp: maxHp,
+			hp: maxHp,
+			speed: bossData.speed,
+			contactDamage: contactDamage,
+			xpDropValue: xpDropValue
+		});
+		boss.baseMaxHp = bossData.maxHp;
+		boss.baseContactDamage = bossData.contactDamage;
+		boss.baseSpeed = bossData.speed;
+		boss.spawnTime = runTime;
+		boss.spawnGraceUntil = runTime + spawnGraceSeconds;
+		boss.isBoss = true;
+		
+		// Boss-specific properties
+		if (bossType === 'berserker') {
+			boss.chargeSpeed = bossData.chargeSpeed;
+			boss.chargeCooldown = bossData.chargeCooldown;
+			boss.chargeDistance = bossData.chargeDistance;
+			boss.lastChargeTime = 0;
+			boss.isCharging = false;
+			boss.chargeTargetX = 0;
+			boss.chargeTargetY = 0;
+		} else if (bossType === 'summoner') {
+			boss.summonCooldown = bossData.summonCooldown;
+			boss.summonCount = bossData.summonCount;
+			boss.preferredDistance = bossData.preferredDistance;
+			boss.lastSummonTime = 0;
+		} else if (bossType === 'titan') {
+			boss.chargeSpeed = bossData.chargeSpeed;
+			boss.chargeCooldown = bossData.chargeCooldown;
+			boss.chargeDistance = bossData.chargeDistance;
+			boss.lastChargeTime = 0;
+			boss.isCharging = false;
+			boss.chargeTargetX = 0;
+			boss.chargeTargetY = 0;
+		}
+		
+		enemies.push(boss);
+		return boss;
+	}
+
+	function processPendingEnemySpawns(economyDeltas) {
+		for (let i = pendingEnemySpawns.length - 1; i >= 0; i--) {
+			const pending = pendingEnemySpawns[i];
+			const timeRemaining = pending.spawnAt - runTime;
+			if (timeRemaining <= 0) {
+				if (pending.isBoss) {
+					const currentBossCount = enemies.filter(e => e.isBoss && e.type === pending.typeName).length;
+					if (currentBossCount < ENEMY_SPAWN_LIMITS.maxPerType) {
+						spawnBossOfType(pending.typeName, pending.x, pending.y);
+						economyDeltas.gameMessages.push({
+							text: "SwarmBlitz!",
+							duration: 2.5
+						});
+					}
+				} else {
+					spawnEnemyOfType(pending.typeName, pending.x, pending.y);
+				}
+				pendingEnemySpawns.splice(i, 1);
+				continue;
+			}
+			
+			const typeData = pending.isBoss
+				? (BOSS_TYPES[pending.typeName] || BOSS_TYPES.titan)
+				: (ENEMY_TYPES[pending.typeName] || ENEMY_TYPES.basic);
+			economyDeltas.enemySpawnWarnings.push({
+				x: pending.x,
+				y: pending.y,
+				radius: typeData.radius || 12,
+				timeRemaining
+			});
+		}
 	}
 
 	function applyEnemyDamageToPlayer(player, enemy, baseDamage, deltas, deadList) {
@@ -768,6 +846,7 @@ function Game(id) {
 		// Clear all enemies
 		enemies.length = 0;
 		nextEnemyId = 0;
+		pendingEnemySpawns.length = 0;
 		
 		// Clear all coins/XP pickups
 		coins.length = 0;
@@ -1251,7 +1330,7 @@ function Game(id) {
 					const radius = spawnRadiusMin + Math.random() * (spawnRadiusMax - spawnRadiusMin);
 					const x = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, player.x + Math.cos(angle) * radius));
 					const y = Math.max(consts.BORDER_WIDTH, Math.min(mapSize - consts.BORDER_WIDTH, player.y + Math.sin(angle) * radius));
-					spawnEnemyOfType(typeName, x, y);
+					queueEnemySpawn(typeName, x, y);
 				}
 				break;
 			}
@@ -1373,6 +1452,7 @@ function Game(id) {
 			if (pendingDeltas.captureEvents.length > 0) data.captureEvents = pendingDeltas.captureEvents;
 			if (pendingDeltas.droneUpdates.length > 0) data.droneUpdates = pendingDeltas.droneUpdates;
 			if (pendingDeltas.killEvents.length > 0) data.killEvents = pendingDeltas.killEvents;
+			data.enemySpawnWarnings = pendingDeltas.enemySpawnWarnings;
 			// Projectile data for client-side rendering of traveling projectiles
 			if (pendingDeltas.projectileSpawns.length > 0) data.projectileSpawns = pendingDeltas.projectileSpawns;
 			if (pendingDeltas.projectileUpdates.length > 0) data.projectileUpdates = pendingDeltas.projectileUpdates;
@@ -2415,14 +2495,15 @@ function Game(id) {
 					const enemy = enemies.find(e => e.id === charge.enemyId);
 					if (!enemy || enemy.dead || enemy.hp <= 0) continue;
 					
-					// Calculate explosion damage
-					const totalDamage = charge.baseDamage * UPGRADE_KNOBS.STICKY_CHARGES.damagePerCharge * charge.charges;
+					// Calculate explosion damage (scale with sticky charge upgrade stacks)
+					const owner = players.find(p => p.num === charge.ownerId);
+					const stickyStacks = Math.max(1, owner?.derivedStats?.stickyChargesStacks || 1);
+					const totalDamage = charge.baseDamage * UPGRADE_KNOBS.STICKY_CHARGES.damagePerCharge * stickyStacks * charge.charges;
 					enemy.hp -= totalDamage;
 					if (enemy.hp < 0) enemy.hp = 0;
 					markEnemyHit(enemy);
-					
+
 					// Find owner for kill credit
-					const owner = players.find(p => p.num === charge.ownerId);
 					const procOrigin = owner ? { x: owner.x, y: owner.y } : { x: enemy.x, y: enemy.y };
 					const directProcCoeff = PROC_COEFFICIENTS.stickyCharge ?? 0.25;
 					tryMissilePodProc(owner, enemy, totalDamage, procOrigin, directProcCoeff, economyDeltas);
@@ -2642,55 +2723,7 @@ function Game(id) {
 			const spawnX = spawn.x + Math.cos(angle) * radius;
 			const spawnY = spawn.y + Math.sin(angle) * radius;
 			
-			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
-			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
-			const maxHp = Math.max(1, typeData.maxHp * hpScale);
-			const contactDamage = typeData.contactDamage * damageScale;
-			const xpDropValue = typeData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
-			
-			const enemy = new Enemy({
-				id: `enemy-${nextEnemyId++}`,
-				x: spawnX,
-				y: spawnY,
-				type: typeName,
-				radius: typeData.radius,
-				maxHp: maxHp,
-				hp: maxHp,
-				speed: typeData.speed,
-				contactDamage: contactDamage,
-				xpDropValue: xpDropValue
-			});
-			enemy.baseMaxHp = typeData.maxHp;
-			enemy.baseContactDamage = typeData.contactDamage;
-			enemy.baseSpeed = typeData.speed;
-			enemy.spawnTime = runTime;
-			enemy.lastDamagedAt = runTime;
-			
-			// Type-specific properties
-			if (typeName === 'charger') {
-				enemy.chargeSpeed = typeData.chargeSpeed;
-				enemy.chargeCooldown = typeData.chargeCooldown;
-				enemy.chargeDistance = typeData.chargeDistance;
-				enemy.lastChargeTime = 0;
-				enemy.isCharging = false;
-				enemy.chargeTargetX = 0;
-				enemy.chargeTargetY = 0;
-			} else if (typeName === 'sniper') {
-				enemy.preferredDistance = typeData.preferredDistance;
-				enemy.healRadius = typeData.healRadius;
-				enemy.healAmount = typeData.healAmount;
-				enemy.healCooldown = typeData.healCooldown;
-				enemy.healPercent = typeData.healPercent;
-				enemy.minSeparation = typeData.minSeparation;
-				enemy.lastHealAt = 0;
-			} else if (typeName === 'tank') {
-				enemy.swarmBurstCount = typeData.swarmBurstCount;
-				enemy.swarmBurstCooldown = typeData.swarmBurstCooldown;
-				enemy.swarmBurstSpread = typeData.swarmBurstSpread;
-				enemy.lastSwarmBurst = 0;
-			}
-			
-			enemies.push(enemy);
+			queueEnemySpawn(typeName, spawnX, spawnY);
 			// Update count for this type
 			enemyCountByType.set(typeName, (enemyCountByType.get(typeName) || 0) + 1);
 		}
@@ -2714,60 +2747,15 @@ function Game(id) {
 			continue; // Skip spawning this boss
 		}
 		
-		const bossData = BOSS_TYPES[bossType] || BOSS_TYPES.titan;
-			const hpScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.hp);
-			const damageScale = getEnemyScalingMultiplier(runTime, ENEMY_SCALING.damage);
-			const maxHp = Math.max(1, bossData.maxHp * hpScale);
-			const contactDamage = bossData.contactDamage * damageScale;
-			const xpDropValue = bossData.xpDropValue ?? ENEMY_XP_DROP.defaultValue;
-			
-			const boss = new Enemy({
-				id: `boss-${nextEnemyId++}`,
-				x: spawn.x,
-				y: spawn.y,
-				type: bossType,
-				radius: bossData.radius,
-				maxHp: maxHp,
-				hp: maxHp,
-				speed: bossData.speed,
-				contactDamage: contactDamage,
-				xpDropValue: xpDropValue
-			});
-			boss.baseMaxHp = bossData.maxHp;
-			boss.baseContactDamage = bossData.contactDamage;
-			boss.baseSpeed = bossData.speed;
-			boss.spawnTime = runTime;
-			
-			boss.isBoss = true;
-			
-			// Boss-specific properties
-			if (bossType === 'berserker') {
-				boss.chargeSpeed = bossData.chargeSpeed;
-				boss.chargeCooldown = bossData.chargeCooldown;
-				boss.chargeDistance = bossData.chargeDistance;
-				boss.lastChargeTime = 0;
-				boss.isCharging = false;
-				boss.chargeTargetX = 0;
-				boss.chargeTargetY = 0;
-			} else if (bossType === 'summoner') {
-				boss.summonCooldown = bossData.summonCooldown;
-				boss.summonCount = bossData.summonCount;
-				boss.preferredDistance = bossData.preferredDistance;
-				boss.lastSummonTime = 0;
-		}
-		
-		enemies.push(boss);
+		queueEnemySpawn(bossType, spawn.x, spawn.y, true);
 		// Update count for this boss type
 		bossCountByType.set(bossType, (bossCountByType.get(bossType) || 0) + 1);
-		
-		// Boss spawn alert
-		economyDeltas.gameMessages.push({
-			text: "SwarmBlitz!",
-			duration: 2.5
-		});
-		}
-		
-		if (activePlayer && !activePlayer.dead) {
+	}
+	
+	// Spawn pending enemies and emit warning indicators
+	processPendingEnemySpawns(economyDeltas);
+	
+	if (activePlayer && !activePlayer.dead) {
 			const playerRadius = activePlayer.getScaledRadius ? activePlayer.getScaledRadius() : PLAYER_RADIUS;
 			const hitCooldown = 0.35;
 			for (const enemy of enemies) {
@@ -2796,6 +2784,12 @@ function Game(id) {
 					// Still process DOT effects below, but skip movement and contact damage
 				}
 				const isStunned = enemy.stunExpires && runTime < enemy.stunExpires;
+				const isSpawnGrace = enemy.spawnGraceUntil && runTime < enemy.spawnGraceUntil;
+				if (isSpawnGrace) {
+					enemy.vx = 0;
+					enemy.vy = 0;
+				}
+				const isImmobilized = isStunned || isSpawnGrace;
 				
 				// Apply slow debuff if active
 				let effectiveSpeed = enemy.speed;
@@ -2903,8 +2897,9 @@ function Game(id) {
 					if (enemy.type === 'summoner' && enemy.summonCooldown) {
 						if ((runTime - (enemy.lastSummonTime || 0)) >= enemy.summonCooldown) {
 							enemy.lastSummonTime = runTime;
-							// Spawn minions around the summoner
-							const summonCount = enemy.summonCount || 3;
+							// Spawn minions around the summoner (2 + minutes)
+							const minutes = Math.floor(runTime / 60);
+							const summonCount = Math.max(1, (enemy.summonCount || 2) + minutes);
 							for (let s = 0; s < summonCount; s++) {
 								const angle = (s / summonCount) * Math.PI * 2;
 								const spawnDist = enemy.radius + 20;
@@ -2990,7 +2985,7 @@ function Game(id) {
 				}
 				
 				// Only apply movement if not stunned
-				if (!isStunned) {
+				if (!isImmobilized) {
 					enemy.vx = moveX * effectiveSpeed;
 					enemy.vy = moveY * effectiveSpeed;
 					enemy.x += enemy.vx * deltaSeconds;
@@ -3115,7 +3110,7 @@ function Game(id) {
 				}
 				
 				// Contact damage check (skip if stunned)
-				if (!isStunned) {
+				if (!isImmobilized) {
 					const hitDx = activePlayer.x - enemy.x;
 					const hitDy = activePlayer.y - enemy.y;
 					const hitDist = Math.hypot(hitDx, hitDy);
@@ -3407,6 +3402,7 @@ function Game(id) {
 			const critMult = stats.critMult || 2.0;
 			const lifeOnHitPercent = stats.lifeStealPercent || 0;
 			const extraProjectiles = stats.extraProjectiles || 0;
+			const multishotDamageDecay = UPGRADE_KNOBS.MULTISHOT.damageDecay ?? 0.75;
 			
 			// Berserker: Below threshold HP, gain attack speed and damage
 			const berserkerMaxHp = Math.max(1, p.maxHp || (consts.PLAYER_MAX_HP ?? 100));
@@ -3441,7 +3437,8 @@ function Game(id) {
 				}
 				
 				// Apply damage bonus
-				damageMult += enemiesInRange * UPGRADE_KNOBS.GET_AWAY.damagePerEnemy;
+				const getAwayStacks = Math.max(1, stats.getAwayStacks || 1);
+				damageMult += enemiesInRange * UPGRADE_KNOBS.GET_AWAY.damagePerEnemy * getAwayStacks;
 				p.getAwayEnemyCount = enemiesInRange; // Store for UI/debugging
 			}
 			
@@ -3716,6 +3713,8 @@ function Game(id) {
 						const shockwaveRadius = droneType.shockwaveRadius || 100;
 						const stunDuration = droneType.shockwaveStunDuration || 1.0;
 						const baseProcCoefficient = drone.procCoefficient ?? droneType.procCoefficient ?? 0.4;
+						let shockwaveHits = 0;
+						let shockwaveDamageTotal = 0;
 						
 						// Hit all enemies in radius around the drone
 						for (const enemy of enemies) {
@@ -3750,6 +3749,9 @@ function Game(id) {
 									handleEnemyDeath(enemy, p);
 								}
 								
+								shockwaveHits += 1;
+								shockwaveDamageTotal += damage;
+								
 								// Proc missile pod
 								const procOrigin = { x: drone.x, y: drone.y };
 								const aoeProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.shockwave ?? 0.3);
@@ -3758,13 +3760,15 @@ function Game(id) {
 						}
 						
 						// Emit shockwave effect event for client rendering
-						economyDeltas.shockwaveEvents.push({
-							x: drone.x,
-							y: drone.y,
-							radius: shockwaveRadius,
-							ownerId: p.num,
-							damage: damage
-						});
+						if (shockwaveHits > 0) {
+							economyDeltas.shockwaveEvents.push({
+								x: drone.x,
+								y: drone.y,
+								radius: shockwaveRadius,
+								ownerId: p.num,
+								damage: shockwaveDamageTotal
+							});
+						}
 						
 						continue; // Skip normal hitscan/projectile logic
 					}
@@ -3788,7 +3792,7 @@ function Game(id) {
 							);
 							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
 								const multiTarget = nearbyEnemies[i];
-								const extraDamage = damage * Math.pow(0.8, i + 1);
+								const extraDamage = damage * Math.pow(multishotDamageDecay, i + 1);
 								applyHitscanDamage(p, drone, multiTarget, extraDamage, isCrit, economyDeltas, hitscanOrigin, true);
 							}
 						}
@@ -3821,7 +3825,7 @@ function Game(id) {
 							);
 							for (let i = 0; i < Math.min(extraProjectiles, nearbyEnemies.length); i++) {
 								const multiTarget = nearbyEnemies[i];
-								const extraDamage = damage * Math.pow(0.8, i + 1);
+								const extraDamage = damage * Math.pow(multishotDamageDecay, i + 1);
 								const delaySec = multishotDelayMs > 0 ? (multishotDelayMs * (i + 1)) / 1000 : 0;
 								
 								if (delaySec > 0) {
