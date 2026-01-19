@@ -501,6 +501,17 @@ function Game(id) {
 		enemy.lastDamagedAt = runTime;
 	}
 
+	function applyEnemyDamage(enemy, damage) {
+		if (!enemy || damage <= 0) return 0;
+		let finalDamage = damage;
+		if (enemy.type === 'tank' && enemy.tankMitigationUntil && runTime < enemy.tankMitigationUntil) {
+			finalDamage *= 0.4;
+		}
+		enemy.hp -= finalDamage;
+		if (enemy.hp < 0) enemy.hp = 0;
+		return finalDamage;
+	}
+
 	function applyBleedStacks(target, ownerId, bleedConfig) {
 		if (!target || !bleedConfig) return;
 		if (!target.bleedStacks) target.bleedStacks = 0;
@@ -891,7 +902,7 @@ function Game(id) {
 		
 		if (playerStats.thornsMult > 0) {
 			const reflectDamage = damage * playerStats.thornsMult;
-			enemy.hp -= reflectDamage;
+			applyEnemyDamage(enemy, reflectDamage);
 			markEnemyHit(enemy);
 			if (enemy.hp <= 0) {
 				handleEnemyDeath(enemy, player);
@@ -1087,6 +1098,12 @@ function Game(id) {
 		// Include boss flag
 		if (enemy.isBoss) {
 			data.isBoss = true;
+		}
+		if (enemy.summonFxUntil) {
+			data.summonFxUntil = enemy.summonFxUntil;
+		}
+		if (enemy.tankMitigationUntil) {
+			data.tankMitigationUntil = enemy.tankMitigationUntil;
 		}
 		return data;
 	}
@@ -1636,18 +1653,18 @@ function Game(id) {
 			const rewards = [
 				{
 					id: "max_hp",
-					label: "+40 HP",
-					apply: () => { player.bossBonus.flatMaxHp += 40; }
+					label: "+20 HP",
+					apply: () => { player.bossBonus.flatMaxHp += 20; }
 				},
 				{
 					id: "max_stamina",
-					label: "+20 Stamina",
-					apply: () => { player.bossBonus.flatMaxStamina += 20; }
+					label: "+15 Stamina",
+					apply: () => { player.bossBonus.flatMaxStamina += 15; }
 				},
 				{
 					id: "damage",
-					label: "+10% Damage",
-					apply: () => { player.bossBonus.damageMult += 0.10; }
+					label: "+5% Damage",
+					apply: () => { player.bossBonus.damageMult += 0.05; }
 				},
 				{
 					id: "attack_speed",
@@ -2067,8 +2084,7 @@ function Game(id) {
 							const dist = Math.hypot(enemy.x - proj.x, enemy.y - proj.y);
 							if (dist > pulseRadius) continue;
 							
-							enemy.hp -= pulseDamage;
-							if (enemy.hp < 0) enemy.hp = 0;
+							const appliedDamage = applyEnemyDamage(enemy, pulseDamage);
 							markEnemyHit(enemy);
 							
 							economyDeltas.hitscanEvents.push({
@@ -2078,7 +2094,7 @@ function Game(id) {
 								toY: enemy.y,
 								ownerId: proj.ownerId,
 								targetEnemyId: enemy.id,
-								damage: pulseDamage,
+								damage: appliedDamage,
 								remainingHp: enemy.hp,
 								isCrit: false,
 								attackType: proj.attackType,
@@ -2288,12 +2304,11 @@ function Game(id) {
 							finalDamage *= getPrecisionRoundsBonus(dist, rangeCap);
 						}
 						
-						enemy.hp -= finalDamage;
-						if (enemy.hp < 0) enemy.hp = 0;
+						const appliedDamage = applyEnemyDamage(enemy, finalDamage);
 						markEnemyHit(enemy);
 						
 						// Track total damage for Support heal pack
-						proj.totalDamageDealt = (proj.totalDamageDealt || 0) + finalDamage;
+						proj.totalDamageDealt = (proj.totalDamageDealt || 0) + appliedDamage;
 						
 						// Life steal (flat per hit with per-second cap)
 						if (owner && proj.lifeOnHitPerHit > 0) {
@@ -2584,20 +2599,19 @@ function Game(id) {
 					const owner = players.find(p => p.num === charge.ownerId);
 					const stickyStacks = Math.max(1, owner?.derivedStats?.stickyChargesStacks || 1);
 					const totalDamage = charge.baseDamage * UPGRADE_KNOBS.STICKY_CHARGES.damagePerCharge * stickyStacks * charge.charges;
-					enemy.hp -= totalDamage;
-					if (enemy.hp < 0) enemy.hp = 0;
+					const appliedDamage = applyEnemyDamage(enemy, totalDamage);
 					markEnemyHit(enemy);
 
 					// Find owner for kill credit
 					const procOrigin = owner ? { x: owner.x, y: owner.y } : { x: enemy.x, y: enemy.y };
 					const directProcCoeff = PROC_COEFFICIENTS.stickyCharge ?? 0.25;
-					tryMissilePodProc(owner, enemy, totalDamage, procOrigin, directProcCoeff, economyDeltas);
+					tryMissilePodProc(owner, enemy, appliedDamage, procOrigin, directProcCoeff, economyDeltas);
 					
 					// Visual feedback
 					economyDeltas.stickyChargeDetonations.push({
 						x: enemy.x,
 						y: enemy.y,
-						damage: totalDamage,
+						damage: appliedDamage,
 						charges: charge.charges,
 						ownerId: charge.ownerId
 					});
@@ -2608,11 +2622,11 @@ function Game(id) {
 						if (nearbyEnemy === enemy || nearbyEnemy.dead || nearbyEnemy.hp <= 0) continue;
 						const dist = Math.hypot(nearbyEnemy.x - enemy.x, nearbyEnemy.y - enemy.y);
 						if (dist < explosionRadius) {
-							const aoeDamage = totalDamage * 0.5; // 50% of direct damage to nearby
-							nearbyEnemy.hp -= aoeDamage;
+							const aoeDamage = appliedDamage * 0.5; // 50% of direct damage to nearby
+							const appliedAoe = applyEnemyDamage(nearbyEnemy, aoeDamage);
 							markEnemyHit(nearbyEnemy);
 							const splashProcCoeff = PROC_COEFFICIENTS.stickyChargeSplash ?? 0.15;
-							tryMissilePodProc(owner, nearbyEnemy, aoeDamage, procOrigin, splashProcCoeff, economyDeltas);
+							tryMissilePodProc(owner, nearbyEnemy, appliedAoe, procOrigin, splashProcCoeff, economyDeltas);
 							if (nearbyEnemy.hp <= 0 && owner) {
 								handleEnemyDeath(nearbyEnemy, owner);
 							}
@@ -2686,8 +2700,7 @@ function Game(id) {
 					const hitRadius = enemy.radius + missile.radius;
 					if (dist < hitRadius) {
 						// Hit!
-						enemy.hp -= missile.damage;
-						if (enemy.hp < 0) enemy.hp = 0;
+						const appliedDamage = applyEnemyDamage(enemy, missile.damage);
 						markEnemyHit(enemy);
 						
 						const owner = players.find(p => p.num === missile.ownerId);
@@ -2700,7 +2713,7 @@ function Game(id) {
 							toY: enemy.y,
 							ownerId: missile.ownerId,
 							targetEnemyId: enemy.id,
-							damage: missile.damage,
+							damage: appliedDamage,
 							remainingHp: enemy.hp,
 							isCrit: false,
 							attackType: 'bullet',
@@ -2990,6 +3003,7 @@ function Game(id) {
 					if (enemy.type === 'summoner' && enemy.summonCooldown) {
 						if ((runTime - (enemy.lastSummonTime || 0)) >= enemy.summonCooldown) {
 							enemy.lastSummonTime = runTime;
+							enemy.summonFxUntil = runTime + 1.0;
 							// Spawn minions around the summoner (2 + minutes)
 							const minutes = Math.floor(runTime / 60);
 							const summonCount = Math.max(1, (enemy.summonCount || 2) + minutes);
@@ -3052,6 +3066,15 @@ function Game(id) {
 					}
 				}
 				
+				if (enemy.type === 'tank') {
+					const mitigationInterval = 5;
+					const mitigationDuration = 3;
+					if ((runTime - (enemy.lastTankMitigation || 0)) >= mitigationInterval) {
+						enemy.lastTankMitigation = runTime;
+						enemy.tankMitigationUntil = runTime + mitigationDuration;
+					}
+				}
+				
 				if (enemy.type === 'tank' && enemy.swarmBurstCooldown) {
 					const burstReady = (runTime - (enemy.lastSwarmBurst || 0)) >= enemy.swarmBurstCooldown;
 					if (burstReady) {
@@ -3105,8 +3128,7 @@ function Game(id) {
 					if (runTime - enemy.lastBleedTick >= bleedTickRate) {
 						enemy.lastBleedTick = runTime;
 						const bleedDamage = enemy.bleedStacks * (enemy.bleedDamagePerStack || 1);
-						enemy.hp -= bleedDamage;
-						if (enemy.hp < 0) enemy.hp = 0;
+						const appliedDamage = applyEnemyDamage(enemy, bleedDamage);
 						markEnemyHit(enemy);
 						
 						// Visual feedback for bleed tick (subtle red flash)
@@ -3117,7 +3139,7 @@ function Game(id) {
 							toY: enemy.y,
 							ownerId: enemy.bleedOwnerId || -1,
 							targetEnemyId: enemy.id,
-							damage: bleedDamage,
+							damage: appliedDamage,
 							remainingHp: enemy.hp,
 							isCrit: false,
 							attackType: 'bleed',
@@ -3144,8 +3166,7 @@ function Game(id) {
 					if (runTime - enemy.lastBurnTick >= burnTickRate) {
 						enemy.lastBurnTick = runTime;
 						const burnDamage = enemy.burnStacks * (enemy.burnDamagePerStack || 1);
-						enemy.hp -= burnDamage;
-						if (enemy.hp < 0) enemy.hp = 0;
+						const appliedDamage = applyEnemyDamage(enemy, burnDamage);
 						markEnemyHit(enemy);
 
 						economyDeltas.hitscanEvents.push({
@@ -3155,7 +3176,7 @@ function Game(id) {
 							toY: enemy.y,
 							ownerId: enemy.burnOwnerId || -1,
 							targetEnemyId: enemy.id,
-							damage: burnDamage,
+							damage: appliedDamage,
 							remainingHp: enemy.hp,
 							isCrit: false,
 							attackType: 'burn',
@@ -3181,8 +3202,7 @@ function Game(id) {
 					if (runTime - enemy.lastPoisonTick >= poisonTickRate) {
 						enemy.lastPoisonTick = runTime;
 						const poisonDamage = enemy.poisonStacks * (enemy.poisonDamagePerStack || 3);
-						enemy.hp -= poisonDamage;
-						if (enemy.hp < 0) enemy.hp = 0;
+						const appliedDamage = applyEnemyDamage(enemy, poisonDamage);
 						markEnemyHit(enemy);
 
 						economyDeltas.hitscanEvents.push({
@@ -3192,7 +3212,7 @@ function Game(id) {
 							toY: enemy.y,
 							ownerId: enemy.poisonOwnerId || -1,
 							targetEnemyId: enemy.id,
-							damage: poisonDamage,
+							damage: appliedDamage,
 							remainingHp: enemy.hp,
 							isCrit: false,
 							attackType: 'poison',
@@ -3314,8 +3334,7 @@ function Game(id) {
 					if (dist < pool.radius) {
 						// Deal pool damage
 						const poolDamage = pool.damagePerTick;
-						enemy.hp -= poolDamage;
-						if (enemy.hp < 0) enemy.hp = 0;
+						const appliedDamage = applyEnemyDamage(enemy, poolDamage);
 						markEnemyHit(enemy);
 						
 						// Apply poison if pool has it
@@ -3335,7 +3354,7 @@ function Game(id) {
 							toY: enemy.y,
 							ownerId: pool.ownerId,
 							targetEnemyId: enemy.id,
-							damage: poolDamage,
+							damage: appliedDamage,
 							remainingHp: enemy.hp,
 							isCrit: false,
 							attackType: 'acid',
@@ -3591,16 +3610,15 @@ function Game(id) {
 						if (enemy.dead || enemy.hp <= 0 || hitCount >= maxHits) continue;
 						const dist = Math.hypot(enemy.x - p.x, enemy.y - p.y);
 						if (dist < burstRadius) {
-							enemy.hp -= burstDamage;
-							if (enemy.hp < 0) enemy.hp = 0;
+							const appliedDamage = applyEnemyDamage(enemy, burstDamage);
 							markEnemyHit(enemy);
 							hitCount++;
 							hits.push({
 								x: enemy.x,
 								y: enemy.y,
-								damage: burstDamage
+								damage: appliedDamage
 							});
-							tryMissilePodProc(p, enemy, burstDamage, { x: p.x, y: p.y }, procCoeff, economyDeltas);
+							tryMissilePodProc(p, enemy, appliedDamage, { x: p.x, y: p.y }, procCoeff, economyDeltas);
 							if (enemy.hp <= 0) {
 								handleEnemyDeath(enemy, p);
 							}
@@ -3834,8 +3852,7 @@ function Game(id) {
 							const dist = Math.hypot(enemy.x - drone.x, enemy.y - drone.y);
 							if (dist < shockwaveRadius) {
 								// Apply damage
-								enemy.hp -= damage;
-								if (enemy.hp < 0) enemy.hp = 0;
+								const appliedDamage = applyEnemyDamage(enemy, damage);
 								markEnemyHit(enemy);
 								
 								// Apply stun
@@ -3849,7 +3866,7 @@ function Game(id) {
 									toY: enemy.y,
 									ownerId: p.num,
 									targetEnemyId: enemy.id,
-									damage: damage,
+									damage: appliedDamage,
 									remainingHp: enemy.hp,
 									isCrit: isCrit,
 									attackType: 'shockwave',
@@ -3862,12 +3879,12 @@ function Game(id) {
 								}
 								
 								shockwaveHits += 1;
-								shockwaveDamageTotal += damage;
+								shockwaveDamageTotal += appliedDamage;
 								
 								// Proc missile pod
 								const procOrigin = { x: drone.x, y: drone.y };
 								const aoeProcCoeff = baseProcCoefficient * (PROC_COEFFICIENTS.shockwave ?? 0.3);
-								tryMissilePodProc(p, enemy, damage, procOrigin, aoeProcCoeff, economyDeltas);
+								tryMissilePodProc(p, enemy, appliedDamage, procOrigin, aoeProcCoeff, economyDeltas);
 							}
 						}
 						

@@ -205,8 +205,8 @@ export const DRONE_TYPES = [
 		description: 'Tiny hitscan lasers. Applies stacking bleed damage over time.',
 		color: '#E74C3C',
 		opacity: 0.6,             // More transparent for swarm effect
-		damageMult: 0.10,         // Very low damage per hit
-		cooldownMult: 0.12,       // Extremely fast (~13 shots/sec)
+		damageMult: 0.05,         // Very low damage per hit
+		cooldownMult: 0.15,       // Extremely fast (~13 shots/sec)
 		rangeMult: 0.85,          // Shorter range
 		accuracy: 1.0,
 		orbitRadiusMult: .8,
@@ -220,7 +220,7 @@ export const DRONE_TYPES = [
 		procCoefficient: 0.4,
 		// PASSIVE: Stacking bleed
 		appliesBleed: true,
-		bleedDamagePerStack: 2,     // 1 damage per second per stack
+		bleedDamagePerStack: .5,     // 1 damage per second per stack
 		bleedDuration: 5.0,         // Each stack lasts 2 seconds (refreshed on hit)
 		bleedMaxStacks: 50          // Max 10 stacks (10 DPS)
 	},

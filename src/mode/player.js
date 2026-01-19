@@ -3117,27 +3117,9 @@ function update() {
 		}
 	}
 
-	// Zoom based on player size (zoom out slightly as player grows)
-	// Zoom scales at a fraction of the player size increase rate
-	if (user) {
-		const sizeScale = user.sizeScale || 1.0;
-		const maxSizeScale = consts.PLAYER_SIZE_SCALE_MAX || 2.0;
-		// Clamp sizeScale to max (stop zooming at max size)
-		const clampedScale = Math.min(Math.max(sizeScale, 1.0), maxSizeScale);
-		// Effective scale for zoom is 20% of the player's size increase
-		// e.g., if player is 60% bigger (1.6x), zoom as if 12% bigger (1.12x) -> zoom ~0.89
-		const zoomRate = consts.ZOOM_SCALE_RATE || 0.2;
-		const effectiveScale = 1 + (clampedScale - 1) * zoomRate;
-		const targetZoom = 1 / effectiveScale;
-		// Smooth interpolation (but hard-clamp once max size is reached)
-		if (sizeScale >= maxSizeScale) {
-			zoom = targetZoom;
-		} else {
-			zoom = zoom + (targetZoom - zoom) * 0.05;
-		}
-		zoom = Math.max(0.5, Math.min(1, zoom));
-		client.updateZoom(zoom);
-	}
+	// Keep a fixed FOV: no zoom during gameplay.
+	zoom = 1;
+	client.updateZoom(zoom);
 	
 	if (user) centerOnPlayer(user, animateTo);
 }
@@ -5646,16 +5628,19 @@ function renderEnemy(ctx, enemy) {
 		ctx.fill();
 	}
 	
-	// Body
-	ctx.fillStyle = style.color;
-	ctx.beginPath();
-	ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
-	ctx.fill();
-	
-	// Outline (thicker for bosses)
-	ctx.strokeStyle = style.outline;
-	ctx.lineWidth = isBoss ? 4 : 2;
-	ctx.stroke();
+	// Body + outline (bosses get unique silhouettes)
+	if (isBoss) {
+		renderBossBody(ctx, enemy, style, enemyTime);
+	} else {
+		ctx.fillStyle = style.color;
+		ctx.beginPath();
+		ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+		ctx.fill();
+		
+		ctx.strokeStyle = style.outline;
+		ctx.lineWidth = 2;
+		ctx.stroke();
+	}
 	
 	// Boss HP bar (always visible for bosses)
 	if (isBoss) {
@@ -5749,84 +5734,25 @@ function renderEnemy(ctx, enemy) {
 		}
 	}
 	
-	// ===== BOSS-SPECIFIC VISUALS =====
-	// Only render complex boss visuals when near and not high density
-	if (isNear && isBoss && !isHighDensity) {
-		if (type === 'titan') {
-			// Multiple concentric rings for titan
-			ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+	// ===== SPECIAL INDICATORS =====
+	if (isNear && !isHighDensity) {
+		if (type === 'summoner' && enemy.summonFxUntil && runTime < enemy.summonFxUntil) {
+			const remaining = Math.max(0, enemy.summonFxUntil - runTime);
+			const progress = 1 - Math.min(1, remaining / 1.0);
+			const pulse = 0.5 + 0.5 * Math.sin(enemyTime / 120);
+			ctx.strokeStyle = `rgba(190, 120, 255, ${0.4 + pulse * 0.4})`;
 			ctx.lineWidth = 3;
 			ctx.beginPath();
-			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.7, 0, Math.PI * 2);
+			ctx.arc(enemy.x, enemy.y, enemy.radius * (1.1 + progress * 0.6), 0, Math.PI * 2);
 			ctx.stroke();
+		}
+		if (type === 'tank' && enemy.tankMitigationUntil && runTime < enemy.tankMitigationUntil) {
+			const pulse = 0.5 + 0.5 * Math.sin(enemyTime / 160);
+			ctx.strokeStyle = `rgba(255, 215, 0, ${0.45 + pulse * 0.35})`;
+			ctx.lineWidth = 4 + pulse * 2;
 			ctx.beginPath();
-			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.4, 0, Math.PI * 2);
+			ctx.arc(enemy.x, enemy.y, enemy.radius * 1.2, 0, Math.PI * 2);
 			ctx.stroke();
-			// X mark in center
-			ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
-			ctx.lineWidth = 4;
-			const xSize = enemy.radius * 0.25;
-			ctx.beginPath();
-			ctx.moveTo(enemy.x - xSize, enemy.y - xSize);
-			ctx.lineTo(enemy.x + xSize, enemy.y + xSize);
-			ctx.moveTo(enemy.x + xSize, enemy.y - xSize);
-			ctx.lineTo(enemy.x - xSize, enemy.y + xSize);
-			ctx.stroke();
-		} else if (type === 'berserker') {
-			// Aggressive spikes around berserker
-			ctx.strokeStyle = "rgba(255, 100, 100, 0.8)";
-			ctx.lineWidth = 3;
-			const spikeCount = 6;
-			for (let i = 0; i < spikeCount; i++) {
-				const angle = (i / spikeCount) * Math.PI * 2 + enemyTime / 500;
-				const innerR = enemy.radius * 0.8;
-				const outerR = enemy.radius * 1.2;
-				ctx.beginPath();
-				ctx.moveTo(
-					enemy.x + Math.cos(angle) * innerR,
-					enemy.y + Math.sin(angle) * innerR
-				);
-				ctx.lineTo(
-					enemy.x + Math.cos(angle) * outerR,
-					enemy.y + Math.sin(angle) * outerR
-				);
-				ctx.stroke();
-			}
-			// Charge direction indicator when charging
-			if (enemy.isCharging && enemy.vx !== undefined && enemy.vy !== undefined) {
-				const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
-				if (speed > 0) {
-					const angle = Math.atan2(enemy.vy, enemy.vx);
-					ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-					ctx.lineWidth = 5;
-					ctx.beginPath();
-					ctx.moveTo(enemy.x, enemy.y);
-					ctx.lineTo(
-						enemy.x + Math.cos(angle) * enemy.radius * 1.8,
-						enemy.y + Math.sin(angle) * enemy.radius * 1.8
-					);
-					ctx.stroke();
-				}
-			}
-		} else if (type === 'summoner') {
-			// Magical runes/circles for summoner
-			const time = enemyTime / 1000;
-			ctx.strokeStyle = "rgba(200, 100, 255, 0.6)";
-			ctx.lineWidth = 2;
-			// Rotating outer ring
-			ctx.beginPath();
-			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.85, time, time + Math.PI * 1.5);
-			ctx.stroke();
-			// Counter-rotating inner ring
-			ctx.beginPath();
-			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.5, -time * 1.5, -time * 1.5 + Math.PI);
-			ctx.stroke();
-			// Pulsing center orb
-			const pulse = 0.5 + 0.5 * Math.sin(time * 3);
-			ctx.fillStyle = `rgba(200, 100, 255, ${0.4 + pulse * 0.4})`;
-			ctx.beginPath();
-			ctx.arc(enemy.x, enemy.y, enemy.radius * 0.25 + pulse * 3, 0, Math.PI * 2);
-			ctx.fill();
 		}
 	}
 	
@@ -5834,6 +5760,26 @@ function renderEnemy(ctx, enemy) {
 	if (!isBoss && isNear && showEnemyHealthBars && enemy.hp < enemy.maxHp) {
 		renderEnemyHpOutline(ctx, enemy);
 	}
+	
+	ctx.restore();
+}
+
+function renderBossBody(ctx, enemy, style, time) {
+	const x = enemy.x;
+	const y = enemy.y;
+	const r = enemy.radius;
+	const outline = style.outline || shadeColor(style.color, -30);
+	
+	ctx.save();
+	ctx.fillStyle = style.color;
+	ctx.strokeStyle = outline;
+	ctx.lineWidth = 4;
+	
+	// Classic boss body: simple circle with thicker outline
+	ctx.beginPath();
+	ctx.arc(x, y, r, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.stroke();
 	
 	ctx.restore();
 }

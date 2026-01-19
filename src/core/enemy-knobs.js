@@ -59,8 +59,8 @@ export const ENEMY_TYPES = {
 		contactDamage: 6,
 		swarmSpawnCount: 2,   // Spawn in large swarms
 		swarmSpawnSpread: 28, // Cluster spread radius
-		chaseRampSeconds: 12,  // Seconds to reach cap speed
-		chaseSpeedCapMult: 1.10, // 101% of player speed
+		chaseRampSeconds: 6,  // Seconds to reach cap speed
+		chaseSpeedCapMult: 1.2, // 101% of player speed
 		xpDropValue: 1,
 		spawnWeight: 30,     // Very common when unlocked
 		color: "rgba(150, 220, 80, 0.9)",
